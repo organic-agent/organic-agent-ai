@@ -2,9 +2,9 @@
 
 import json
 
-from notionchat.api import config
-from notionchat.api.notion.blocks import blocks_to_markdown, properties_to_text, rich_text
-from notionchat.api.notion.client import NotionClient
+from api import config
+from api.notion.blocks import blocks_to_markdown, properties_to_text, rich_text
+from api.notion.client import NotionClient
 
 TOOL_DEFINITIONS = [
     {

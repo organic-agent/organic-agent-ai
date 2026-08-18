@@ -83,11 +83,18 @@
 
 ## 3. 모듈별 상세
 
-패키지 구조 — 배포 단위 기준 2분할 (api = 백엔드 전부, web = 프론트 단독):
+패키지 구조 — notionchat은 **자기완결 서비스 폴더**다. 배포 설정·의존성·테스트까지 전부
+안에 있어 repo 루트를 점유하지 않고, 미래에 다른 서비스 폴더가 생겨도 충돌하지 않는다
+(Vercel 프로젝트의 Root Directory = `notionchat`). 임포트 루트도 notionchat이라
+코드는 `from api...`로 시작한다:
 
 ```
-notionchat/
+notionchat/                # ← Vercel Root Directory
+├── vercel.json            # 배포 설정 (api/index.py 함수로 전 경로 라우팅)
+├── requirements.txt
+├── tests/
 ├── api/                   # 백엔드 전부 — 단독 배포 단위
+│   ├── index.py           #   Vercel 진입점
 │   ├── main.py            #   FastAPI 라우팅 + SSE + CORS (무상태 규격)
 │   ├── __main__.py        #   터미널 CLI (python -m notionchat.api)
 │   ├── config.py          #   설정 단일 지점 (.env 자동 로드)
@@ -159,7 +166,7 @@ notionchat/
 - 캐시 보호: 프롬프트에 날짜·세션 ID 등 가변 값 금지
 
 ### `api/__main__.py` — 터미널 CLI
-- `python -m notionchat.api`. readline으로 입력 히스토리/편집 지원. `exit`/Ctrl-D 종료
+- `python -m api` (notionchat/ 에서). readline으로 입력 히스토리/편집 지원. `exit`/Ctrl-D 종료
 - ChatSession만 사용 — 웹 UI와 같은 run_turn 로직 공유
 
 ### `tests/test_blocks.py`
@@ -204,8 +211,9 @@ AWS 자격증명은 `~/.aws/credentials` default 프로필 사용 (별도 API �
 
 ```bash
 source .venv/bin/activate
-uvicorn notionchat.api.main:app --reload   # 웹 UI (localhost:8000)
-python -m notionchat.api                     # CLI
+cd notionchat
+uvicorn api.main:app --reload   # 웹 UI (localhost:8000)
+python -m api                   # CLI
 pytest                             # 테스트
 ```
 
@@ -275,7 +283,7 @@ SSE 이벤트 순서: `tool_log`(도구 호출마다) → `answer`{answer, histo
 CLI의 `ChatSession`은 이 함수의 얇은 래퍼로, 웹 UI와 CLI가 같은 로직을 공유한다. SSE 스트리밍은 워커 스레드 + 큐로 도구 로그를 실시간 전달.
 
 ```bash
-uvicorn notionchat.api.main:app --reload    # 로컬 실행 → http://localhost:8000
+cd notionchat && uvicorn api.main:app --reload    # 로컬 실행 → http://localhost:8000
 ```
 
 인증(api/auth.py): 공유 계정 1개 방식. `NOTIONCHAT_AUTH_ID`/`NOTIONCHAT_AUTH_PASSWORD`가
@@ -296,8 +304,8 @@ API 주소를 지정한다. 로컬 개발 시엔 api가 web을 동봉 서빙(`/`
 - URL: **https://chat.easyselect.kr** (보조: https://notionchat-five.vercel.app)
 - 도메인: easyselect.kr의 Route 53 존(같은 AWS 계정)에 CNAME `chat` → cname.vercel-dns.com,
   소유 검증 TXT `_vercel` 레코드. SSL은 Vercel이 자동 발급·갱신 (Vercel 프로젝트 `notionchat`, 계정 sukangpunch)
-- 구성: repo 루트의 `vercel.json`(legacy builds/routes — 전 경로를 `api/index.py` 함수로) +
-  `api/index.py`(notionchat.api.main:app 재수출) + `.vercelignore`
+- 구성: Vercel 프로젝트 Root Directory=`notionchat`. `notionchat/vercel.json`(legacy builds/routes) +
+  `notionchat/api/index.py`(진입점) + `notionchat/.vercelignore`. repo 루트는 배포 설정 없음
 - 환경변수(프로덕션): NOTION_TOKEN, NOTION_WORKSPACE, NOTIONCHAT_AWS_REGION,
   NOTIONCHAT_AWS_ACCESS_KEY_ID/SECRET(Vercel이 표준 AWS_* 이름을 예약하므로 전용 이름 사용),
   NOTIONCHAT_AUTH_ID/PASSWORD

@@ -1,6 +1,6 @@
 """블록 → 마크다운 변환기 테스트 — 네트워크 없이 순수 함수만 검증한다."""
 
-from notionchat.api.notion.blocks import blocks_to_markdown, properties_to_text, rich_text
+from api.notion.blocks import blocks_to_markdown, properties_to_text, rich_text
 
 
 def _text(content: str, href: str | None = None) -> dict:

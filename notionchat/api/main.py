@@ -1,7 +1,7 @@
 """FastAPI 챗봇 서버 — 무상태 규격 (Vercel 서버리스 배포 대응).
 
-실행(로컬): uvicorn notionchat.api.main:app --reload
-프론트엔드는 notionchat/web/ 에 있고, 이 서버가 정적 파일로 서빙한다.
+실행(로컬): notionchat/ 디렉토리에서 uvicorn api.main:app --reload
+프론트엔드는 web/ 에 있고, 이 서버가 정적 파일로 서빙한다.
 
 API 규격
 --------
@@ -38,8 +38,8 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from notionchat.api import auth, config
-from notionchat.api.core.provider import ChatError, run_turn
+from api import auth, config
+from api.core.provider import ChatError, run_turn
 
 app = FastAPI(title="notionchat", version="0.1.0")
 

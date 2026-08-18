@@ -11,7 +11,7 @@ import hmac
 import os
 import time
 
-from notionchat.api import config  # noqa: F401 — .env 로드 보장
+from api import config  # noqa: F401 — .env 로드 보장
 
 COOKIE_NAME = "nc_session"
 SESSION_TTL = 60 * 60 * 24 * 30  # 30일

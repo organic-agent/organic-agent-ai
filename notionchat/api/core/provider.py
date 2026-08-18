@@ -8,9 +8,9 @@ import sys
 
 from botocore.exceptions import BotoCoreError, ClientError
 
-from notionchat.api import config
-from notionchat.api.core.agent import ModelResponseError, ask
-from notionchat.api.notion.client import NotionClient
+from api import config
+from api.core.agent import ModelResponseError, ask
+from api.notion.client import NotionClient
 
 
 class ChatError(Exception):

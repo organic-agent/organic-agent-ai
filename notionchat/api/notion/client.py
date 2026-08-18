@@ -7,7 +7,7 @@ import time
 
 import httpx
 
-from notionchat.api import config
+from api import config
 
 _MAX_RETRIES = 3
 

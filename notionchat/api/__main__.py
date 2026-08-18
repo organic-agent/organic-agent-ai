@@ -10,8 +10,8 @@
 import readline  # noqa: F401 — input()에 라인 편집/히스토리 부여
 import sys
 
-from notionchat.api import config
-from notionchat.api.core.provider import ChatError, ChatSession
+from api import config
+from api.core.provider import ChatError, ChatSession
 
 
 def main() -> None:

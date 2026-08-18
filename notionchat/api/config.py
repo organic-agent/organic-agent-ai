@@ -5,16 +5,18 @@ from pathlib import Path
 
 
 def _load_dotenv() -> None:
-    """repo 루트 .env를 읽어, 아직 없는 환경변수만 채운다. 이미 export된 값이 우선."""
-    path = Path(__file__).resolve().parent.parent.parent / ".env"
-    if not path.exists():
-        return
-    for line in path.read_text().splitlines():
-        line = line.strip().removeprefix("export ")
-        if not line or line.startswith("#") or "=" not in line:
+    """notionchat/.env 또는 repo 루트 .env를 읽어, 아직 없는 환경변수만 채운다. export된 값이 우선."""
+    here = Path(__file__).resolve()
+    for path in (here.parent.parent / ".env", here.parent.parent.parent / ".env"):
+        if not path.exists():
             continue
-        key, _, value = line.partition("=")
-        os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+        for line in path.read_text().splitlines():
+            line = line.strip().removeprefix("export ")
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            os.environ.setdefault(key.strip(), value.strip().strip("'\""))
+        return
 
 
 _load_dotenv()

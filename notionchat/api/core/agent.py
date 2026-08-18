@@ -10,10 +10,10 @@ Converse는 모델 제조사와 무관한 Bedrock 공통 인터페이스라, 계
 
 from collections.abc import Callable
 
-from notionchat.api import config
-from notionchat.api.core.prompts import SYSTEM_PROMPT
-from notionchat.api.notion.client import NotionAPIError, NotionClient
-from notionchat.api.notion.tools import TOOL_DEFINITIONS, run_tool
+from api import config
+from api.core.prompts import SYSTEM_PROMPT
+from api.notion.client import NotionAPIError, NotionClient
+from api.notion.tools import TOOL_DEFINITIONS, run_tool
 
 
 class ModelResponseError(Exception):
