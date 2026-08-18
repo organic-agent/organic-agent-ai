@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>notionchat</title>
+<link rel="stylesheet" href="/web/style.css">
+<script src="https://cdn.jsdelivr.net/npm/marked@12/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3/dist/purify.min.js"></script>
+</head>
+<body>
+<div id="login" class="login hidden">
+  <form id="login-form" class="login-card">
+    <h2>📚 notionchat</h2>
+    <p>공유 계정으로 로그인하세요</p>
+    <input id="login-id" placeholder="ID" autocomplete="username" required>
+    <input id="login-pw" type="password" placeholder="비밀번호" autocomplete="current-password" required>
+    <div id="login-error" class="login-error"></div>
+    <button type="submit">로그인</button>
+  </form>
+</div>
+
+<div class="app">
+  <header>
+    <h1>📚 notionchat</h1>
+    <span class="meta" id="meta"></span>
+    <button id="reset">대화 초기화</button>
+    <button id="logout" class="hidden">로그아웃</button>
+  </header>
+  <div id="chat"></div>
+  <form id="form">
+    <input id="input" placeholder="팀 Notion에 대해 질문하세요" autocomplete="off" autofocus>
+    <button id="send" type="submit">보내기</button>
+  </form>
+</div>
+<script src="/web/app.js"></script>
+</body>
+</html>

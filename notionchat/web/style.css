@@ -1,0 +1,89 @@
+:root {
+  --bg: #f7f6f3; --panel: #ffffff; --ink: #37352f; --muted: #787774;
+  --line: #e6e4df; --accent: #2f6fed; --accent-ink: #ffffff; --code-bg: #f1f0ec;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard", "Segoe UI", sans-serif;
+}
+.app { max-width: 780px; margin: 0 auto; min-height: 100dvh; display: flex; flex-direction: column; }
+
+header {
+  display: flex; align-items: baseline; gap: 10px; padding: 18px 20px 10px;
+  position: sticky; top: 0; background: var(--bg); z-index: 5;
+}
+header h1 { font-size: 18px; margin: 0; }
+header .meta { font-size: 12px; color: var(--muted); }
+header button {
+  border: 1px solid var(--line); background: var(--panel); color: var(--muted);
+  border-radius: 8px; padding: 5px 10px; font-size: 12px; cursor: pointer;
+}
+header button:hover { color: var(--ink); }
+header #reset { margin-left: auto; }
+
+.hidden { display: none !important; }
+
+.login {
+  position: fixed; inset: 0; z-index: 100; background: var(--bg);
+  display: flex; align-items: center; justify-content: center; padding: 20px;
+}
+.login-card {
+  width: 100%; max-width: 340px; background: var(--panel); border: 1px solid var(--line);
+  border-radius: 14px; padding: 28px 26px; display: flex; flex-direction: column; gap: 10px;
+}
+.login-card h2 { margin: 0; font-size: 20px; }
+.login-card p { margin: 0 0 6px; font-size: 13px; color: var(--muted); }
+.login-card input {
+  border: 1px solid var(--line); border-radius: 9px; padding: 11px 12px;
+  font-size: 14px; background: var(--bg); color: var(--ink); outline: none;
+}
+.login-card input:focus { border-color: var(--accent); }
+.login-card button {
+  margin-top: 4px; border: none; background: var(--accent); color: var(--accent-ink);
+  border-radius: 9px; padding: 11px; font-size: 14.5px; cursor: pointer;
+}
+.login-error { min-height: 16px; font-size: 12.5px; color: #c62a30; }
+
+#chat { flex: 1; padding: 8px 20px 16px; display: flex; flex-direction: column; gap: 14px; }
+.msg { max-width: 100%; }
+.msg .who { font-size: 11px; color: var(--muted); margin-bottom: 4px; }
+.bubble {
+  background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+  padding: 10px 14px; line-height: 1.65; font-size: 14.5px; overflow-x: auto;
+}
+.msg.user .bubble { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.bubble :is(h1, h2, h3) { font-size: 1.02em; margin: 0.8em 0 0.3em; }
+.bubble p { margin: 0.4em 0; }
+.bubble pre { background: var(--code-bg); padding: 10px; border-radius: 8px; overflow-x: auto; font-size: 13px; }
+.bubble code { background: var(--code-bg); border-radius: 4px; padding: 1px 4px; font-size: 0.92em; }
+.bubble pre code { background: none; padding: 0; }
+.bubble table { border-collapse: collapse; margin: 0.5em 0; font-size: 13.5px; }
+.bubble th, .bubble td { border: 1px solid var(--line); padding: 4px 9px; }
+.bubble a { color: var(--accent); }
+.msg.user .bubble a { color: #dbe7ff; }
+
+details.logs { margin-bottom: 6px; font-size: 12px; color: var(--muted); }
+details.logs summary { cursor: pointer; user-select: none; }
+details.logs div { font-family: ui-monospace, "SF Mono", Menlo, monospace; padding: 2px 0 2px 14px; word-break: break-all; }
+
+.error .bubble { border-color: #e5484d; color: #c62a30; background: #fff5f5; }
+
+.typing { color: var(--muted); font-size: 13px; padding-left: 2px; }
+.typing::after { content: "…"; animation: dots 1.2s infinite; }
+@keyframes dots { 0% { content: "…"; } 33% { content: "·"; } 66% { content: "··"; } }
+
+form {
+  position: sticky; bottom: 0; background: var(--bg); padding: 10px 20px 18px;
+  display: flex; gap: 8px;
+}
+form input {
+  flex: 1; border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+  font-size: 14.5px; background: var(--panel); color: var(--ink); outline: none;
+}
+form input:focus { border-color: var(--accent); }
+form button {
+  border: none; background: var(--accent); color: var(--accent-ink); border-radius: 10px;
+  padding: 0 18px; font-size: 14.5px; cursor: pointer;
+}
+form button:disabled { opacity: 0.5; cursor: default; }
