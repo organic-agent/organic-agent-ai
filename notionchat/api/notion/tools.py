@@ -101,10 +101,15 @@ def run_tool(client: NotionClient, name: str, tool_input: dict) -> str:
 
 
 def _read_expense_guide() -> str:
-    path = Path(__file__).resolve().parent.parent / "data" / "asm_expense_guide.md"
-    if not path.exists():
+    data = Path(__file__).resolve().parent.parent / "data"
+    snapshot = data / "asm_expense_guide.md"
+    if not snapshot.exists():
         return "활동비 규정 스냅샷이 없다. scripts/snapshot_asm_expenses.py 실행이 필요하다고 안내하라."
-    return path.read_text()
+    parts = [snapshot.read_text()]
+    supplement = data / "asm_expense_guide_images.md"  # 이미지로만 게시된 표의 수동 변환본
+    if supplement.exists():
+        parts.append(supplement.read_text())
+    return "\n\n".join(parts)
 
 
 def _page_url(obj: dict) -> str:

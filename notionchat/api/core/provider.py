@@ -5,6 +5,8 @@
 """
 
 import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 from botocore.exceptions import BotoCoreError, ClientError
 
@@ -68,7 +70,11 @@ def run_turn(
     """
     notion = notion or _notion_client()
     checkpoint = len(history)
-    history.append({"role": "user", "content": [{"text": question}]})
+    # 오늘 날짜를 질문에 주입 — 시스템 프롬프트는 캐시 보호로 날짜를 못 넣으므로 여기서.
+    # "다음 신청일", "지난주 회의" 같은 시간 상대 질문의 기준점이 된다. (Vercel은 UTC라 KST 명시)
+    now = datetime.now(ZoneInfo("Asia/Seoul"))
+    weekday = "월화수목금토일"[now.weekday()]
+    history.append({"role": "user", "content": [{"text": f"[오늘: {now:%Y-%m-%d}({weekday})] {question}"}]})
     try:
         answer, history, usage = ask(_runtime_client(), notion, history, on_log=on_log)
         _log_usage(usage)
