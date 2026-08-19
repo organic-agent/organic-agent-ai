@@ -110,6 +110,9 @@ caching. 상세 규칙은 `.claude/rules/bedrock.md`.
 
 ## 5. P3 상세 설계 (확정분, 요약)
 
+> 2026-08-19 이후 P3 상세는 `photoselect/docs/plan.md`(4단계 셀렉 퍼널: 품질→미학→세밀
+> 비교→개인화 큐레이션)가 구체화·대체한다. 아래는 그 이전 확정분 요약.
+
 - **실행 조건** (wes 검증): 갤러리 OPEN · 마감 전 · 전 사진 EMBEDDED · 목표 장수 존재 ·
   현재 선택 < 목표 · 활성/완료 잡 없음 · 미제출 상태
 - **Stage A** — pgvector 클러스터(union-find) → 클러스터별 미리보기(`preview_key`)를 vision으로
