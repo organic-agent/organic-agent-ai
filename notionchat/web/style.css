@@ -28,7 +28,37 @@ body {
   font-size: 17px; line-height: 25px; letter-spacing: -0.374px;  /* body 토큰 */
   -webkit-font-smoothing: antialiased;
 }
-.app { max-width: 780px; margin: 0 auto; min-height: 100dvh; display: flex; flex-direction: column; }
+.layout { max-width: 1080px; margin: 0 auto; display: flex; gap: 8px; align-items: flex-start; }
+.app { flex: 1; min-width: 0; max-width: 780px; margin: 0 auto; min-height: 100dvh; display: flex; flex-direction: column; }
+
+/* 자주 쓰는 질문 — 데스크톱: 좌측 고정 패널, 모바일: 상단 가로 스크롤 칩 */
+.prompts {
+  width: 240px; flex-shrink: 0; position: sticky; top: 0;
+  max-height: 100dvh; overflow-y: auto;
+  padding: 64px 0 20px 20px; display: flex; flex-direction: column; gap: 8px;
+}
+.prompts h2 {
+  margin: 0 0 4px; font-size: 12px; line-height: 16px; letter-spacing: -0.12px;
+  font-weight: 600; color: var(--muted);
+}
+.prompt {
+  text-align: left; background: var(--surface); border: 1px solid transparent;
+  border-radius: 12px; padding: 10px 13px;
+  font-size: 14px; line-height: 19px; letter-spacing: -0.224px; font-weight: 400;
+  color: var(--secondary); cursor: pointer;
+}
+.prompt:hover { border-color: var(--line); color: var(--ink); }
+
+@media (max-width: 900px) {
+  .layout { display: block; }
+  .prompts {
+    width: auto; position: static; max-height: none;
+    flex-direction: row; overflow-x: auto; gap: 8px;
+    padding: 10px 20px 0; -webkit-overflow-scrolling: touch;
+  }
+  .prompts h2 { display: none; }
+  .prompt { flex-shrink: 0; max-width: 260px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-radius: var(--pill); }
+}
 
 header {
   display: flex; align-items: center; gap: 12px; padding: 16px 20px 12px;
@@ -42,7 +72,7 @@ header .meta { font-size: 12px; line-height: 16px; letter-spacing: -0.12px; colo
 /* marketing-compact 기하의 아웃라인 변형: 36px 필, 8px 15px, 14px/400 */
 header button {
   border: 1px solid var(--line); background: transparent; color: var(--secondary);
-  border-radius: var(--pill); padding: 8px 15px; height: 36px;
+  border-radius: var(--pill); padding: 8px 15px; height: 36px; white-space: nowrap; flex-shrink: 0;
   font-size: 14px; font-weight: 400; letter-spacing: -0.224px; cursor: pointer;
 }
 header button:hover { border-color: var(--secondary); color: var(--ink); }

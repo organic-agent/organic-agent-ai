@@ -20,18 +20,30 @@
   </form>
 </div>
 
-<div class="app">
-  <header>
-    <h1>notionchat</h1>
-    <span class="meta" id="meta"></span>
-    <button id="reset">대화 초기화</button>
-    <button id="logout" class="hidden">로그아웃</button>
-  </header>
-  <div id="chat"></div>
-  <form id="form">
-    <input id="input" placeholder="팀 Notion에 대해 질문하세요" autocomplete="off" autofocus>
-    <button id="send" type="submit">보내기</button>
-  </form>
+<div class="layout">
+  <aside class="prompts" aria-label="자주 쓰는 질문">
+    <h2>자주 쓰는 질문</h2>
+    <button class="prompt">제일 빠른 멘토링 날짜가 언제야?</button>
+    <button class="prompt">다음 프로젝트 비용, 자기주도 학습 비용 신청일이 언제야?</button>
+    <button class="prompt">다음 프로젝트 비용, 자기주도 학습 비용 증빙 날짜가 언제까지야?</button>
+    <button class="prompt">인터뷰 내용 페이지 어디에 있어?</button>
+    <button class="prompt">가장 최근에 {멘토명} 멘토님과 했던 미팅 내용은 어디에 정리되어 있어?</button>
+    <button class="prompt">{기획 내용} 내용이 뭐였지? 가져와줘.</button>
+  </aside>
+
+  <div class="app">
+    <header>
+      <h1>notionchat</h1>
+      <span class="meta" id="meta"></span>
+      <button id="reset">대화 초기화</button>
+      <button id="logout" class="hidden">로그아웃</button>
+    </header>
+    <div id="chat"></div>
+    <form id="form">
+      <input id="input" placeholder="팀 Notion에 대해 질문하세요" autocomplete="off" autofocus>
+      <button id="send" type="submit">보내기</button>
+    </form>
+  </div>
 </div>
 <script src="/web/app.js"></script>
 </body>

@@ -69,6 +69,17 @@ document.getElementById("reset").onclick = () => {
   input.focus();
 };
 
+// 자주 쓰는 질문: 클릭 → 입력창에 채움. {자리표시자}가 있으면 선택해 바로 교체 입력 가능
+document.querySelectorAll(".prompt").forEach((btn) => {
+  btn.onclick = () => {
+    const text = btn.textContent;
+    input.value = text;
+    input.focus();
+    const placeholder = text.match(/\{[^}]+\}/);
+    if (placeholder) input.setSelectionRange(placeholder.index, placeholder.index + placeholder[0].length);
+  };
+});
+
 function el(tag, cls, parent) {
   const node = document.createElement(tag);
   if (cls) node.className = cls;
