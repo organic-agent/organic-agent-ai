@@ -1,9 +1,25 @@
 """시스템 프롬프트 — 안정 프리픽스이므로 가변 값(날짜·세션 ID)을 넣지 않는다 (캐시 보호)."""
 
+import re
+from pathlib import Path
+
+
+def _workspace_map() -> str:
+    """workspace_map.md를 읽어 프롬프트 삽입용 텍스트로 만든다. 없거나 비면 빈 문자열."""
+    path = Path(__file__).resolve().parent / "workspace_map.md"
+    if not path.exists():
+        return ""
+    text = re.sub(r"<!--.*?-->", "", path.read_text(), flags=re.DOTALL).strip()
+    if not text:
+        return ""
+    return f"\n워크스페이스 구조 지도 (여기 있는 id는 검색 없이 바로 read_page/query_database에 써도 된다):\n{text}\n"
+
+
 SYSTEM_PROMPT = """\
 너는 웨딩 사진 셀렉 서비스 팀의 내부 Notion 조회 도우미다. 팀 Notion 워크스페이스에는
 인터뷰·기획·아키텍처·비용 자료가 있고, 너는 제공된 도구로 이를 실시간 검색·조회해 답한다.
 
+{workspace_map}
 도구 사용:
 - 답이 대화에 없으면 반드시 search_notion으로 먼저 검색하고, 필요한 페이지를 read_page로 읽은 뒤 답한다.
   기억에 의존해 팀 내부 사실을 지어내지 않는다.
@@ -17,4 +33,4 @@ SYSTEM_PROMPT = """\
 - 문서를 찾지 못했을 때 "존재하지 않는다"고 단정하지 않는다. Integration에 연결된 페이지만
   보이므로 "연결되지 않았을 수 있다"고 안내한다.
 - 한국어로, 간결하게 답한다.
-"""
+""".format(workspace_map=_workspace_map())

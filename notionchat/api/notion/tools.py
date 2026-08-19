@@ -1,6 +1,7 @@
-"""도구 4종 — 정의(스키마)와 실행을 함께 둔다 (docs/notion-chatbot-plan.md §2 아키텍처)."""
+"""도구 정의(스키마)와 실행을 함께 둔다 (docs/notion-chatbot-plan.md §2 아키텍처)."""
 
 import json
+from pathlib import Path
 
 from api import config
 from api.notion.blocks import blocks_to_markdown, properties_to_text, rich_text
@@ -58,6 +59,16 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "read_expense_guide",
+        "description": (
+            "소마(AI·SW마에스트로) 공식 프로젝트 활동비 지원 규정 전문을 반환한다. "
+            "활동비 지원 항목·금액·신청 절차·기한, AWS 클라우드 비용 지원, 증빙 규칙 등 "
+            "'공식 규정이 무엇인가' 질문은 여기. 팀이 실제 쓴 비용 내역은 Notion의 비용 처리 DB를 본다. "
+            "외부 공개 노션의 스냅샷이므로 문서 상단의 스냅샷 날짜를 확인하라."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
         "name": "list_children",
         "description": (
             "페이지/블록 바로 아래의 하위 블록·하위 페이지 목록을 반환한다. "
@@ -84,7 +95,16 @@ def run_tool(client: NotionClient, name: str, tool_input: dict) -> str:
         return _query_database(client, tool_input["database_id"], tool_input.get("filter"))
     if name == "list_children":
         return _list_children(client, tool_input["block_id"])
+    if name == "read_expense_guide":
+        return _read_expense_guide()
     raise ValueError(f"알 수 없는 도구: {name}")
+
+
+def _read_expense_guide() -> str:
+    path = Path(__file__).resolve().parent.parent / "data" / "asm_expense_guide.md"
+    if not path.exists():
+        return "활동비 규정 스냅샷이 없다. scripts/snapshot_asm_expenses.py 실행이 필요하다고 안내하라."
+    return path.read_text()
 
 
 def _page_url(obj: dict) -> str:
