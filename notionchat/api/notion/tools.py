@@ -61,11 +61,12 @@ TOOL_DEFINITIONS = [
     {
         "name": "read_expense_guide",
         "description": (
-            "소마(AI·SW마에스트로) 공식 프로젝트 활동비 지원 규정 전문을 반환한다. "
-            "차수별(1~5차) 신청 기간·승인·정산 일정, 지원 항목·금액 한도, 신청 절차, "
-            "AWS 클라우드 비용 지원, 증빙 규칙 등 활동비/비용 규정 질문은 Notion 검색 전에 반드시 여기부터. "
+            "소마(AI·SW마에스트로) 공식 비용 지원 규정 전문을 반환한다: 프로젝트 활동비"
+            "(차수별 1~5차 신청 기간·승인·정산 일정, 지원 항목·금액 한도, 신청 절차, AWS 클라우드 비용, 증빙 규칙)와 "
+            "자기주도형 학습비(1인당 한도, 강의 지원 방식, 월별 신청 일정). "
+            "활동비/학습비/비용 규정 질문은 Notion 검색 전에 반드시 여기부터. "
             "'다음 신청 기간이 언제냐'도 여기 일정표로 답한다. 팀이 실제 쓴 비용 내역만 Notion의 비용 처리 DB를 본다. "
-            "외부 공개 노션의 스냅샷이므로 문서 상단의 스냅샷 날짜를 확인하라."
+            "공식 문서의 스냅샷이므로 문서 상단의 스냅샷 날짜를 확인하라."
         ),
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
@@ -107,9 +108,11 @@ def _read_expense_guide() -> str:
     if not snapshot.exists():
         return "활동비 규정 스냅샷이 없다. scripts/snapshot_asm_expenses.py 실행이 필요하다고 안내하라."
     parts = [snapshot.read_text()]
-    supplement = data / "asm_expense_guide_images.md"  # 이미지로만 게시된 표의 수동 변환본
-    if supplement.exists():
-        parts.append(supplement.read_text())
+    # 이미지로만 게시된 표의 수동 변환본, 자기주도형 학습비 안내(로그인 페이지 수동 스냅샷)
+    for name in ("asm_expense_guide_images.md", "asm_self_study_guide.md"):
+        extra = data / name
+        if extra.exists():
+            parts.append(extra.read_text())
     return "\n\n".join(parts)
 
 
