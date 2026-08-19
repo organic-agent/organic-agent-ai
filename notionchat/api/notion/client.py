@@ -27,8 +27,15 @@ class NotionClient:
             timeout=30.0,
         )
 
-    # 공통 요청 처리
+    # 공통 요청 처리 — 조회 전용 가드레일: 쓰기 계열 메서드와 미등록 POST 경로를 차단한다.
+    # 이 챗봇은 읽기 전용이며, 토큰에 쓰기 권한이 있어도 코드 레벨에서 막는다.
+    _READONLY_POST_PREFIXES = ("/search", "/databases/")  # search, databases/{id}/query 뿐
+
     def _request(self, method: str, path: str, json: dict | None = None, params: dict | None = None) -> dict:
+        if method not in ("GET", "POST"):
+            raise NotionAPIError(f"조회 전용 클라이언트 — {method} 요청은 허용되지 않는다")
+        if method == "POST" and not path.startswith(self._READONLY_POST_PREFIXES):
+            raise NotionAPIError(f"조회 전용 클라이언트 — POST {path}는 허용되지 않는다")
         for attempt in range(_MAX_RETRIES + 1):
             resp = self._http.request(method, path, json=json, params=params)
             if resp.status_code == 429 and attempt < _MAX_RETRIES:
