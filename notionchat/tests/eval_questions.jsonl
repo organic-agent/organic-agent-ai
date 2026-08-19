@@ -6,3 +6,4 @@
 {"id": "cloud-provider", "question": "클라우드 비용 지원으로 GCP 써도 돼?", "expect_contains": ["불가|안 |없|AWS"], "expect_tool": "read_expense_guide", "note": "규정: GCP·Azure 지원 불가, AWS만"}
 {"id": "actual-spending-routing", "question": "우리 팀이 실제로 쓴 비용 내역 보여줘", "expect_tool": "query_database|read_page|search_notion", "expect_not_tool": "read_expense_guide", "note": "규정 vs 실제 지출 구분 — 실제 내역은 팀 Notion(비용 처리)으로 가야 함"}
 {"id": "total-budget-limit", "question": "프로젝트 활동비는 팀당 총 얼마까지 지원돼?", "expect_contains": ["1,200만|1200만"], "expect_tool": "read_expense_guide", "note": "본문 텍스트 수치 — 스냅샷 본체가 살아있는지"}
+{"id": "next-mentoring", "question": "다음 멘토링은 언제야?", "today": "2026-08-19(수)", "expect_contains": ["08-20|8월 20일|8\\. 20|8/20", "한유일"], "expect_not_contains": ["다음[^\\n]*8월 1[0-8]일|다음[^\\n]*08-1[0-8]"], "expect_tool": "query_database|search_notion|read_page", "expect_not_tool": "read_expense_guide", "note": "2026-08-19 검증 정답: 다음 멘토링 = 8/20(목) 한유일 멘토님. 시간 상대 + 팀 일정 DB 라우팅 (활동비 규정으로 새면 안 됨)"}
