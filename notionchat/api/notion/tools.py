@@ -75,7 +75,8 @@ TOOL_DEFINITIONS = [
         "description": (
             "소마(AI·SW마에스트로) 공식 연수 일정 전체를 반환한다: 멘토링·행사(발대식/수료식/워크숍)·"
             "교육(AI 인프라 등)·평가(중간점검/TOPCIT/최종점검)·창업 프로그램의 기간과 참여 필수 여부. "
-            "소마 공식 행사·평가·교육 일정 질문은 여기. 팀 자체 일정(멘토링 약속 등)은 ASM 부산 17 일정 DB, "
+            "'공식 일정'이라는 표현의 질문은 반드시 이 도구만 근거로 답한다 — 팀이 잡은 멘토링 약속"
+            "(ASM 부산 17 일정 DB)은 공식 일정이 아니므로 섞지 않는다. "
             "활동비·학습비 신청 일정은 read_expense_guide."
         ),
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
