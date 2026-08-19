@@ -26,5 +26,7 @@ References (운영·행정):
 - 창고 (page_id: 37cac24a664c80bebca8c7fa4288877b): 멘토님 피드백, 기획 심의 예상 질문, 웨딩 불편함 조사 등 보관. 당장 다른 곳에 보관하기 애매한 자료들.
 
 Schedule (일정):
-- ASM 부산 17 일정 (database_id: 35bac24a664c805cbd74db676e16dfbc): 팀 일정 DB. 멘토링·특강·행사 날짜 질문은 여기. 소마 공식 일정 표도 이 섹션에 있음.
-  단, 활동비 신청 기간(1~5차 차수 일정)은 이 DB가 아니라 read_expense_guide에 있다.
+- ASM 부산 17 일정 (database_id: 35bac24a664c805cbd74db676e16dfbc): 팀 일정 DB. 우리 팀의 멘토링·특강 약속 날짜는 여기.
+- 소마 공식 일정(발대식·수료식·중간점검·TOPCIT·최종점검·교육·창업 프로그램)은 read_soma_schedule 도구로 조회한다
+  (원본이 이미지라 Notion에서 직접 못 읽음).
+- 활동비·학습비 신청 기간(차수 일정)은 read_expense_guide에 있다.

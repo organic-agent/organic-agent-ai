@@ -71,6 +71,16 @@ TOOL_DEFINITIONS = [
         "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
     },
     {
+        "name": "read_soma_schedule",
+        "description": (
+            "소마(AI·SW마에스트로) 공식 연수 일정 전체를 반환한다: 멘토링·행사(발대식/수료식/워크숍)·"
+            "교육(AI 인프라 등)·평가(중간점검/TOPCIT/최종점검)·창업 프로그램의 기간과 참여 필수 여부. "
+            "소마 공식 행사·평가·교육 일정 질문은 여기. 팀 자체 일정(멘토링 약속 등)은 ASM 부산 17 일정 DB, "
+            "활동비·학습비 신청 일정은 read_expense_guide."
+        ),
+        "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+    },
+    {
         "name": "list_children",
         "description": (
             "페이지/블록 바로 아래의 하위 블록·하위 페이지 목록을 반환한다. "
@@ -99,7 +109,14 @@ def run_tool(client: NotionClient, name: str, tool_input: dict) -> str:
         return _list_children(client, tool_input["block_id"])
     if name == "read_expense_guide":
         return _read_expense_guide()
+    if name == "read_soma_schedule":
+        return _read_data_doc("asm_official_schedule.md")
     raise ValueError(f"알 수 없는 도구: {name}")
+
+
+def _read_data_doc(name: str) -> str:
+    path = Path(__file__).resolve().parent.parent / "data" / name
+    return path.read_text() if path.exists() else f"{name} 스냅샷이 없다."
 
 
 def _read_expense_guide() -> str:
