@@ -96,8 +96,9 @@ def _page_url(obj: dict) -> str:
     obj_id = (obj.get("id") or "").replace("-", "")
     if not obj_id:
         return obj.get("url", "")
-    if config.NOTION_WORKSPACE:
-        return f"https://app.notion.com/p/{config.NOTION_WORKSPACE}/{obj_id}"
+    workspace = config.notion_workspace()
+    if workspace:
+        return f"https://app.notion.com/p/{workspace}/{obj_id}"
     return f"https://www.notion.so/{obj_id}"
 
 

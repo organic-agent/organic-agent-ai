@@ -33,17 +33,15 @@ def _notion_client() -> NotionClient:
 
 def _runtime_client():
     if "runtime" not in _clients:
-        import os
-
         import boto3
 
         # Vercel은 표준 AWS_* 환경변수명을 예약해 막으므로 전용 이름을 사용한다.
         # 미설정(None)이면 boto3 기본 자격증명 체인(로컬 ~/.aws)으로 폴백
         _clients["runtime"] = boto3.client(
             "bedrock-runtime",
-            region_name=config.AWS_REGION,
-            aws_access_key_id=os.environ.get("NOTIONCHAT_AWS_ACCESS_KEY_ID"),
-            aws_secret_access_key=os.environ.get("NOTIONCHAT_AWS_SECRET_ACCESS_KEY"),
+            region_name=config.aws_region(),
+            aws_access_key_id=config.env("NOTIONCHAT_AWS_ACCESS_KEY_ID"),
+            aws_secret_access_key=config.env("NOTIONCHAT_AWS_SECRET_ACCESS_KEY"),
         )
     return _clients["runtime"]
 
@@ -51,7 +49,7 @@ def _runtime_client():
 def _log_usage(usage: dict) -> None:
     """턴별 토큰 사용량을 서버 로그로 남긴다 (Vercel 함수 로그에서 비용 실측용)."""
     print(
-        f"[usage] model={config.MODEL_ID} in={usage['inputTokens']} out={usage['outputTokens']}"
+        f"[usage] model={config.model_id()} in={usage['inputTokens']} out={usage['outputTokens']}"
         f" cache_read={usage['cacheReadInputTokens']} cache_write={usage['cacheWriteInputTokens']}",
         flush=True,
     )

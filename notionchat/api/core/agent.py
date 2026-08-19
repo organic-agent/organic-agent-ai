@@ -1,10 +1,7 @@
-"""tool use 루프 — Bedrock Converse API 호출 (현재 모델: gpt-oss).
+"""tool use 루프 — Bedrock Converse API 호출.
 
-Converse는 모델 제조사와 무관한 Bedrock 공통 인터페이스라, 계정에서 Claude가
-개방되면 NOTIONCHAT_MODEL_ID만 anthropic.* 로 바꿔도 이 루프 그대로 동작한다.
-(그때 Anthropic 전용 기능(프롬프트 캐싱 등)이 필요하면 Mantle 클라이언트 도입을
-검토한다 — .claude/rules/bedrock.md 참고.)
-
+Converse는 모델 제조사와 무관한 Bedrock 공통 인터페이스라, 모델 교체는
+NOTIONCHAT_MODEL_ID 변경만으로 끝난다 (현재: Claude Haiku 4.5).
 이 루프 구조는 P2(보정 요청 구조화)가 물려받는다.
 """
 
@@ -40,9 +37,10 @@ def tool_config() -> dict:
     }
 
 
+# 프롬프트 캐싱은 "여기까지의 prefix를 캐시해두라" 는 표시 를 넣어, 다음 호출에서 그 prefix 를 ~90% 할인 단가로 재사용.
 def _system_blocks() -> list[dict]:
     system = [{"text": SYSTEM_PROMPT}]
-    if config.PROMPT_CACHE:
+    if config.prompt_cache():
         # 안정 프리픽스(도구 정의+시스템 프롬프트)를 캐시 — 매 호출 재전송 비용 절감
         system.append({"cachePoint": {"type": "default"}})
     return system
@@ -53,7 +51,7 @@ def _with_cache_point(messages: list[dict]) -> list[dict]:
 
     루프 내 다음 호출과 대화의 다음 턴이 직전까지의 프리픽스를 캐시에서 읽게 된다.
     """
-    if not config.PROMPT_CACHE:
+    if not config.prompt_cache():
         return messages
     last = messages[-1]
     return [*messages[:-1], {**last, "content": [*last["content"], {"cachePoint": {"type": "default"}}]}]
@@ -74,7 +72,7 @@ def ask(
 
     while True:
         response = runtime.converse(
-            modelId=config.MODEL_ID,
+            modelId=config.model_id(),
             system=_system_blocks(),
             messages=_with_cache_point(messages),
             toolConfig=tool_config(),

@@ -18,7 +18,7 @@ class NotionAPIError(Exception):
 
 class NotionClient:
     def __init__(self, token: str | None = None):
-        self._http = httpx.Client(
+        self._http = httpx.Client( # 커넥션을 재사용하는 HTTP 세션, TCP/TLS 을 매번 새로 연결하지 않는다.
             base_url=config.NOTION_API_BASE,
             headers={
                 "Authorization": f"Bearer {token or config.notion_token()}",
@@ -27,6 +27,7 @@ class NotionClient:
             timeout=30.0,
         )
 
+    # 공통 요청 처리
     def _request(self, method: str, path: str, json: dict | None = None, params: dict | None = None) -> dict:
         for attempt in range(_MAX_RETRIES + 1):
             resp = self._http.request(method, path, json=json, params=params)
@@ -46,12 +47,14 @@ class NotionClient:
     def page_meta(self, page_id: str) -> dict:
         return self._request("GET", f"/pages/{page_id}")
 
+    # 노션은 한 번에 최대 100개의 블록만 주고, 더 있으면 has_more: true 와 next_cursor 를 준다.
     def block_children(self, block_id: str, start_cursor: str | None = None) -> dict:
         params = {"page_size": 100}
         if start_cursor:
             params["start_cursor"] = start_cursor
         return self._request("GET", f"/blocks/{block_id}/children", params=params)
 
+    # has_more 가 false 가 될 때까지 next_cursor 를 넘기며 반복해서 전체를 모은다.
     def all_block_children(self, block_id: str) -> list[dict]:
         """페이지네이션을 따라가며 하위 블록 전체를 반환한다."""
         blocks: list[dict] = []
@@ -63,6 +66,7 @@ class NotionClient:
                 return blocks
             cursor = data.get("next_cursor")
 
+    # 노션 데이터베이스의 행들을 조회하는 메서드.
     def query_database(self, database_id: str, filter: dict | None = None, page_size: int = 20) -> dict:
         body: dict = {"page_size": page_size}
         if filter:

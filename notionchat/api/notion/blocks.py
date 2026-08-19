@@ -10,6 +10,7 @@ from collections.abc import Callable
 FetchChildren = Callable[[str], list[dict]]
 
 
+# 노션에서 한 줄의 텍스트는 서식 단위로 쪼개진 rich text 조각의 배열
 def rich_text(items: list[dict]) -> str:
     parts = []
     for t in items or []:
@@ -19,9 +20,10 @@ def rich_text(items: list[dict]) -> str:
     return "".join(parts)
 
 
+# 메인 변환기
 def blocks_to_markdown(
     blocks: list[dict],
-    fetch_children: FetchChildren,
+    fetch_children: FetchChildren, # 블록 id를 주면 하위 블록 목록을 돌려주는 함수
     max_depth: int,
     depth: int = 0,
     indent: str = "",
@@ -85,6 +87,7 @@ def blocks_to_markdown(
     return "\n".join(line for line in lines if line != "")
 
 
+# 표 변환
 def _table_to_markdown(table_block: dict, fetch_children: FetchChildren, indent: str) -> str:
     rows = fetch_children(table_block["id"])
     lines = []

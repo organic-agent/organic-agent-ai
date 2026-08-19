@@ -3,8 +3,7 @@
 필요 환경변수:
   NOTION_TOKEN           Notion Integration 토큰
   AWS_*                  Bedrock 호출용 AWS 자격증명 (프로필/환경변수)
-  NOTIONCHAT_MODEL_ID    (선택) 기본값은 config.py 참고. anthropic.* 모델은 Mantle,
-                         그 외(gpt-oss/Nova)는 Converse 경로로 자동 분기
+  NOTIONCHAT_MODEL_ID    (선택) 기본값은 config.py 참고. Bedrock 모델 ID
 """
 
 import readline  # noqa: F401 — input()에 라인 편집/히스토리 부여
@@ -17,7 +16,7 @@ from api.core.provider import ChatError, ChatSession
 def main() -> None:
     session = ChatSession()
 
-    print(f"notionchat — 팀 Notion 조회 챗봇 (model: {config.MODEL_ID}, region: {config.AWS_REGION})")
+    print(f"notionchat — 팀 Notion 조회 챗봇 (model: {config.model_id()}, region: {config.aws_region()})")
     print("질문을 입력하세요. 종료: exit / Ctrl-D\n")
 
     while True:

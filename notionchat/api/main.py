@@ -27,7 +27,6 @@ POST /api/chat    질문 1턴 수행. SSE(Server-Sent Events) 스트림 응답.
 """
 
 import json
-import os
 import queue
 import threading
 from pathlib import Path
@@ -41,20 +40,22 @@ from pydantic import BaseModel, Field
 from api import auth, config
 from api.core.provider import ChatError, run_turn
 
+# FastAPI 앱 생성
 app = FastAPI(title="notionchat", version="0.1.0")
 
+# 미들웨어 = 모든 요청/ 응답이 통과하는 공통 처리기.
 # web을 별도 도메인으로 배포하는 경우를 위한 CORS. 배포 시 NOTIONCHAT_CORS_ORIGINS에
 # 프론트 주소를 지정한다 (쉼표 구분). 미설정이면 동일 출처 서빙만 가정하고 전체 허용.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=config.CORS_ORIGINS,
+    allow_origins=config.cors_origins(),
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 _WEB = Path(__file__).resolve().parent.parent / "web"
 
-
+# 요청 모델 - Pydantic = 요청 본문의 스키마 선언. FastApi 가 JSON 을 모델로 파싱
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1)
     history: list = Field(default_factory=list)
@@ -90,7 +91,7 @@ def health(request: Request) -> dict:
         auth_state = "ok"
     else:
         auth_state = "required"
-    return {"status": "ok", "model": config.MODEL_ID, "region": config.AWS_REGION, "auth": auth_state}
+    return {"status": "ok", "model": config.model_id(), "region": config.aws_region(), "auth": auth_state}
 
 
 @app.post("/api/login")
@@ -105,7 +106,7 @@ def login(req: LoginRequest, response: Response) -> dict:
         max_age=auth.SESSION_TTL,
         httponly=True,
         samesite="lax",
-        secure=bool(os.environ.get("VERCEL")),  # 로컬 http 개발 허용, Vercel(https)에선 secure
+        secure=bool(config.env("VERCEL")),  # 로컬 http 개발 허용, Vercel(https)에선 secure
     )
     return {"status": "ok"}
 

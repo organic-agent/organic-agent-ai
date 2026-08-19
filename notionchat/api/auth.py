@@ -8,25 +8,24 @@ NOTIONCHAT_AUTH_ID / NOTIONCHAT_AUTH_PASSWORD 가 둘 다 설정된 경우에만
 
 import hashlib
 import hmac
-import os
 import time
 
-from api import config  # noqa: F401 — .env 로드 보장
+from api import config
 
 COOKIE_NAME = "nc_session"
 SESSION_TTL = 60 * 60 * 24 * 30  # 30일
 
 
 def _auth_id() -> str:
-    return os.environ.get("NOTIONCHAT_AUTH_ID", "")
+    return config.env("NOTIONCHAT_AUTH_ID", "")
 
 
 def _auth_password() -> str:
-    return os.environ.get("NOTIONCHAT_AUTH_PASSWORD", "")
+    return config.env("NOTIONCHAT_AUTH_PASSWORD", "")
 
 
 def _secret() -> bytes:
-    override = os.environ.get("NOTIONCHAT_AUTH_SECRET")
+    override = config.env("NOTIONCHAT_AUTH_SECRET")
     if override:
         return override.encode()
     return hashlib.sha256(f"notionchat:{_auth_id()}:{_auth_password()}".encode()).digest()
