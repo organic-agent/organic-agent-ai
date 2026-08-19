@@ -1,0 +1,8 @@
+{"id": "next-expense-period", "question": "다음 프로젝트 비용 신청일은 언제야?", "today": "2026-08-19(수)", "expect_contains": ["9월 7일|9. 7|9월7일"], "expect_not_contains": ["다음[^\\n]*2차[^\\n]*신청|다음[^\\n]*8월 5일"], "expect_tool": "read_expense_guide", "note": "2026-08-19 교정: 이미지 일정표 누락→라우팅 이탈→지난 기간(2차) 미제외 3중 실패 사례. 날짜 고정으로 정답 불변"}
+{"id": "third-period-absolute", "question": "3차 활동비 신청 기간이 언제야?", "expect_contains": ["9월 7일|9. 7", "9월 13일|9. 13"], "expect_tool": "read_expense_guide", "note": "시간 상대 아님 — 일정표 자체를 정확히 읽는지"}
+{"id": "expense-items", "question": "활동비 지원 항목에는 어떤 것들이 있어?", "expect_contains": ["클라우드", "재료 구매비", "전문가", "마케팅"], "expect_tool": "read_expense_guide", "note": "규정 질문이 Notion 검색으로 새지 않고 규정 도구로 가는지"}
+{"id": "marketing-limit", "question": "마케팅비는 팀당 최대 얼마까지 지원돼?", "expect_contains": ["400만"], "expect_tool": "read_expense_guide", "note": "이미지로만 있던 한도 수치 — 보충본(asm_expense_guide_images.md)이 살아있는지"}
+{"id": "expert-limit", "question": "전문가 활용비는 시간당 얼마까지야?", "expect_contains": ["10만"], "expect_tool": "read_expense_guide", "note": "이미지 표 수치 2 — 1일 4시간·시간당 10만원"}
+{"id": "cloud-provider", "question": "클라우드 비용 지원으로 GCP 써도 돼?", "expect_contains": ["불가|안 |없|AWS"], "expect_tool": "read_expense_guide", "note": "규정: GCP·Azure 지원 불가, AWS만"}
+{"id": "actual-spending-routing", "question": "우리 팀이 실제로 쓴 비용 내역 보여줘", "expect_tool": "query_database|read_page|search_notion", "expect_not_tool": "read_expense_guide", "note": "규정 vs 실제 지출 구분 — 실제 내역은 팀 Notion(비용 처리)으로 가야 함"}
+{"id": "total-budget-limit", "question": "프로젝트 활동비는 팀당 총 얼마까지 지원돼?", "expect_contains": ["1,200만|1200만"], "expect_tool": "read_expense_guide", "note": "본문 텍스트 수치 — 스냅샷 본체가 살아있는지"}

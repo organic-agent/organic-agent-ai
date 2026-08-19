@@ -62,6 +62,7 @@ def run_turn(
     history: list,
     on_log=_default_log,
     notion: NotionClient | None = None,
+    today: str | None = None,  # 평가용 날짜 고정 (예: "2026-08-19(수)"). None이면 현재 KST
 ) -> tuple[str, list, dict]:
     """질문 1턴을 수행한다. history는 JSON 직렬화 가능한 Converse 포맷 리스트.
 
@@ -72,9 +73,10 @@ def run_turn(
     checkpoint = len(history)
     # 오늘 날짜를 질문에 주입 — 시스템 프롬프트는 캐시 보호로 날짜를 못 넣으므로 여기서.
     # "다음 신청일", "지난주 회의" 같은 시간 상대 질문의 기준점이 된다. (Vercel은 UTC라 KST 명시)
-    now = datetime.now(ZoneInfo("Asia/Seoul"))
-    weekday = "월화수목금토일"[now.weekday()]
-    history.append({"role": "user", "content": [{"text": f"[오늘: {now:%Y-%m-%d}({weekday})] {question}"}]})
+    if today is None:
+        now = datetime.now(ZoneInfo("Asia/Seoul"))
+        today = f"{now:%Y-%m-%d}({'월화수목금토일'[now.weekday()]})"
+    history.append({"role": "user", "content": [{"text": f"[오늘: {today}] {question}"}]})
     try:
         answer, history, usage = ask(_runtime_client(), notion, history, on_log=on_log)
         _log_usage(usage)
