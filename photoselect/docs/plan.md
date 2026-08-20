@@ -50,7 +50,8 @@ LLM에게 품질 평가를 통째로 맡겼는데, 이는 기준이 불투명하
 > Q-Align, InsightFace 모델)은 후보에서 제외했다.
 >
 > 사용자 제공 기능 단위의 상세 설계(추천 채우기·사진 진단 — 단계별 모델·산출물·LLM 근거
-> 생성·UI 제공 형태)는 `feature-design.md`.
+> 생성·UI 제공 형태)는 `feature-design.md`, 구현 기술 스택(모델 패키징·인프라·서버 구조)은
+> `tech-stack.md`.
 
 ### ① Portrait IQA — 기술 품질 점수 (배치, 사진당 1회)
 
