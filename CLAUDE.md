@@ -60,7 +60,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `photo_ratings`는 **접근 금지** — 개인 취향 신호, 정책상 AI 입력에서 제외
 
 파이프라인 불변식은 `.claude/rules/pipeline.md`, Bedrock 호출 규칙은
-`.claude/rules/bedrock.md`가 강제한다.
+`.claude/rules/bedrock.md`가 강제한다. 이슈·브랜치·커밋·PR 규칙은
+`.claude/rules/git-workflow.md` (모듈 prefix + organic-agent-server 방식).
 
 ## 빌드 & 실행 (스캐폴드 후 이 형태를 유지한다)
 
