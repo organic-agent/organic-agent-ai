@@ -77,13 +77,16 @@ photoselect ECR 컨테이너 이미지 (단일)
 
 ## 5. LLM (Bedrock) 구성
 
-| 용도 | 모델 | 이유 |
+| 용도 | 모델 ID (호출용) | 이유 |
 |---|---|---|
-| A-5 근거 문장화 (배치) | `anthropic.claude-opus-5` | 품질 우선, 사용자 비대기 — 갤러리당 1회라 원가 허용 |
-| B-2 사진 진단 (동기) | 저지연 티어 (예: `anthropic.claude-haiku-*`) — 스파이크에서 품질 확인 후 확정 | 사용자 대기 2~3초 목표 |
+| A-5 근거 문장화 (배치) | `global.anthropic.claude-opus-5` | 품질 우선, 사용자 비대기 — 갤러리당 1회라 원가 허용 |
+| B-2 사진 진단 (동기) | `global.anthropic.claude-haiku-4-5-20251001-v1:0` — 스파이크에서 품질·지연 확인 후 확정 | 사용자 대기 2~3초 목표 |
 
-- 리전: `ap-northeast-2` 우선, 미제공 모델은 크로스 리전 프로필 `apac.anthropic.…` (스파이크
-  최우선 확인 사항).
+- **리전 확인 완료 (2026-08-20, `scripts/spike/bedrock_check.py`)**: ap-northeast-2에서
+  opus-5·haiku-4.5는 온디맨드 미제공 — `apac.` 프로필에도 없고 **`global.` 크로스 리전
+  프로필(ACTIVE)로만 호출 가능**하다. 온디맨드는 claude-3.5-sonnet(2024-06) 등 구세대뿐.
+  `global.` 프로필은 요청이 해외 리전으로 라우팅될 수 있다 — 사진 데이터가 아닌 텍스트
+  신호만 보내는 A-5는 무방하고, 미리보기 1장을 보내는 B-2는 데이터 위치 정책 확인 필요.
 - 공통: **structured outputs 필수** (photo_id 검증 가드레일의 전제), 시스템 프롬프트(톤
   규칙·근거 코드 사전)는 **prompt caching**으로 고정, 재시도는 멱등 (같은 잡 재실행 시
   기존 근거 덮어쓰기).
