@@ -4,6 +4,10 @@
 **서비스 코드가 아니다** — 여기서는 편의상 런타임 다운로드(고정 버전)를 허용하고,
 결과가 확정되면 채택 모델만 서비스 이미지에 번들한다 (tech-stack.md §2 원칙).
 
+> **2026-08-25 — 러너 이관.** `runners/`(faces·laion·arniqa·common)의 정본은 이제
+> `photoselect/analyze/runners/`다. 여기 사본은 스파이크 스크립트 호환용으로 남겨 두되
+> 고칠 일이 있으면 photoselect 쪽을 고친다. 실제 파이프라인 실행은 `photoselect/README.md`.
+
 ## 설치
 
 ```bash
@@ -54,3 +58,40 @@ python bedrock_check.py
 
 - `out/scores.csv` — photo_id × 러너별 점수·서브 신호·처리 시간(초)
 - `out/report.md` — 지표 요약 + 사진당 평균 처리 시간 → tech-stack.md §2 표 갱신 재료
+
+---
+
+## VLM 고정 축 태그 (A-4/A-5) — 로컬 선행 검증
+
+경량 3종과 달리 VLM은 **품질을 사람이 봐야** 안다. GPU EC2를 세우기 전에 맥북에서
+Ollama로 먼저 돌려 **축 어휘 계약이 실제 사진에서 성립하는지**만 확인한다.
+
+```bash
+# 1) 로컬 환경 준비 — 기동 + 모델 확인. 몇 번을 돌려도 안전하다
+./setup_ollama.sh              # 처음이면 --install, 비교군까지면 --compare
+                               # 상태만 보려면 --status, 내리려면 --stop
+
+# 2) 태그 뽑기 — 데이터셋별 균등 표본, 시드 고정(모델 비교 시 같은 사진이 쓰인다)
+.venv/bin/python vlm_tag.py --manifest out/manifest.csv --n 50
+
+# 3) 채점 시트 생성 → 브라우저에서 축마다 ✓/✗
+.venv/bin/python vlm_review.py --tags out/vlm_tags.csv
+open out/vlm_review.html
+
+# 4) 축별 정확도 집계 (채점 시트가 내려준 CSV로)
+.venv/bin/python vlm_review.py score --grade ~/Downloads/vlm_grade.csv
+```
+
+| 스크립트 | 역할 |
+|---|---|
+| `setup_ollama.sh` | Ollama 기동·모델 준비. **설치/기동 명령의 정본** — 바꿀 일이 있으면 여기만 고친다 |
+| `vlm_tag.py` | Ollama structured outputs로 **enum을 강제**해 5축 태그 + 한국어 캡션. 축별 분포·속도·어휘 커버리지 요약 |
+| `vlm_review.py` | 사진과 태그를 나란히 놓은 로컬 HTML 채점 시트 생성 + 축별 정확도 집계 |
+
+**읽을 때의 단서 (반드시 함께 적을 것)**
+
+- 여기 정확도는 **로컬 4bit 실행의 하한**이다. 프로덕션은 L4 + FP16 + vLLM이라 같지 않다.
+- 속도는 프로덕션 목표(1,000장 ≤ 6분)와 **직접 비교하지 않는다**. vLLM 연속 배치가 없다.
+- enum은 스키마가 강제하므로 `unknown`/`none`은 파싱 실패가 아니라 **모델의 실제 선택**이다.
+  이 비율이 높으면 축 어휘를 손볼 신호다.
+- 이미지는 로컬에서만 처리된다 — 외부 전송 없음 (CLAUDE.md 데이터 원칙).

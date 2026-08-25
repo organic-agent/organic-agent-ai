@@ -1,142 +1,128 @@
 # photoselect 기술 스택 — 모델·인프라·서버
 
-`feature-design.md`의 각 단계를 구현하는 데 필요한 ML 모델, 패키지, 인프라, 서버 구성의
-확정안. 전제는 루트 `CLAUDE.md`의 확정 스택 (Python 3.12, embedder 패턴, ECR 컨테이너
-Lambda, 공유 RDS 직접 접근, Bedrock).
+`plan.md`(2026-08-22판)·`feature-design.md`를 구현하는 ML 모델, 패키지, 인프라, 서버 구성의
+확정안. 2026-08-19판에서 바뀐 핵심: **전수 분석이 Lambda CPU → GPU EC2 온디맨드**, **VLM
+자체 호스팅 추가**, Bedrock은 텍스트 전용.
 
 ---
 
-## 1. 전체 그림 — 컨테이너 하나, 실행 모양 셋
+## 1. 전체 그림 — 이미지 하나, 실행 모양 셋
 
 ```
-photoselect ECR 컨테이너 이미지 (단일)
- ├─ 배치 A: 점수 파이프라인   Lambda EVENT  {"galleryId", "jobId"}   ← 0단계 (갤러리당 1회)
- ├─ 배치 B: 추천 채우기 잡    Lambda EVENT  {"galleryId", "jobId"}   ← 기능 A (잡당 1회)
- └─ 동기 C: 사진 진단 API     Lambda 동기 호출 (wes 경유)            ← 기능 B (요청당)
+photoselect 컨테이너 이미지 (단일, GPU/CPU 공용 베이스)
+ ├─ A analyze : 전수 분석     GPU EC2 온디맨드 · DB 큐(ai_analysis_jobs) 소비  ← 갤러리당 1회
+ ├─ B draft   : 초안·재계산   Lambda EVENT {"selectionId","jobId","mode"}       ← 요청당
+ └─ C reasons : LLM 표현·번역 Lambda (B에서 호출)                                ← 요청당
 ```
 
-- ML 모델(가중치 포함)은 전부 이미지에 번들 → 세 모양이 같은 이미지를 쓰고 핸들러
-  엔트리만 다르다. 배치 B·동기 C는 ML 추론이 없어 모델 로드를 건너뛴다(지연 로드).
-- wes(Kotlin/Spring)가 실행 조건 검증·트리거·인증을 소유. 이 서버는 HTTP를 외부에 직접
-  노출하지 않는다 (동기 C도 wes 경유).
+- wes(Kotlin/Spring)가 실행 조건 검증·트리거·인증·EC2 start를 소유. 이 서버는 HTTP를
+  외부에 노출하지 않는다.
+- B·C는 ML 추론 없음 → 같은 코드베이스지만 Lambda 이미지는 torch 없이 슬림 빌드(멀티스테이지).
 
-## 2. ML 모델 스택 (단계 → 모델 → 조달)
+## 2. ML 모델 스택
 
-| 단계 | 모델 | 패키지 | 가중치 조달 | 라이선스 | CPU 예상* |
+| 단계 | 모델 | 패키지 | 조달 | 라이선스 | 실행 |
 |---|---|---|---|---|---|
-| 0-1 얼굴/눈/미소 | MediaPipe Face Landmarker | `mediapipe` | `.task` 파일을 이미지에 번들 (공식 배포) | Apache-2.0 (모델 포함) | ~10ms/장 |
-| 0-2 기술 품질 | ARNIQA (ResNet-50 + 선형회귀) | `torch`(CPU) + vendored 모델 코드 | [miccunifi/ARNIQA](https://github.com/miccunifi/ARNIQA) 가중치를 빌드 시 고정 커밋으로 다운로드 → 이미지 번들 | Apache-2.0 | ~0.3s/장 |
-| 0-3 미학 | LAION Aesthetic v2 (CLIP ViT-L/14 + MLP) | `open_clip_torch` + MLP 가중치 vendored | CLIP: open_clip 공식 / MLP: [improved-aesthetic-predictor](https://github.com/christophschuhmann/improved-aesthetic-predictor) in-repo `.pth` | Apache-2.0 | ~0.5s/장 (임베딩 포함) |
-| 0-4 장면 태그 | CLIP 제로샷 (0-3 임베딩 재사용) | 상동 | 텍스트 프롬프트 임베딩은 빌드 시 사전 계산해 `.npy`로 번들 → 런타임 텍스트 인코더 불필요 | — | ~0 (내적만) |
-| 0-5 클러스터링 | pgvector 임베딩 union-find | `psycopg` + 순수 Python | 모델 없음 (embedder 임베딩 재사용) | — | — |
-| 0-6 클러스터 순위 | 결정적 합성 규칙 | 순수 Python (`numpy`) | 모델 없음 | — | — |
-| A-2 취향 신호 | CLIP 임베딩 유사도 | `numpy` (DB에서 읽은 벡터) | 모델 없음 | — | — |
-| A-4 슬롯 채우기 | 그리디 (후속: DPP) | 순수 Python | — | — | — |
-| A-5 / B-2 근거·진단 | Claude (Bedrock) | `anthropic[bedrock]` | API | — | 호출당 |
-| (스파이크 예비) | Charm / HSEmotion / 6DRepNet | 각 원본 repo | 골든셋 상관이 부족한 축에만 추가 | Apache-2.0 / MIT | — |
+| A-1 얼굴/눈/미소 | MediaPipe Face Landmarker | `mediapipe` | `.task` 번들 | Apache-2.0 | GPU EC2 (CPU 추론) |
+| A-2 기술 품질 | ARNIQA | `torch` + vendored | 고정 커밋 가중치 번들 | Apache-2.0 | GPU |
+| A-3 미학 | LAION Aesthetic v2 (CLIP ViT-L/14 + MLP) | `open_clip_torch` | 번들 | Apache-2.0 | GPU |
+| A-4/5 **태그·캡션** | **오픈 VLM — 후보: Gemma 3 12B, Qwen2.5-VL 7B** (스파이크 후 확정; 31B 비교) | **`vllm`** | HF 가중치를 AMI에 굽기 | Gemma ToU / Apache-2.0 — 채택 전 원문 확인 | GPU (vLLM 배치, 이미지당 ≤0.3s 목표) |
+| A-6 클러스터 | pgvector(DINOv2 768d) union-find | `psycopg` | — | — | CPU |
+| A-7 대표 선정 | 결정적 규칙 | `numpy` | — | — | CPU |
+| B 선호·점수·MMR | 결정적 코드 | `numpy`, pgvector 쿼리 | — | — | Lambda |
+| C 이유·번역 | Claude Haiku 4.5 (Bedrock, **텍스트만**) | `anthropic[bedrock]` | API | — | Lambda |
 
-\* 예상치는 가설 — 스파이크에서 실측해 이 표를 갱신한다.
+- 런타임 다운로드 금지. VLM 가중치(수십 GB)는 AMI EBS에 미리 두고, 경량 3종은 이미지 번들.
+- `MODEL_VERSIONS` 상수 → `photo_analysis.model_version`. VLM 교체는 전수 재적재 대상.
+- VLM 출력은 structured output(vLLM guided decoding, enum 강제) → 고정 축 어휘 계약 유지.
 
-가중치 패키징 원칙:
+## 3. Python 스택
 
-- **런타임 다운로드 금지** (torch.hub 자동 다운로드 포함) — Lambda 콜드스타트·재현성·공급망
-  이유. Dockerfile에서 고정 커밋/체크섬으로 받아 `models/` 디렉토리에 번들.
-- 모델 파일마다 `MODEL_VERSIONS` 상수로 버전 명시 → `photo_analysis.model_version`에 기록.
+| 용도 | 패키지 |
+|---|---|
+| 런타임 | Python 3.12 |
+| 추론 (A) | `torch`(CUDA 휠), `vllm`, `open_clip_torch`, `mediapipe`, `numpy`, `pillow` |
+| DB | `psycopg[binary]`, `pgvector` |
+| AWS | `boto3` |
+| LLM (C) | `anthropic[bedrock]` — `AnthropicBedrockMantle(aws_region="ap-northeast-2")` |
+| 테스트 | `pytest` |
 
-## 3. Python 스택 (requirements)
-
-| 용도 | 패키지 | 비고 |
-|---|---|---|
-| 런타임 | Python **3.12** | Lambda 컨테이너 베이스 `public.ecr.aws/lambda/python:3.12` |
-| 추론 | `torch` (CPU 휠), `open_clip_torch`, `mediapipe`, `numpy`, `pillow` | torch는 `--index-url` CPU 전용 휠로 이미지 슬림화 |
-| DB | `psycopg[binary]`, `pgvector` | 공유 RDS 직접 읽기/쓰기 |
-| AWS | `boto3` | S3(미리보기)·Parameter Store |
-| LLM | `anthropic[bedrock]` | `AnthropicBedrockMantle(aws_region="ap-northeast-2")` |
-| 테스트 | `pytest` | 골든셋 리그레션 포함 |
-| (최적화 예비) | `onnxruntime` | §7 — torch 추론이 15분 예산을 위협할 때만 |
-
-- 버전은 requirements.txt에 전부 핀 고정. 이미지 크기 목표 < 4GB (Lambda 한도 10GB).
+requirements는 `requirements-gpu.txt`(A) / `requirements.txt`(B·C)로 분리, 전부 핀 고정.
 
 ## 4. 인프라 (Terraform — `../organic-agent-infra`)
 
 | 리소스 | 구성 | 비고 |
 |---|---|---|
-| Lambda (배치 A) | ECR 이미지, **메모리 8~10GB** (vCPU 비례 확보 — CPU 추론이라 메모리=연산력), timeout 15분, VPC 내 | 3,000장 × ~0.8s/장 직렬이면 초과 위험 → 프로세스 풀 병렬 + 실측 |
-| Lambda (배치 B) | 같은 이미지, 메모리 1~2GB, timeout 5분 | ML 없음 — DB 조립 + LLM 1회 |
-| Lambda (동기 C) | 같은 이미지, 메모리 1~2GB, **provisioned concurrency 소수** | 사용자 대기 — 콜드스타트 회피 |
-| S3 | 기존 previews 버킷 읽기 전용 | 원본 접근 불필요 (HEIC 디코드는 embedder 몫) |
-| RDS (공유 Postgres) | VPC 보안그룹에 Lambda 인바운드 추가 | 스키마 변경은 전부 wes Flyway |
-| Parameter Store | DB 접속 정보 등 시크릿 | `config.py` 지연 로드 단일 통로 |
-| IAM | `bedrock:InvokeModel`, `s3:GetObject`(previews), `ssm:GetParameter`, VPC ENI | 최소 권한 |
-| ECR | 단일 리포지토리, 태그 = git SHA | |
-| CloudWatch | 잡당 구조화 로그(JSON) + 배치 A 처리량 메트릭 | 15분 예산 감시 알람 |
+| **EC2 GPU (A)** | **g6.xlarge (L4 24GB, ~$0.8/h)** 로 시작. 31B 채택 시 g6e.xlarge(L40S 48GB, ~$1.9/h). 평시 **stopped** | AMI: CUDA + vLLM + 가중치. systemd 서비스가 부팅 시 `analyze` 루프 실행 |
+| 기동/정지 | wes가 `ec2:StartInstances` → 인스턴스가 잡 없으면 `shutdown` (self stop) | 기동 2~3분 + 모델 로드 1~2분. AMI 가중치로 로드 단축 |
+| 잡 큐 | `ai_analysis_jobs` 테이블 (큐 서비스 없음) | RUNNING 타임아웃(20분) → PENDING 재큐 |
+| Lambda (B) | 슬림 이미지, 1~2GB, timeout 1분 | 초안 30초·재계산 5초 목표 |
+| Lambda (C) | B와 동일 이미지·핸들러 분기 | Bedrock 호출 |
+| S3 | previews 읽기 전용 | 원본·HEIC 접근 없음 |
+| RDS | EC2·Lambda 인바운드 보안그룹 | 스키마는 wes Flyway |
+| Parameter Store | DB 접속 등 | `config.py` 단일 통로 |
+| IAM | EC2: `s3:GetObject`, `ssm:GetParameter`, `ec2:StopInstances`(self) · Lambda: `bedrock:InvokeModel`, `ssm` · wes: `ec2:StartInstances` | 최소 권한 |
+| CloudWatch | 잡당 처리량·VLM 이미지/초·기동 시간 | 10분 예산 알람 |
 
-15분 한도 초과 시 대응 순서: ① 병렬화·해상도 조정 → ② ONNX Runtime 전환 → ③ 갤러리
-분할 자기 재호출(체크포인트는 `photo_analysis` 자체 — 이미 처리한 사진은 건너뛰는 멱등
-설계라 재호출이 곧 재개) → ④ ECS Fargate 이관 (최후).
+**10분 예산 초과 시 대응 순서**: ① VLM 배치 크기·해상도 조정 → ② 12B→7B → ③ AMI 가중치·
+인스턴스 warm pool로 기동 단축 → ④ 소마 기간 한정 상시 가동 → ⑤ 갤러리 분할(멱등 재개).
 
 ## 5. LLM (Bedrock) 구성
 
-| 용도 | 모델 ID (호출용) | 이유 |
+| 용도 | 모델 ID | 비고 |
 |---|---|---|
-| A-5 근거 문장화 (배치) | `global.anthropic.claude-opus-5` | 품질 우선, 사용자 비대기 — 갤러리당 1회라 원가 허용 |
-| B-2 사진 진단 (동기) | `global.anthropic.claude-haiku-4-5-20251001-v1:0` — 스파이크에서 품질·지연 확인 후 확정 | 사용자 대기 2~3초 목표 |
+| C 이유 문장 일괄 (1차 초안 시 1회) | `global.anthropic.claude-haiku-4-5-20251001-v1:0` | 텍스트만, structured output, 100장 ≈ 수천 토큰 |
+| C 자연어 피드백 → `{axis, tag, delta}` | 동일 | 2차 셀렉 5초 예산 내 (~1초) |
 
-- **리전 확인 완료 (2026-08-20, `scripts/spike/bedrock_check.py`)**: ap-northeast-2에서
-  opus-5·haiku-4.5는 온디맨드 미제공 — `apac.` 프로필에도 없고 **`global.` 크로스 리전
-  프로필(ACTIVE)로만 호출 가능**하다. 온디맨드는 claude-3.5-sonnet(2024-06) 등 구세대뿐.
-  `global.` 프로필은 요청이 해외 리전으로 라우팅될 수 있다 — 사진 데이터가 아닌 텍스트
-  신호만 보내는 A-5는 무방하고, 미리보기 1장을 보내는 B-2는 데이터 위치 정책 확인 필요.
-- 공통: **structured outputs 필수** (photo_id 검증 가드레일의 전제), 시스템 프롬프트(톤
-  규칙·근거 코드 사전)는 **prompt caching**으로 고정, 재시도는 멱등 (같은 잡 재실행 시
-  기존 근거 덮어쓰기).
+- 리전: ap-northeast-2 온디맨드에 Claude 5/Haiku 4.5 없음 → **`global.` 크로스 리전 프로필**
+  (2026-08-20 확인). **이미지는 보내지 않으므로** 국외 라우팅 무방 — 이미지 처리는 전부
+  자체 GPU에서.
+- structured outputs 필수, 시스템 프롬프트(톤 규칙·축 어휘) prompt caching, 재시도 멱등.
 
-## 6. 서버/모듈 구조 (embedder 패턴 준수)
+## 6. 서버/모듈 구조
 
 ```
 photoselect/
-├── handler.py        # Lambda 엔트리 3종 분기 (score / draft / diagnose)
-├── __main__.py       # 로컬 CLI: python -m photoselect score --gallery-id 1 --job-id 1
-├── job.py            # 잡 라이프사이클 (PENDING→RUNNING→COMPLETED/FAILED, 단일 트랜잭션)
-├── pipeline/
-│   ├── faces.py      # 0-1 MediaPipe
-│   ├── quality.py    # 0-2 ARNIQA
-│   ├── aesthetic.py  # 0-3/0-4 CLIP + LAION MLP + 장면 태그
-│   ├── cluster.py    # 0-5/0-6 union-find + 순위 합성
-│   ├── draft.py      # A-1~A-4 그리디 선택
-│   └── reasons.py    # A-5 LLM 근거 (+ 템플릿 폴백)
-├── diagnose.py       # 기능 B 조회 + LLM
-├── db.py             # psycopg, photo_analysis/photo_selection_items 접근 (접근 규칙 강제)
-├── config.py         # env/Parameter Store 지연 로드 단일 통로
-├── bedrock.py        # AnthropicBedrockMantle 래퍼, structured outputs, 재시도
-├── models/           # 번들된 가중치 (.task/.pth/.npy) + MODEL_VERSIONS
-├── tests/
-├── requirements.txt
-└── Dockerfile
+├── handler.py           # Lambda 엔트리 (draft / refine / reasons)
+├── __main__.py          # 로컬 CLI: python -m photoselect analyze|draft|refine ...
+├── analyze/             # A — GPU EC2
+│   ├── loop.py          #   ai_analysis_jobs 소비 루프 + self stop
+│   ├── faces.py  quality.py  aesthetic.py
+│   ├── vlm.py           #   vLLM 태그+캡션 (enum 강제, 후처리 매핑)
+│   └── cluster.py       #   union-find + 대표 선정
+├── draft/               # B — Lambda
+│   ├── evidence.py      #   별점·선택·쌍·👍/👎 집계 → 선호 분포·벡터·λ
+│   ├── pairs.py         #   온보딩 쌍 생성
+│   ├── score.py         #   prior + 취향 + 커버리지 + MMR 그리디
+│   └── reasons_tpl.py   #   템플릿 이유
+├── llm/                 # C
+│   ├── bedrock.py       #   Mantle 래퍼, structured outputs
+│   ├── reasons.py       #   일괄 문장화 + photo_id 가드레일
+│   └── feedback.py      #   자연어 → {axis, tag, delta}
+├── job.py  db.py  config.py  vocab.py   # vocab = 고정 축 enum 단일 소스
+├── models/  tests/  Dockerfile  Dockerfile.gpu  requirements*.txt
 ```
 
-- `db.py`가 접근 규칙을 코드로 강제한다: `photo_selections.status` 미접근,
-  `photo_selection_items`는 `source='AI'`만 쓰기, `photo_ratings` 쿼리 부재.
+- `db.py`가 접근 규칙을 강제: `photo_selections.status` 미접근, `photo_selection_items`
+  **읽기 전용**, `ai_recommendations`·`pair_comparison_events`·`photo_analysis`만 쓰기.
 
-## 7. 로컬 개발·테스트
+## 7. 로컬 개발
 
 ```bash
-python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
-../organic-agent-server/wes/scripts/db-tunnel.sh        # SSM 포트 포워딩 (기본 15432)
-python -m photoselect score --gallery-id 1 --job-id 1   # 0단계 로컬 실행
-python -m photoselect draft --gallery-id 1 --job-id 2   # 기능 A 로컬 실행
-pytest                                                   # 단위 + 골든셋 리그레션
+../organic-agent-server/wes/scripts/db-tunnel.sh
+python -m photoselect analyze --gallery-id 1 --job-id 1 --device mps   # Mac: 소형 VLM으로 스모크
+python -m photoselect draft   --selection-id 1 --job-id 2
+python -m photoselect refine  --selection-id 1 --job-id 3 --feedback "가족 사진 더"
+pytest
 ```
 
-- 골든셋(`../dataset`)은 CI가 아닌 로컬/스파이크에서 실행하는 평가 스크립트로 분리
-  (recall@K, 클러스터 대표 일치율, 장면 커버리지).
-- LLM 테스트는 recorded fixture 우선, 실호출은 스파이크·검수 시에만.
+- 트랙 B 실험(쌍 비교·홀드아웃 정확도)은 `scripts/spike/` 하네스 — GPU 없이 실행.
+- LLM 테스트는 recorded fixture.
 
-## 8. 확정 전 확인 목록 (스파이크와 연동)
+## 8. 스파이크 확인 목록
 
-1. ap-northeast-2 Bedrock 모델 가용성 (진단용 저지연 티어 포함)
-2. 배치 A 실측: 3,000장 처리 시간 vs 15분 (메모리 10GB 기준)
-3. torch CPU 이미지 크기와 콜드스타트 (동기 C의 provisioned concurrency 산정)
-4. ARNIQA·LAION 점수의 골든셋 상관 (모델 표 갱신, 필요 시 Charm/HSEmotion 투입)
-5. MediaPipe `.task` 모델의 Lambda(리눅스 arm64/x86_64) 동작 확인 — 아키텍처는 torch 휠
-   호환성 기준으로 x86_64 우선
+1. VLM 처리량: 12B/7B + vLLM, 1,000장 ≤ 6분 (L4)
+2. 12B vs 31B 고정 축 정확도·캡션 품질 (100장, 팀 검수)
+3. EC2 기동→모델 로드→첫 추론까지 시간 (AMI 가중치 전후)
+4. 홀드아웃 쌍 정확도 첫 수치 (사람 10명 × 120쌍 — `plan.md` §6-A)
+5. VLM 라이선스 원문 (Gemma ToU 상업 조건)
