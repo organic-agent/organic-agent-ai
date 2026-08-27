@@ -69,14 +69,17 @@ class Evidence:
     selected  — `photo_selection_items`(MANUAL)의 photo_id들. **읽기 전용**
     ratings   — `photo_ratings`: photo_id → 1~5. **읽기 전용**
     pairs     — `pair_comparison_events`: (chosen, rejected, axis)
+    feedback  — 자연어 피드백 (ai_recommendations 반응 또는 별도 이벤트)
     """
 
     selected: list[str] = field(default_factory=list)
     ratings: dict[str, int] = field(default_factory=dict)
     pairs: list[tuple[str, str, str]] = field(default_factory=list)
+    #: 자연어 피드백 문장들 ("가족 사진 더"). LLM이 {axis, tag, delta}로 번역한다. 선택은 못 바꾼다.
+    feedback: list[str] = field(default_factory=list)
 
     def is_empty(self) -> bool:
-        return not (self.selected or self.ratings or self.pairs)
+        return not (self.selected or self.ratings or self.pairs or self.feedback)
 
 
 # ── 인터페이스 ───────────────────────────────────────────────────────────────
@@ -143,6 +146,7 @@ class LocalStore:
             selected=list(raw.get("selected", [])),
             ratings={k: int(v) for k, v in raw.get("ratings", {}).items()},
             pairs=[tuple(x) for x in raw.get("pairs", [])],
+            feedback=[str(x) for x in raw.get("feedback", []) if str(x).strip()],
         )
 
     # recommendations

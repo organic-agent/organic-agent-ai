@@ -145,3 +145,17 @@ def test_shown_photos_not_repeated_and_target_stops(world, tmp_path):
     (tmp_path / "g" / "evidence.json").write_text(json.dumps({"selected": [r.photo_id for r in rows[:35]]}), encoding="utf-8")
     r4 = job.run(st, "g", settings, round_no=4, target=40)
     assert r4["k"] == 5 and r4["remaining"] == 5
+
+
+def test_reason_skips_low_precision_axes(world, tmp_path):
+    """lighting은 정밀도 0.84 < 0.85 — conf가 높아도 이유 문장 근거로 쓰이면 안 된다."""
+    st, settings, rows = world
+    nat = [r for r in rows if r.lighting == "natural"]
+    oth = [r for r in rows if r.lighting != "natural"]
+    pairs = [(a.photo_id, b.photo_id, "lighting") for a, b in zip(nat[:14], oth[:14])]
+    import json
+    (tmp_path / "g" / "evidence.json").write_text(json.dumps({"pairs": pairs}), encoding="utf-8")
+    out = job.run(st, "g", settings, round_no=1)
+    assert out["axisConfidence"]["lighting"] > 0.4, "학습은 됐어야 한다"
+    assert all(ax != "lighting" for ax, _ in out["preferences"]), "근거로는 안 쓴다"
+    assert not any("자연광" in r.reason for r in st.read_recommendations("g"))

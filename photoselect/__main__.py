@@ -39,6 +39,7 @@ def main(argv: list[str] | None = None) -> None:
     d.add_argument("--selection-id", help="evidence-<id>.json 을 읽는다 (없으면 evidence.json)")
     d.add_argument("--round", type=int, help="라운드 번호 강제 (기본: 마지막+1)")
     d.add_argument("--target", type=int, help="셀렉 목표 장수 (기본 config.target_count)")
+    d.add_argument("--llm", action="store_true", help="Bedrock으로 이유 문장·피드백 번역 (AWS 자격 필요, 텍스트만 전송)")
 
     x = sub.add_parser("reset", help="추천·evidence 초기화 (분석 결과는 유지) — 처음부터 다시")
     x.add_argument("--gallery", required=True)
@@ -69,8 +70,12 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.cmd == "draft":
         from photoselect.draft import job as draft_job
+        llm = None
+        if args.llm:
+            from photoselect.llm.client import BedrockClient
+            llm = BedrockClient(settings.llm.aws_region, settings.llm.model_id)
         result = draft_job.run(st, args.gallery, settings, selection_id=args.selection_id,
-                               round_no=args.round, top_k=args.k, target=args.target)
+                               round_no=args.round, top_k=args.k, target=args.target, llm=llm)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 

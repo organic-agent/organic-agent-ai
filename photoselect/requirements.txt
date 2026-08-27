@@ -10,6 +10,8 @@ pillow==10.4.0
 pillow-heif==0.18.0
 # ARNIQA torch.hub 의존
 dotmap==1.3.30
+# LLM (C) — Bedrock 텍스트 호출. SDK 1.x (output_config, aws_region 필수)
+anthropic[bedrock]>=1,<2
 # 테스트
 pytest==8.3.3
 # DB 모드 (wes V22 후). 로컬 모드는 없어도 된다.

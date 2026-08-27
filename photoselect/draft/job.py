@@ -20,8 +20,8 @@ import time
 
 import numpy as np
 
-from photoselect.axes import LABELS_KO, onehot
-from photoselect.config import Settings
+from photoselect.axes import FEATURE_INDEX, LABELS_KO, onehot
+from photoselect.config import AXIS_PRECISION, Settings
 from photoselect.draft import evidence as ev_mod
 from photoselect.draft import preference, rerank, scoring
 from photoselect.store import Evidence, Recommendation, Store
@@ -33,7 +33,8 @@ def _reason(row, breakdown: dict, prefs: list[tuple[str, str]]) -> str:
     """템플릿 이유 문장. LLM은 여기 안 들어온다 — 그건 C(llm/)의 일이고 이 문장이 폴백이다.
 
     정밀도가 낮은 태그 값(scene의 walk/prep 등)을 근거로 쓰면 거짓말이 된다(study/02 step8 [B]).
-    그래서 scene은 캡션이 있으면 캡션으로 대신하고, 취향 근거는 conf가 충분한 축만 쓴다.
+    그래서 scene은 캡션이 있으면 캡션으로 대신하고, 취향 근거는 conf가 충분하고 **태그 정밀도가
+    `reason_min_precision` 이상인 축**만 쓴다(`AXIS_PRECISION`). 지금 기준으로 lighting·scene은 제외.
     """
     parts = []
     if row.caption:
@@ -56,7 +57,9 @@ def _reason(row, breakdown: dict, prefs: list[tuple[str, str]]) -> str:
 
 
 def run(store: Store, gallery: str, settings: Settings, selection_id: str | None = None,
-        round_no: int | None = None, top_k: int | None = None, target: int | None = None) -> dict:
+        round_no: int | None = None, top_k: int | None = None, target: int | None = None,
+        llm=None) -> dict:
+    """llm: `photoselect.llm.client.LlmClient` 또는 None. None이면 템플릿 이유 + 피드백 무시."""
     started = time.monotonic()
     knobs = settings.score
     target = target or knobs.target_count
@@ -96,9 +99,25 @@ def run(store: Store, gallery: str, settings: Settings, selection_id: str | None
         w_hat = preference.fit_bt(X[c] - X[r], knobs.bt_reg)
         conf = preference.axis_confidence(X, c, r, knobs.bt_reg, knobs.conf_prior_a)
         pref_raw = preference.preference_scores(X, w_hat, conf)
-        prefs = preference.top_preferences(w_hat, conf)
+        reliable = {ax for ax, p in AXIS_PRECISION.items() if p >= knobs.reason_min_precision}
+        prefs = preference.top_preferences(w_hat, conf, allowed_axes=reliable)
     log.info("증거 %s → 가중합 %.1f → λ=%.2f · conf=%s", counts, n_ev, lam,
              {a: round(v, 2) for a, v in conf.items()})
+
+    # ── 자연어 피드백 → 축 가중치. LLM이 없으면 무시(👍/👎·별점만 반영) ────
+    nl_changes: list[tuple[str, str, float]] = []
+    if llm is not None and ev.feedback:
+        from photoselect.llm import feedback as fb_mod
+        for text in ev.feedback:
+            nl_changes.extend(fb_mod.translate(llm, text, settings.llm.feedback_max_tokens))
+    if nl_changes:
+        nl_vec = np.zeros(X.shape[1])
+        for ax, tag, delta in nl_changes:
+            nl_vec[FEATURE_INDEX[f"{ax}={tag}"]] += delta
+        nl_raw = X @ nl_vec
+        pref_raw = nl_raw if pref_raw is None else pref_raw + nl_raw
+        if lam == knobs.lambda_min and n_ev == 0:
+            lam = scoring.lambda_of(len(nl_changes) * knobs.w_selection, knobs)   # 약한 증거로 센다
 
     # ── 점수 ────────────────────────────────────────────────────────────
     prior_raw = scoring.prior(np.array([r.technical_pct for r in rows]),
@@ -133,6 +152,21 @@ def run(store: Store, gallery: str, settings: Settings, selection_id: str | None
         }
         recs.append(Recommendation(photo_id=row.photo_id, round=round_no, rank=rank,
                                    score_breakdown=breakdown, reason=_reason(row, breakdown, prefs)))
+
+    # ── 이유 문장 LLM 일괄 (선택). 템플릿은 폴백으로 항상 남는다 ──────────
+    if llm is not None and recs:
+        from photoselect.llm import reasons as rs_mod
+        by_id = {rows[i].photo_id: rows[i] for i in picked}
+        items = [rs_mod.ReasonInput(
+            photo_id=r.photo_id, caption=by_id[r.photo_id].caption, tags=by_id[r.photo_id].tags(),
+            rank_reason_code=by_id[r.photo_id].rank_reason_code,
+            preference_labels=[LABELS_KO[ax].get(v, "") for ax, v in prefs if getattr(by_id[r.photo_id], ax) == v],
+            technical_pct=by_id[r.photo_id].technical_pct, aesthetic_pct=by_id[r.photo_id].aesthetic_pct,
+            fallback=r.reason,
+        ) for r in recs]
+        texts = rs_mod.generate(llm, items, settings.llm.reasons_batch, settings.llm.reasons_max_tokens)
+        for r in recs:
+            r.reason = texts.get(r.photo_id, r.reason)
     store.write_recommendations(gallery, recs)
 
     scenes = {}
@@ -145,6 +179,7 @@ def run(store: Store, gallery: str, settings: Settings, selection_id: str | None
         "evidence": counts, "evidenceWeighted": round(n_ev, 1), "lambda": round(lam, 3),
         "axisConfidence": {a: round(v, 2) for a, v in conf.items()},
         "preferences": prefs, "sceneDistribution": scenes,
+        "feedbackChanges": nl_changes, "llm": llm is not None,
         "candidates": len(rows) - len(exclude), "excluded": len(exclude),
         "elapsedSeconds": round(time.monotonic() - started, 2),
     }

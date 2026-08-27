@@ -14,8 +14,14 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
+#: 축별 VLM 태그 정확도 — 2026-08-25 50장 사람 채점 (spike-report.md). 프롬프트 2차 채점 후 갱신.
+#: 정밀도 대용으로 쓴다(축 단위 채점이라 클래스별 정밀도는 없다). 이유 문장이 근거로 삼을 축을 고른다.
+AXIS_PRECISION: dict[str, float] = {
+    "subjects": 0.98, "framing": 0.92, "expression": 0.90, "lighting": 0.84, "scene": 0.74,
+}
+
 #: 이 값이 `photo_analysis.model_version`에 들어간다. 모델·전처리·어휘 중 하나라도 바뀌면 올린다.
-MODEL_VERSION = "photoselect-a-0.1"
+MODEL_VERSION = "photoselect-a-0.3"   # 0.2: ARNIQA spaq · 0.3: VLM 프롬프트 1차 원문 복원
 
 
 @dataclass(frozen=True)
@@ -55,6 +61,10 @@ class ScoreKnobs:
     #: 갤러리에서 쏠림을 재생산한다). None이면 상한 없음.
     scene_cap_ratio: float | None = 0.4
 
+    #: 이유 문장에 태그 값을 근거로 쓰려면 그 축의 태그 정밀도(AXIS_PRECISION)가 이 값 이상이어야 한다.
+    #: 정밀도가 낮은 축을 근거로 쓰면 "퇴장 행진 컷이라 골랐어요"의 43%가 거짓이 된다(study/02 step8).
+    reason_min_precision: float = 0.85
+
     #: 한 라운드에 제시할 최대 장수.
     top_k: int = 30
     #: 셀렉 목표 장수(작가가 정한다). 담긴 사진이 여기 닿으면 완료. 남은 자리만큼만 제시한다.
@@ -81,6 +91,19 @@ class AnalyzeKnobs:
 
 
 @dataclass(frozen=True)
+class LlmKnobs:
+    """C — Bedrock 텍스트 호출. tech-stack.md §5 · spike-report 08-20 가용성 확인."""
+
+    #: 서울 온디맨드에 Haiku 4.5가 없어 global. 크로스 리전 프로필. 텍스트만 보내므로 무방.
+    aws_region: str = "ap-northeast-2"
+    model_id: str = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
+    #: 이유 문장 한 호출에 넣는 사진 수. 30장 초안이면 1회.
+    reasons_batch: int = 40
+    reasons_max_tokens: int = 4096
+    feedback_max_tokens: int = 512
+
+
+@dataclass(frozen=True)
 class Settings:
     #: 로컬 모드의 출력 루트. 갤러리마다 하위 폴더가 생긴다.
     out_root: Path
@@ -89,6 +112,7 @@ class Settings:
 
     score: ScoreKnobs = field(default_factory=ScoreKnobs)
     analyze: AnalyzeKnobs = field(default_factory=AnalyzeKnobs)
+    llm: LlmKnobs = field(default_factory=LlmKnobs)
 
     # ── 아래는 DB 모드 자리. wes V22 머지 후 embedder의 config.py를 그대로 따라 채운다. ──
     db_host: str | None = None

@@ -3,9 +3,12 @@
 지금은 로컬 Ollama(structured outputs로 enum 강제). 프로덕션은 vLLM guided decoding —
 프롬프트·스키마는 같고 호출부만 바뀐다. 이미지는 외부로 나가지 않는다(CLAUDE.md).
 
-프롬프트는 `scripts/spike/vlm_tag.py`의 2차안이다: 08-25 실측에서 오답이 단일 방향이었던
-두 축(lighting: indoor→natural, scene: snap→예식 장면)에 판단 규칙을 넣었다.
-효과는 같은 50장 재채점으로 확인한다(spike-report "다음").
+프롬프트는 **2026-08-25 1차안 원문 그대로**다. 고치지 말 것 — 근거:
+  · 1차 재실행은 같은 50장에서 250칸 전부 동일 (모델은 결정적, temperature 0)
+  · v2(축 규칙 추가): scene 74→66, framing 94→82, lighting 84→80
+  · v3(캡션 문장만 변경): scene 74→62, lighting 84→74 — **다른 부분을 건드려도 축 정확도가 흔들린다**
+  gemma3:12b 4bit에서 프롬프트 튜닝은 이 표본으로 개선 불가. scene 74%는 모델 크기(31B 비교)와
+  데이터(본식 갤러리 부재) 쪽 문제로 넘긴다. 상세: `scripts/spike/vlm_compare.py`, STATUS.md 1.1
 """
 
 from __future__ import annotations
@@ -23,17 +26,16 @@ from photoselect.axes import AXES
 log = logging.getLogger(__name__)
 
 AXIS_GUIDE = """\
-scene — 예식 진행 순서상의 장면. **진행 순서상의 장면임이 확실할 때만** 그 값을 쓰고,
-  야외 산책·대기·자유로운 포즈처럼 애매하면 snap.
+scene — 결혼식 진행 순서상 어느 장면인가
   prep 준비(신부대기실·메이크업) · entrance 입장 · vow 서약/예식 · ring 반지 교환
   kiss 키스 · family 가족 사진 · group 단체 사진 · bouquet 부케
-  walk 예식장 안에서의 퇴장/행진 (야외 산책 컷은 snap) · snap 스냅/자유 컷
-  detail 소품·공간·음식 등 사물 위주 · unknown 판단 불가
+  walk 퇴장/행진 · snap 스냅/자유 컷 · detail 소품·공간·음식 등 사물 위주
+  unknown 위 어느 것도 아니거나 판단 불가
 framing — 인물이 프레임을 차지하는 크기
   closeup 얼굴 위주 · half 상반신 · full 전신 · wide 원경/공간이 주가 되는 컷
-lighting — 지배적인 광원. **실내 공간이면 창으로 들어온 빛이라도 indoor.**
-  natural 야외 자연광 · backlit 역광(인물 뒤에서 빛) · indoor 실내(조명·창빛 모두)
-  flash 플래시 직광(그림자가 딱딱함) · lowlight 어둡고 노이즈 있는 저조도
+lighting — 지배적인 광원
+  natural 자연광 · backlit 역광(인물 뒤에서 빛) · indoor 실내 조명
+  flash 플래시 직광 · lowlight 어둡고 노이즈 있는 저조도
 expression — 주 인물의 표정
   smile 미소 · laugh 크게 웃음 · serious 진지/무표정 · candid 의식하지 않은 자연스러움
   eyes_closed 눈 감김 · none 얼굴이 없거나 식별 불가
@@ -49,10 +51,10 @@ SYSTEM_PROMPT = f"""\
 {AXIS_GUIDE}
 
 caption — 고객(신랑신부)에게 그대로 보여도 되는 톤의 한국어 1문장.
-  사진에 보이는 것만 쓴다. 추측·칭찬·감상은 넣지 않는다. 다른 사진과 구별되는 구체적 요소
-  (장소·동작·소품)를 한 가지 이상 넣는다.
+  예: "야외 자연광 아래 두 분이 마주 보며 웃는 컷"
+  사진에 보이는 것만 쓴다. 추측·칭찬·감상은 넣지 않는다.
 
-반드시 JSON만 출력한다.\
+반드시 JSON만 출력한다. 설명 문장을 덧붙이지 않는다.\
 """
 
 SCHEMA = {

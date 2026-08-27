@@ -71,11 +71,17 @@ def preference_scores(X: np.ndarray, w_hat: np.ndarray, conf: dict[str, float]) 
     return X @ w
 
 
-def top_preferences(w_hat: np.ndarray, conf: dict[str, float], min_conf: float = 0.4) -> list[tuple[str, str]]:
-    """이유 문장에 써도 되는 (축, 값). conf가 충분한 축의 최고 선호값만 — study/01 step2 §5 실무 규칙."""
+def top_preferences(w_hat: np.ndarray, conf: dict[str, float], min_conf: float = 0.4,
+                    allowed_axes: set[str] | None = None) -> list[tuple[str, str]]:
+    """이유 문장에 써도 되는 (축, 값). 두 관문을 다 넘어야 한다 —
+    ① 그 축에 의견이 있다(conf ≥ min_conf, study/01 step2 §5)
+    ② 그 축의 태그를 믿을 수 있다(allowed_axes, 정밀도 기준 — study/02 step8 [B])
+    """
     out = []
     for ax, vals in AXES.items():
         if conf.get(ax, 0.0) < min_conf:
+            continue
+        if allowed_axes is not None and ax not in allowed_axes:
             continue
         cols = [FEATURE_INDEX[f"{ax}={v}"] for v in vals]
         best = vals[int(np.argmax(w_hat[cols] - w_hat[cols].mean()))]
