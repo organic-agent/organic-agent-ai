@@ -123,6 +123,11 @@ class LlmKnobs:
     reasons_image_long_edge: int = 768
     #: 비교 대상으로 같이 보여 줄 형제(연사) 사진 최대 수.
     reasons_sibling_images: int = 2
+    # ── 비교샷 (compare, 동기 — 사용자 대기 §3.2) ──
+    compare_max_tokens: int = 1024
+    #: 이 시간 안에 LLM 판정이 안 오면 템플릿 판정으로 응답한다 (지연 예산 8s).
+    compare_timeout_s: float = 8.0
+    compare_image_long_edge: int = 768
 
 
 @dataclass(frozen=True)

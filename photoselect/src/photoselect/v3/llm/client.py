@@ -66,10 +66,17 @@ def to_content(user: str | list[Part]) -> str | list[dict]:
 class BedrockClient:
     """anthropic SDK 1.x · `output_config.format`으로 JSON 스키마를 강제한다. aws_region 필수(1.x)."""
 
-    def __init__(self, aws_region: str, model_id: str) -> None:
+    def __init__(self, aws_region: str, model_id: str,
+                 timeout: float | None = None, max_retries: int | None = None) -> None:
+        """timeout·max_retries 는 동기 경로(compare)용 — 배치는 SDK 기본값(재시도 포함)을 쓴다."""
         from anthropic import AnthropicBedrock
 
-        self._client = AnthropicBedrock(aws_region=aws_region)
+        kwargs: dict = {"aws_region": aws_region}
+        if timeout is not None:
+            kwargs["timeout"] = timeout
+        if max_retries is not None:
+            kwargs["max_retries"] = max_retries
+        self._client = AnthropicBedrock(**kwargs)
         self.model_id = model_id
 
     def complete_json(self, system: str, user: str | list[Part], schema: dict, max_tokens: int) -> dict:
