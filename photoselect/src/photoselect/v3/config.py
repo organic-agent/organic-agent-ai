@@ -1,7 +1,7 @@
 """v3 설정 — 폴더화 파이프라인 (wes docs/plans/ai-folder-structure.md, V45).
 
-v3 = FULL(사진별 분석 + 임베딩 그룹) → NAMING(VLM 이름·배정). 추천(draft)은 아직 없다 —
-폴더별 추천은 docs/plan-v3-folder-compare.md 구현 때 이 패키지에 온다.
+v3 = FULL(사진별 분석 + 임베딩 그룹) → NAMING(VLM 이름·배정) → 폴더별 추천(draft,
+docs/plan-v3-folder-compare.md §2 — 자식 폴더마다 점수 상위 n_f장, 이유는 2단계).
 """
 
 from __future__ import annotations
@@ -85,6 +85,28 @@ class V3Knobs:
     #: VLM confidence가 이보다 낮으면 needs_review.
     review_confidence: float = 0.8
 
+    # ── 추천 B (폴더별, plan-v3-folder-compare.md §2) ──
+    #: 점수식 가중치 — v2와 같다 (prior = 0.5·tech_pct + 0.5·aes_pct, 갤러리 내 백분위 유지).
+    w_technical: float = 0.5
+    w_aesthetic: float = 0.5
+    #: 4단계(균형·선호) — subjects_trusted 이고 담은 사진 ≥ pref_min_selected 일 때만.
+    subjects_trusted: bool = True
+    pref_min_selected: int = 5
+    w_balance: float = 0.5
+    w_pref: float = 0.5
+    #: 폴더 안 MMR — 같은 폴더 안 중복 구도 억제.
+    lambda_mmr: float = 0.7
+    #: 폴더당 추천 상한 비율 — n_f ≤ ceil(|f|·이 값). 폴더의 절반 넘게 추천하지 않는다.
+    folder_cap_ratio: float = 0.5
+    #: 목표 장수 폴백 — galleries.max_selectable_photo_count 가 없을 때(로컬).
+    target_count: int = 30
+    #: 근거: 백분위를 말해도 되는 상한(상위 15%).
+    reason_quality_top_pct: float = 15.0
+    #: 절대 품질 하한 게이트 (review-v3-design.md (6)) — 원점수가 하한 미만이면 **품질 표현만**
+    #: 근거에서 뺀다. 사진을 거르는 데는 쓰지 않는다(하드 필터 금지). 값은 잠정 — 홀드아웃 실측 후 조정.
+    quality_floor_technical: float = 0.35   # ARNIQA(0~1)
+    quality_floor_aesthetic: float = 4.5    # LAION(0~10)
+
 
 @dataclass(frozen=True)
 class LlmKnobs:
@@ -92,6 +114,15 @@ class LlmKnobs:
 
     aws_region: str = "ap-northeast-2"
     model_id: str = "global.anthropic.claude-sonnet-4-6"
+    #: 이유 문장 한 호출에 넣는 사진 수. 사진마다 이미지(본인 + 형제)가 붙으므로 작게.
+    reasons_batch: int = 10
+    reasons_max_tokens: int = 8192
+    #: 사진을 LLM 에 보여 줄지. 끄면 텍스트 재료만 간다.
+    reasons_vision: bool = True
+    #: LLM 에 보내는 JPEG 의 긴 변. 768이면 장당 ~800 토큰.
+    reasons_image_long_edge: int = 768
+    #: 비교 대상으로 같이 보여 줄 형제(연사) 사진 최대 수.
+    reasons_sibling_images: int = 2
 
 
 @dataclass(frozen=True)
