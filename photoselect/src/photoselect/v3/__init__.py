@@ -34,6 +34,18 @@ def draft_module():
     return job
 
 
+def compare_module():
+    from photoselect.v3 import compare as job
+    return job
+
+
+def compare_client(settings: Settings):
+    """동기(compare) 전용 Bedrock 클라이언트 — 타임아웃 안에 못 오면 템플릿 폴백, 재시도 없음."""
+    from photoselect.v3.llm.client import BedrockClient
+    return BedrockClient(settings.llm.aws_region, settings.llm.model_id,
+                         timeout=settings.llm.compare_timeout_s, max_retries=0)
+
+
 def bedrock_client(settings: Settings):
     from photoselect.v3.llm.client import BedrockClient
     return BedrockClient(settings.llm.aws_region, settings.llm.model_id)

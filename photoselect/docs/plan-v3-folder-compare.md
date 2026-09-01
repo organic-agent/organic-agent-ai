@@ -160,6 +160,20 @@ API: `POST /api/v1/galleries/{g}/photo-selection/compare {photoA, photoB}` → 2
 reason, source}`. 사람 답은 기존 `pair_comparison_events` 로 별도 `POST …/compare/answer`(선택).
 프론트: 두 사진을 고르는 UI(폴더 안에서 두 장 선택 → "AI에게 물어보기")가 새로 필요하다 — 현재 없음.
 
+### 구현 노트 (2026-09-01, #16)
+
+`v3/compare.py`로 구현(§4 표의 v2 경로 대신 — 폴더 추천과 같은 사정). 설계와 달라진 것:
+
+- 캐시 키에 **model_version(모델 id + 프롬프트 세대)** 포함 — 프롬프트를 올리면(compare-p1→p2)
+  자동 재판정·덮어쓰기. 쌍당 한 행 유지(순서 무관 유니크).
+- 타임아웃은 Bedrock 클라이언트 자체에 건다(`compare_timeout_s=8`, 재시도 0) — 초과·실패·계약
+  이탈 응답 전부 템플릿 판정 폴백(`source: template`).
+- 프롬프트 규칙 추가: a/b 는 내부 라벨 — 문장에는 "이 컷/다른 컷"만 (p1 실측에서 "b컷" 누출).
+- 갤러리 1 실측: LLM 판정 5.4~6.0초(이미지 2장, 입력 ~2.1k 토큰), 캐시 히트 0초,
+  서브프로세스 총 벽시계 5.9초(파이썬 기동 포함) — 예산 8초 안. torch 미import 확인.
+- DbStore 는 `ai_pair_verdicts` 계약(§3.3) 전제 — 테이블 없으면 명확한 에러. wes 마이그레이션·
+  API·인보커는 별도 이슈.
+
 ## 4. 이 repo 변경 목록
 
 | 파일 | 변경 |
