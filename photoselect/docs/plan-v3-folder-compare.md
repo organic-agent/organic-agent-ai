@@ -176,6 +176,21 @@ reason, source}`. 사람 답은 기존 `pair_comparison_events` 로 별도 `POST
 | `scripts/review.py` | 폴더별 섹션으로 그리기 + 두 장 골라 compare 로컬 실행 버튼(선택) |
 | tests | 폴더 쿼터 배분, 미분류 가상 폴더, 세트 없음 → 409, 2단계 reason UPDATE, compare 템플릿 판정·LLM 파싱·순서 무관 캐시 |
 
+### 구현 노트 (2026-09-01, #13·#14)
+
+위 표는 v2 패키지 수정으로 썼지만 구현은 **v3 패키지 신설**로 갔다(v3 분리 이후 작성된 표라서).
+설계와 달라진 것:
+
+- `v3/rerank.py` — v2 `coverage_quota`(그룹 간 경쟁) 대신 `folder_quota` + `select_in_folder`.
+  폴더마다 독립이라 배분식이 단순해졌고 결과는 §2.1 식 그대로다.
+- `v3/reasons.py` — concept 재료가 folder 재료로 대체(이름이 있으므로 문장에 그대로 쓴다).
+  주 사유로는 폴더 1위일 때만. 절대 품질 하한 게이트(`quality_floor_*`, review-v3-design.md (6))
+  가 품질 표현만 걸러낸다. 프롬프트에 "모든 표현은 한국어로" 추가.
+- 2단계는 llm 없이도 같은 경로다 — 1단계 reason NULL INSERT 뒤 템플릿으로 UPDATE.
+- DbStore 추천 메서드는 §2.5 계약(V46 예정)을 전제하고, 테이블이 없으면 명확한 에러를 낸다.
+  wes V46(ai_selection_jobs 재생성 + ai_recommendations.folder_id) 전에는 로컬 모드만 돈다.
+- 갤러리 1 로컬 실측: 9폴더 30장 배분 0.02초, Bedrock 이유 30장 136초(사진 포함, 큰 폴더부터).
+
 ## 5. 이슈 분할 (`.claude/rules/git-workflow.md` 형식)
 
 | # | 제목 | 의존 | 산출물 |

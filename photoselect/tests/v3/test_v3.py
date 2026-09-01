@@ -10,8 +10,8 @@ from PIL import Image
 
 from photoselect.v3.analyze import assign_ranks, concat_space, percentile
 from photoselect.v3.config import PARENTS, Settings, V3Knobs, V3_MODEL_VERSION
-from photoselect.v3 import cluster, concept, naming
-from photoselect.v3.store import ConceptAssignment, LocalStore, PhotoAnalysis
+from photoselect.v3 import cluster, concept, draft, naming
+from photoselect.v3.store import ConceptAssignment, FolderSetMissing, LocalStore, PhotoAnalysis
 
 
 def _unit(v):
@@ -293,3 +293,125 @@ def test_parents_fixed_lists():
     assert PARENTS["OTHER"] == PARENTS["REHEARSAL"]
     for lst in PARENTS.values():
         assert "기타" in lst
+
+
+# ── 폴더별 추천 (draft, plan-v3-folder-compare.md §2) ────────────────────────
+def _named_world(tmp_path, **kw):
+    """_world + 그룹마다 (부모, 컨셉) 배정 → 로컬 폴더 세트가 생긴다. 그룹 g → '세트g' 폴더."""
+    store, rows, E, C, settings = _world(tmp_path, **kw)
+    gids = sorted({r.embed_group_id for r in rows})
+    store.write_assignments("g", None, [
+        ConceptAssignment(embed_group_id=g, parent_name="실내 스튜디오", concept_name=f"세트{g}",
+                          confidence=0.9, assigned_by="vlm")
+        for g in gids])
+    return store, rows, E, C, settings
+
+
+def _evidence(store, selected=(), rejected=()):
+    (store._dir("g") / "evidence.json").write_text(
+        json.dumps({"selected": list(selected), "rejected": list(rejected)}), encoding="utf-8")
+
+
+class FakeReasonLlm:
+    """reasons.generate 용 — 요청된 photo_id 마다 고정 문장을 돌려준다."""
+
+    def __init__(self):
+        self.calls = 0
+
+    def complete_json(self, system, user, schema, max_tokens):
+        self.calls += 1
+        pids = [t.split("### photo_id: ")[1].splitlines()[0]
+                for k, t in user if k == "text" and t.startswith("### photo_id:")]
+        return {"reasons": [{"photo_id": p, "reason": f"LLM이 본 {p}"} for p in pids]}
+
+
+def test_draft_requires_folder_set(tmp_path):
+    store, *_ , settings = _world(tmp_path)          # 배정 없음 — 세트 없음
+    with pytest.raises(FolderSetMissing):
+        draft.run(store, "g", settings, target=6)
+
+
+def test_draft_fills_each_folder_by_quota(tmp_path):
+    store, rows, *_, settings = _named_world(tmp_path)      # 3그룹 × 10장
+    result = draft.run(store, "g", settings, target=6)
+    assert result["folders"] == 3 and result["k"] == 6      # 폴더당 6·10/30 = 2장
+    assert set(result["perFolder"].values()) == {2}
+    back = store.read_recommendations("g")
+    assert all(r.folder_id is not None for r in back)
+    assert all(r.reason for r in back)                      # llm 없음 → 2단계에서 템플릿으로 채움
+    assert sorted(r.rank for r in back if r.folder_id == back[0].folder_id) == [1, 2]
+    assert any("폴더:" in f for r in back for f in r.score_breakdown["facts"])
+
+
+def test_draft_cap_half_of_folder(tmp_path):
+    store, rows, *_, settings = _named_world(tmp_path, n_groups=2, per_group=4)   # 폴더 4장씩
+    result = draft.run(store, "g", settings, target=30)
+    assert all(v <= 2 for v in result["perFolder"].values())    # n_f ≤ ceil(4·0.5)
+
+
+def test_draft_unfiled_virtual_folder(tmp_path):
+    store, rows, *_, settings = _named_world(tmp_path)
+    gids = sorted({r.embed_group_id for r in rows})
+    store.write_assignments("g", None, [                        # 마지막 그룹 배정 제거
+        ConceptAssignment(embed_group_id=g, parent_name="실내 스튜디오", concept_name=f"세트{g}",
+                          confidence=0.9, assigned_by="vlm") for g in gids[:-1]])
+    result = draft.run(store, "g", settings, target=6)
+    assert result["unfiled"] == 10                              # 빠진 그룹 10장이 미분류로
+    assert "미분류›미분류" in result["perFolder"]
+    unfiled = [r for r in store.read_recommendations("g") if r.folder_id is None]
+    assert unfiled and all(r.score_breakdown["folder"] == "미분류›미분류" for r in unfiled)
+
+
+def test_draft_refine_keeps_one_per_folder_when_target_met(tmp_path):
+    store, rows, *_, settings = _named_world(tmp_path)
+    selected = [r.photo_id for r in rows[:12]]                  # 목표 10 < 담은 12
+    _evidence(store, selected=selected)
+    result = draft.run(store, "g", settings, target=10)
+    assert result["done"] is False and result["remaining"] < 0
+    # 후보가 남은 폴더는 대표 1장, 전부 담긴 폴더(첫 그룹 10장)만 0장
+    assert sorted(result["perFolder"].values()) == [0, 1, 1]
+    back = store.read_recommendations("g")
+    assert not (set(selected) & {r.photo_id for r in back})     # 담은 사진은 다시 안 나온다
+
+
+def test_draft_rejected_excluded_but_shown_reexposed(tmp_path):
+    store, rows, *_, settings = _named_world(tmp_path)
+    r1 = draft.run(store, "g", settings, target=6)
+    first = {r.photo_id for r in store.read_recommendations("g") if r.round == 1}
+    rejected = sorted(first)[:2]
+    _evidence(store, rejected=rejected)
+    r2 = draft.run(store, "g", settings, target=6)
+    second = {r.photo_id for r in store.read_recommendations("g") if r.round == 2}
+    assert not (set(rejected) & second)                         # 거절은 제외
+    assert first - set(rejected) <= second | first              # 이전 노출은 다시 나올 수 있다(§2.4)
+    assert r2["round"] == 2
+
+
+def test_draft_two_stage_reasons_with_llm(tmp_path):
+    store, rows, *_, settings = _named_world(tmp_path)
+
+    stages = []
+    class SpyStore(type(store)):
+        def write_recommendations(self, gallery, rows_):
+            stages.append(("insert", [r.reason for r in rows_]))
+            super().write_recommendations(gallery, rows_)
+        def update_reasons(self, gallery, round_no, reasons_):
+            stages.append(("update", list(reasons_.values())))
+            super().update_reasons(gallery, round_no, reasons_)
+    spy = SpyStore(store.root, dataset_root=store.dataset_root)
+
+    llm = FakeReasonLlm()
+    draft.run(spy, "g", settings, target=6, llm=llm)
+    assert stages[0][0] == "insert" and all(t is None for t in stages[0][1])   # 1단계: reason NULL
+    assert stages[1][0] == "update" and all(t.startswith("LLM이 본") for t in stages[1][1])
+    assert llm.calls >= 1
+    assert all(r.reason.startswith("LLM이 본") for r in spy.read_recommendations("g"))
+
+
+def test_quality_floor_gates_reason_material():
+    k = V3Knobs()
+    row = PhotoAnalysis(photo_id="x", technical_pct=95, aesthetic_pct=95,
+                        sub_scores={"technical_score": 0.2, "aesthetic_score": 6.0})
+    assert draft._quality_material(row, k) is None              # 원점수 하한 미만 → 품질 표현 제외
+    row.sub_scores["technical_score"] = 0.7
+    assert draft._quality_material(row, k) is not None
