@@ -27,7 +27,7 @@ from pathlib import Path
 import numpy as np
 from PIL import Image, ImageFilter, ImageOps
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from photoselect import gallery as gal  # noqa: E402
 from photoselect.analyze.runners.arniqa import ArniqaRunner  # noqa: E402

@@ -64,8 +64,8 @@ import manifest as manifest_mod
 from runners.common import load_image
 
 # 프롬프트·스키마의 정본은 서비스 모듈이다(2026-08-25 2차안). 여기서는 표본 뽑기·CSV 기록만 한다.
-sys.path.insert(0, str(Path(__file__).resolve().parents[3]))
-from photoselect.analyze.vlm import SCHEMA, SYSTEM_PROMPT  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "src"))
+from photoselect.v1.analyze.vlm import SCHEMA, SYSTEM_PROMPT  # noqa: E402
 
 # ── 고정 축 어휘 (feature-design.md §고정 축 어휘와 **반드시** 동일) ──────────
 # 값을 바꾸면 계약이 깨진다. 바꿀 때는 문서·gallery.py·model_version을 함께.
