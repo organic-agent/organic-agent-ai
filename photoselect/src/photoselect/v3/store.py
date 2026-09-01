@@ -95,6 +95,24 @@ class Evidence:
     rejected: list[str] = field(default_factory=list)
 
 
+@dataclass
+class PairVerdict:
+    """`ai_pair_verdicts` 한 행 (§3.3 계약) — 두 장 중 AI가 고른 것과 그 이유.
+
+    사람의 답(`pair_comparison_events`)과 절대 같은 테이블에 섞지 않는다. facts 는 재현용
+    사실 목록, model_version 은 모델 id + 프롬프트 버전 — 캐시를 세대로 가른다.
+    """
+
+    photo_a: str
+    photo_b: str
+    chosen_photo_id: str
+    confidence: str          # clear | slight
+    reason: str
+    facts: dict
+    model_version: str
+    source: str              # llm | template
+
+
 # ── 인터페이스 ───────────────────────────────────────────────────────────────
 class Store(Protocol):
     def read_analysis(self, gallery: str) -> list[PhotoAnalysis]: ...
@@ -112,6 +130,10 @@ class Store(Protocol):
     def read_recommendations(self, gallery: str) -> list[Recommendation]: ...
     def write_recommendations(self, gallery: str, rows: list[Recommendation]) -> None: ...
     def update_reasons(self, gallery: str, round_no: int, reasons: dict[str, str]) -> None: ...
+    def read_pair_verdict(self, gallery: str, photo_a: str, photo_b: str,
+                          model_version: str) -> PairVerdict | None: ...
+    def write_pair_verdict(self, gallery: str, verdict: PairVerdict) -> None: ...
+    def folder_names(self, gallery: str, photo_ids: list[str]) -> dict[str, str]: ...
 
 
 # ── 로컬 구현 ────────────────────────────────────────────────────────────────
@@ -240,6 +262,37 @@ class LocalStore:
         with p.open("w", encoding="utf-8") as f:
             for r in rows:
                 f.write(json.dumps(asdict(r), ensure_ascii=False) + "\n")
+
+    # ── 비교샷 (§3) ──
+    def read_pair_verdict(self, gallery: str, photo_a: str, photo_b: str,
+                          model_version: str) -> PairVerdict | None:
+        """순서 무관 캐시 — (a, b) 와 (b, a) 는 같은 판정. 모델·프롬프트 세대가 다르면 무시한다."""
+        p = self._dir(gallery) / "verdicts.jsonl"
+        if not p.exists():
+            return None
+        key = frozenset((photo_a, photo_b))
+        with p.open(encoding="utf-8") as f:
+            for line in f:
+                if not line.strip():
+                    continue
+                v = PairVerdict(**json.loads(line))
+                if frozenset((v.photo_a, v.photo_b)) == key and v.model_version == model_version:
+                    return v
+        return None
+
+    def write_pair_verdict(self, gallery: str, verdict: PairVerdict) -> None:
+        p = self._dir(gallery) / "verdicts.jsonl"
+        with p.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(asdict(verdict), ensure_ascii=False) + "\n")
+
+    def folder_names(self, gallery: str, photo_ids: list[str]) -> dict[str, str]:
+        """photo_id → '부모 › 컨셉'. 배정이 없으면 빈 dict — compare 는 폴더 없이도 돈다."""
+        try:
+            folders = self.read_folder_set(gallery, None)
+        except FolderSetMissing:
+            return {}
+        want = set(photo_ids)
+        return {p: f"{f.parent_name} › {f.name}" for f in folders for p in f.photo_ids if p in want}
 
 
 def _jsonb(value) -> str:
@@ -572,3 +625,73 @@ class DbStore:
         except (psycopg.errors.UndefinedTable, psycopg.errors.UndefinedColumn) as exc:
             raise self._v46(exc) from exc
         log.info("추천 이유 UPDATE: selection=%s round=%s %d장", sid, round_no, len(reasons))
+
+    # ── 비교샷 (§3.3 — wes ai_pair_verdicts 계약) ──
+    _PAIR_HINT = "wes 에 ai_pair_verdicts 가 아직 없다 — 비교샷 마이그레이션 뒤에 돌려라"
+
+    def read_pair_verdict(self, gallery: str, photo_a: str, photo_b: str,
+                          model_version: str) -> PairVerdict | None:
+        """순서 무관 캐시. 저장된 세대(model_version)가 다르면 miss — 호출부가 다시 판정해 덮는다."""
+        import psycopg
+
+        sid = self._require_selection()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    "SELECT photo_a, photo_b, chosen_photo_id, confidence, reason, facts, model_version, source "
+                    "FROM ai_pair_verdicts WHERE selection_id = %s "
+                    "AND LEAST(photo_a, photo_b) = LEAST(%s::bigint, %s::bigint) "
+                    "AND GREATEST(photo_a, photo_b) = GREATEST(%s::bigint, %s::bigint) "
+                    "AND model_version = %s",
+                    (sid, int(photo_a), int(photo_b), int(photo_a), int(photo_b), model_version),
+                )
+                row = cur.fetchone()
+        except psycopg.errors.UndefinedTable as exc:
+            self.conn.rollback()
+            raise RuntimeError(f"{self._PAIR_HINT} ({type(exc).__name__})") from exc
+        if row is None:
+            return None
+        a, b, chosen, conf, reason, facts, mv, source = row
+        return PairVerdict(photo_a=str(a), photo_b=str(b), chosen_photo_id=str(chosen),
+                           confidence=str(conf), reason=str(reason), facts=dict(facts or {}),
+                           model_version=str(mv), source=str(source))
+
+    def write_pair_verdict(self, gallery: str, verdict: PairVerdict) -> None:
+        """같은 쌍의 재판정(새 모델·프롬프트 세대)은 덮어쓴다 — 쌍당 한 행(순서 무관 유니크)."""
+        import psycopg
+
+        sid = self._require_selection()
+        try:
+            with self.conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO ai_pair_verdicts
+                        (selection_id, photo_a, photo_b, chosen_photo_id, confidence, reason,
+                         facts, model_version, source, created_at, updated_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, now(), now())
+                    ON CONFLICT (selection_id, LEAST(photo_a, photo_b), GREATEST(photo_a, photo_b))
+                    DO UPDATE SET chosen_photo_id = EXCLUDED.chosen_photo_id,
+                        confidence = EXCLUDED.confidence, reason = EXCLUDED.reason,
+                        facts = EXCLUDED.facts, model_version = EXCLUDED.model_version,
+                        source = EXCLUDED.source, updated_at = now(),
+                        version = ai_pair_verdicts.version + 1
+                    """,
+                    (sid, int(verdict.photo_a), int(verdict.photo_b), int(verdict.chosen_photo_id),
+                     verdict.confidence, verdict.reason, _jsonb(verdict.facts),
+                     verdict.model_version, verdict.source),
+                )
+            self.conn.commit()
+        except psycopg.errors.UndefinedTable as exc:
+            self.conn.rollback()
+            raise RuntimeError(f"{self._PAIR_HINT} ({type(exc).__name__})") from exc
+        log.info("ai_pair_verdicts 저장: selection=%s (%s, %s) → %s [%s]", sid,
+                 verdict.photo_a, verdict.photo_b, verdict.chosen_photo_id, verdict.source)
+
+    def folder_names(self, gallery: str, photo_ids: list[str]) -> dict[str, str]:
+        """photo_id → '부모 › 컨셉' (최신 AI 세트, 현재 items 기준). 세트가 없으면 빈 dict."""
+        try:
+            folders = self.read_folder_set(gallery, None)
+        except FolderSetMissing:
+            return {}
+        want = set(photo_ids)
+        return {p: f"{f.parent_name} › {f.name}" for f in folders for p in f.photo_ids if p in want}

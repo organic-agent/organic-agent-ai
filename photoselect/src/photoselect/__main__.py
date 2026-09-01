@@ -8,6 +8,7 @@ v3 (폴더화 테스트):
     python -m photoselect --pipeline v3 analyze --db --gallery 12 [--llm]     # FULL (--llm 이면 naming까지)
     python -m photoselect --pipeline v3 naming  --db --gallery 12 --job-id J  # naming만 다시
     python -m photoselect --pipeline v3 worker --llm                          # 웹 버튼(FULL·NAMING 잡) 처리
+    python -m photoselect --pipeline v3 compare --db --selection-id S --a A --b B   # 비교샷 (동기, torch 미사용)
 
     python -m photoselect analyze --list
     python -m photoselect analyze --gallery "dataset1/류지혜고객님 (2)" [--limit 50] [--no-vlm] [--force]
@@ -70,6 +71,14 @@ def main(argv: list[str] | None = None) -> None:
     d.add_argument("--round", type=int, help="라운드 번호 강제 (기본: 마지막+1)")
     d.add_argument("--target", type=int, help="셀렉 목표 장수 (기본 config.target_count)")
     d.add_argument("--llm", action="store_true", help="Bedrock으로 이유 문장·피드백 번역 (AWS 자격 필요. v2는 사진도 보낸다 — 크로스 리전 프로필이라 국외로 나간다)")
+
+    cp = sub.add_parser("compare", help="v3 비교샷 — 두 사진 중 AI 판정 + 이유 (동기, torch 미사용)")
+    cp.add_argument("--gallery", help="로컬 모드 갤러리 이름. --db 면 셀렉에서 찾으므로 생략 가능")
+    cp.add_argument("--db", action="store_true", help="wes DB를 읽고 쓴다 (--selection-id 필수)")
+    cp.add_argument("--selection-id", help="photo_selections.id — 캐시·담김 판단의 단위")
+    cp.add_argument("--a", required=True, help="사진 a (로컬은 파일 상대경로, --db 는 photos.id)")
+    cp.add_argument("--b", required=True, help="사진 b")
+    cp.add_argument("--no-llm", action="store_true", help="템플릿 판정만 (Bedrock 없이)")
 
     x = sub.add_parser("reset", help="추천·evidence 초기화 (분석 결과는 유지) — 처음부터 다시")
     x.add_argument("--gallery", required=True)
@@ -136,6 +145,25 @@ def main(argv: list[str] | None = None) -> None:
             sys.exit("--gallery 가 필요하다")
         result = draft_job.run(st, args.gallery, settings, selection_id=args.selection_id,
                                round_no=args.round, top_k=args.k, target=args.target, llm=llm)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "compare":
+        if settings.pipeline != "v3":
+            sys.exit("compare 는 v3 전용이다 — --pipeline v3 (또는 PHOTOSELECT_PIPELINE=v3)")
+        compare_job = pipe.compare_module()
+        llm = None if args.no_llm else pipe.compare_client(settings)
+        if args.db:
+            if not args.selection_id:
+                sys.exit("--db 비교샷은 --selection-id (photo_selections.id) 가 필요하다")
+            dbst = store_mod.DbStore(settings, selection_id=args.selection_id)
+            gallery = args.gallery or dbst.gallery_of_selection(args.selection_id)
+            result = compare_job.run(dbst, gallery, settings, args.a, args.b,
+                                     selection_id=args.selection_id, llm=llm)
+        else:
+            if not args.gallery:
+                sys.exit("--gallery 가 필요하다")
+            result = compare_job.run(st, args.gallery, settings, args.a, args.b, llm=llm)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 
