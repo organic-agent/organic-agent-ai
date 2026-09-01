@@ -190,6 +190,16 @@ score(p) = z(prior) + w_pref · affinity(subjects(p)) + w_bal · deficit(subject
 S0에서 subjects zero-shot이 0.9에 못 미치면: 4단계 유형 축을 당장은 포기하고 컨셉 그룹
 기반 균형("이 배경의 사진이 아직 안 담겼어요")으로 대체한다. 다른 단계는 영향 없다.
 
+## 5-1. S0 스파이크 결과 (2026-08-29, 갤러리 1 재업로드·DINOv3 재임베딩 후)
+
+- **연사 임계** — DINOv3 이웃 유사도 p90 0.968 (DINOv2 0.974). 0.96 유지.
+- **컨셉 거리 0.2** — 69그룹, 최대 50장(6%), 단독 7 (DINOv2 때 70그룹). 유지.
+- **subjects zero-shot** — 확신 라벨(margin ≥ 0.01) 무작위 36장 전부 정답. unknown 84장은 대부분 커플이고
+  argmax 오류 9장이 전부 그 구간에 있음 → 게이트가 맞다. `subjects_trusted=True` 로 전환. 분포:
+  couple 392 · groom 184 · bride 162 · unknown 84.
+- **런타임** — 822장 195초(사진당 0.24초, Apple Silicon MPS), VLM 없음. v1 은 5,709초.
+- 고전 지표 sanity 는 미측정(근거 문장에만 쓰여 위험이 낮음). 추후 ARNIQA 백분위와 상관 확인.
+
 ## 6. 남는 리스크
 
 - **미학 점수 분포가 좁다**(IQR 0.31/10). 백분위 5pt 차이가 원점수 0.03 — 형제 간 "인상"

@@ -101,6 +101,7 @@ class Store(Protocol):
     def read_evidence(self, gallery: str, selection_id: str | None) -> Evidence: ...
     def read_recommendations(self, gallery: str) -> list[Recommendation]: ...
     def write_recommendations(self, gallery: str, rows: list[Recommendation]) -> None: ...
+    def preview_path(self, gallery: str, photo_id: str) -> str | None: ...
 
 
 # ── 로컬 구현 ────────────────────────────────────────────────────────────────
@@ -113,8 +114,16 @@ class LocalStore:
         recommendations.jsonl   초안 (round별 누적)
     """
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, dataset_root: Path | None = None) -> None:
         self.root = Path(root)
+        #: 사진 파일이 있는 곳. photo_id 가 이 루트 기준 상대 경로다 (gallery.load_local). 없으면 LLM 에 사진을 못 보낸다.
+        self.dataset_root = Path(dataset_root) if dataset_root else None
+
+    def preview_path(self, gallery: str, photo_id: str) -> str | None:
+        if self.dataset_root is None:
+            return None
+        p = self.dataset_root / photo_id
+        return str(p) if p.is_file() else None
 
     def _dir(self, gallery: str) -> Path:
         # v1 은 out/<gallery>/, v2 는 out/v2/<gallery>/ — 두 버전의 analysis.jsonl 형식이 달라 같은 폴더를 쓰면 안 된다
@@ -214,6 +223,30 @@ class DbStore:
         from photoselect import db as db_mod
         self.conn = connection or db_mod.connect(settings)
         self.selection_id = int(selection_id) if selection_id is not None else None
+        self._settings = settings
+        self._storage = None
+
+    def preview_path(self, gallery: str, photo_id: str) -> str | None:
+        """analyze 가 내려받은 미리보기가 work_dir 에 남아 있으면 그것, 없으면 S3 에서 다시 받는다
+        (draft 는 analyze 와 다른 프로세스·Lambda 에서 돌 수 있다). 버킷 설정이 없으면 None."""
+        dest = Path(self._settings.work_dir) / str(gallery) / f"{photo_id}.jpg"
+        if dest.is_file() and dest.stat().st_size > 0:
+            return str(dest)
+        if not self._settings.s3_bucket:
+            return None
+        with self.conn.cursor() as cur:
+            cur.execute("SELECT preview_key FROM photos WHERE id = %s AND deleted_at IS NULL", (int(photo_id),))
+            row = cur.fetchone()
+        if row is None or row[0] is None:
+            return None
+        if self._storage is None:
+            from photoselect.storage import PreviewStorage
+            self._storage = PreviewStorage(self._settings.s3_bucket)
+        try:
+            return str(self._storage.download(row[0], dest))
+        except Exception as exc:  # noqa: BLE001 — 사진 없이 텍스트만으로 이유를 만든다
+            log.warning("미리보기 내려받기 실패 photo=%s: %s", photo_id, exc)
+            return None
 
     # ── 셀렉 ↔ 갤러리 ──
     def gallery_of_selection(self, selection_id: str | int) -> str:

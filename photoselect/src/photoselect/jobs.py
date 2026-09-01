@@ -73,9 +73,16 @@ def selection_job_info(conn: psycopg.Connection, job_id: int) -> tuple[int, str]
     return (int(row[0]), str(row[1])) if row else None
 
 
-def analysis_job_info(conn: psycopg.Connection, job_id: int) -> int | None:
-    """gallery_id. 워커가 집은 분석 잡이 어느 갤러리인지 잡 행에서 읽는다."""
+def analysis_job_info(conn: psycopg.Connection, job_id: int) -> tuple[int, str] | None:
+    """(gallery_id, mode). mode 는 V45 의 'FULL'|'NAMING' — v3 워커가 분기한다. V45 이전
+    스키마(컬럼 없음)를 위해 실패하면 FULL 로 둔다."""
     with conn.cursor() as cur:
-        cur.execute(f"SELECT gallery_id FROM {ANALYSIS} WHERE id = %s", (job_id,))
-        row = cur.fetchone()
-    return int(row[0]) if row else None
+        try:
+            cur.execute(f"SELECT gallery_id, mode FROM {ANALYSIS} WHERE id = %s", (job_id,))
+            row = cur.fetchone()
+            return (int(row[0]), str(row[1])) if row else None
+        except psycopg.errors.UndefinedColumn:
+            conn.rollback()
+            cur.execute(f"SELECT gallery_id FROM {ANALYSIS} WHERE id = %s", (job_id,))
+            row = cur.fetchone()
+            return (int(row[0]), "FULL") if row else None

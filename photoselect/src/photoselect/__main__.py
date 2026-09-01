@@ -1,7 +1,13 @@
 """로컬 CLI. Lambda(handler.py)·EC2 루프와 같은 job.run()을 부른다.
 
-파이프라인은 `--pipeline v1|v2`(기본 v2, 환경변수 PHOTOSELECT_PIPELINE). v1 은 VLM·얼굴·BT 원본,
-v2 는 docs/plan-v2-slim.md 의 슬림 파이프라인. 두 버전은 `photoselect/v1`, `photoselect/v2` 에 따로 산다.
+파이프라인은 `--pipeline v1|v2|v3`(기본 v2, 환경변수 PHOTOSELECT_PIPELINE). v1 은 VLM·얼굴·BT 원본,
+v2 는 docs/plan-v2-slim.md 의 슬림 파이프라인, v3 은 폴더화(V45: 임베딩 그룹 + naming, 추천 없음).
+버전은 `photoselect/v1`·`v2`·`v3` 에 따로 산다.
+
+v3 (폴더화 테스트):
+    python -m photoselect --pipeline v3 analyze --db --gallery 12 [--llm]     # FULL (--llm 이면 naming까지)
+    python -m photoselect --pipeline v3 naming  --db --gallery 12 --job-id J  # naming만 다시
+    python -m photoselect --pipeline v3 worker --llm                          # 웹 버튼(FULL·NAMING 잡) 처리
 
     python -m photoselect analyze --list
     python -m photoselect analyze --gallery "dataset1/류지혜고객님 (2)" [--limit 50] [--no-vlm] [--force]
@@ -33,8 +39,9 @@ from photoselect.config import Settings as BaseSettings
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="photoselect")
-    ap.add_argument("--pipeline", choices=("v1", "v2"),
-                    help="파이프라인 (기본: 환경변수 PHOTOSELECT_PIPELINE, 없으면 v2). v1 = VLM·얼굴·BT 원본")
+    ap.add_argument("--pipeline", choices=("v1", "v2", "v3"),
+                    help="파이프라인 (기본: 환경변수 PHOTOSELECT_PIPELINE, 없으면 v2). "
+                         "v1 = VLM·얼굴·BT 원본, v3 = 폴더화(V45: 임베딩 그룹 + naming)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     a = sub.add_parser("analyze", help="A 전수 분석")
@@ -46,6 +53,13 @@ def main(argv: list[str] | None = None) -> None:
     a.add_argument("--no-vlm", action="store_true", help="VLM 태그 생략 (Ollama 없을 때)")
     a.add_argument("--force", action="store_true", help="이미 분석된 사진도 다시")
     a.add_argument("--all-formats", action="store_true", help="HEIC 포함 (기본은 JPG만)")
+    a.add_argument("--llm", action="store_true",
+                   help="v3 전용: 분석 뒤 naming(Bedrock)까지 이어 돈다. --job-id 가 있는 v3 잡은 필수")
+
+    nm = sub.add_parser("naming", help="v3 naming — 임베딩 그룹에 (큰 분류, 컨셉) 이름·배정 (Bedrock 필요)")
+    nm.add_argument("--gallery", required=True, help="로컬은 갤러리 이름, --db 면 gallery_id 숫자")
+    nm.add_argument("--db", action="store_true", help="wes DB를 읽고 쓴다 (ai_concept_assignments 는 --job-id 필수)")
+    nm.add_argument("--job-id", type=int, help="ai_analysis_jobs.id (mode=NAMING) — 상태 전이와 배정의 FK")
 
     d = sub.add_parser("draft", help="B 초안 한 라운드")
     d.add_argument("--gallery", help="로컬은 필수. --db 면 --selection-id 로 찾을 수 있어 생략 가능")
@@ -55,7 +69,7 @@ def main(argv: list[str] | None = None) -> None:
     d.add_argument("--selection-id", help="evidence-<id>.json 을 읽는다 (없으면 evidence.json)")
     d.add_argument("--round", type=int, help="라운드 번호 강제 (기본: 마지막+1)")
     d.add_argument("--target", type=int, help="셀렉 목표 장수 (기본 config.target_count)")
-    d.add_argument("--llm", action="store_true", help="Bedrock으로 이유 문장·피드백 번역 (AWS 자격 필요, 텍스트만 전송)")
+    d.add_argument("--llm", action="store_true", help="Bedrock으로 이유 문장·피드백 번역 (AWS 자격 필요. v2는 사진도 보낸다 — 크로스 리전 프로필이라 국외로 나간다)")
 
     x = sub.add_parser("reset", help="추천·evidence 초기화 (분석 결과는 유지) — 처음부터 다시")
     x.add_argument("--gallery", required=True)
@@ -75,7 +89,7 @@ def main(argv: list[str] | None = None) -> None:
     settings = pipe.settings_from(base)
     gal, store_mod = pipe.gallery, pipe.store
     use_db = getattr(args, "db", False)
-    st = store_mod.LocalStore(settings.out_root)
+    st = store_mod.LocalStore(settings.out_root, dataset_root=settings.dataset_root)
 
     if args.cmd == "analyze":
         if args.list:
@@ -90,6 +104,25 @@ def main(argv: list[str] | None = None) -> None:
             return
         refs = gal.load_local(settings.dataset_root, args.gallery, limit=args.limit, jpg_only=not args.all_formats)
         result = analyze_job.run(st, args.gallery, refs, settings, force=args.force, use_vlm=not args.no_vlm)
+        if args.llm and settings.pipeline == "v3":
+            result["naming"] = pipe.naming_module().run(st, args.gallery, settings,
+                                                        pipe.bedrock_client(settings), job_id=None)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+
+    if args.cmd == "naming":
+        if settings.pipeline != "v3":
+            sys.exit("naming 은 v3 전용이다 — --pipeline v3 (또는 PHOTOSELECT_PIPELINE=v3)")
+        llm = pipe.bedrock_client(settings)
+        if args.db:
+            from photoselect import jobs
+            dbst = store_mod.DbStore(settings)
+            if args.job_id is not None and not jobs.claim(dbst.conn, jobs.ANALYSIS, args.job_id):
+                sys.exit(f"잡 {args.job_id} 은 PENDING 이 아니다 (없거나 다른 워커가 집었다)")
+            result = worker.run_analysis_job_v3(dbst, args.job_id, int(args.gallery), "NAMING",
+                                                settings, llm=llm)
+        else:
+            result = pipe.naming_module().run(st, args.gallery, settings, llm, job_id=None)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 
@@ -132,8 +165,13 @@ def _run_db_analyze(args, settings, pipe) -> None:
     st = pipe.store.DbStore(settings)
     if args.job_id is not None and not jobs.claim(st.conn, jobs.ANALYSIS, args.job_id):
         sys.exit(f"잡 {args.job_id} 은 PENDING 이 아니다 (없거나 다른 워커가 집었다)")
-    result = worker.run_analysis_job(st, args.job_id, int(args.gallery), settings,
-                                     force=args.force, use_vlm=not args.no_vlm, limit=args.limit)
+    if settings.pipeline == "v3":
+        llm = pipe.bedrock_client(settings) if args.llm else None
+        result = worker.run_analysis_job_v3(st, args.job_id, int(args.gallery), "FULL", settings,
+                                            llm=llm, force=args.force, limit=args.limit)
+    else:
+        result = worker.run_analysis_job(st, args.job_id, int(args.gallery), settings,
+                                         force=args.force, use_vlm=not args.no_vlm, limit=args.limit)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

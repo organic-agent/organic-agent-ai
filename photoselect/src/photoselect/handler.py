@@ -1,7 +1,7 @@
 """Lambda 진입점 (B). 이벤트: {"jobId": M} 또는 {"selectionId": N, "mode": "draft"|"refine"}.
 
 A(전수 분석)는 Lambda가 아니라 워커(`python -m photoselect worker`)가 돈다. 여기는 B만 받는다.
-파이프라인은 환경변수 PHOTOSELECT_PIPELINE(기본 v2), 근거 다듬기는 LLM_REASONS=1 이면 Bedrock(텍스트만).
+파이프라인은 환경변수 PHOTOSELECT_PIPELINE(기본 v2), 근거 문장은 LLM_REASONS=1 이면 Bedrock(v2 는 사진도 보낸다 — global. 크로스 리전).
 """
 
 from __future__ import annotations

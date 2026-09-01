@@ -79,7 +79,7 @@ photoselect ECR 컨테이너 이미지 (단일)
 
 | 용도 | 모델 | 이유 |
 |---|---|---|
-| A-5 근거 문장화 (배치) | `anthropic.claude-opus-5` | 품질 우선, 사용자 비대기 — 갤러리당 1회라 원가 허용 |
+| A-5 근거 문장화 (배치) | `global.anthropic.claude-sonnet-4-6` (Sonnet 5 는 계정 액세스 대기) | 사진 + 재료를 함께 보내 설득형 문장. 갤러리당 라운드 1회, 10장/호출 |
 | B-2 사진 진단 (동기) | 저지연 티어 (예: `anthropic.claude-haiku-*`) — 스파이크에서 품질 확인 후 확정 | 사용자 대기 2~3초 목표 |
 
 - 리전: `ap-northeast-2` 우선, 미제공 모델은 크로스 리전 프로필 `apac.anthropic.…` (스파이크

@@ -33,6 +33,30 @@
 v2 가 DB 에 쓸 때 VLM 컬럼(scene·framing·lighting·expression)은 `unknown`, `concept_id` 는
 `sub_scores.concept_id` 로 들어간다 — wes 마이그레이션(CHECK 완화·컬럼 추가) 전까지의 임시 (`docs/plan-v2-slim.md` §4).
 
+### v3 — 폴더화 (V45 스키마)
+
+v3 는 **폴더화 파이프라인**이다 (wes `docs/plans/ai-folder-structure.md`, V45). v2 는 손대지 않고
+그대로 두며(V29 스키마의 이전 기능), v3 도 같은 파사드 규칙의 독립 사본이다. 추천(draft)은 아직 없다 —
+폴더별 추천(`docs/plan-v3-folder-compare.md`)을 구현할 때 이 패키지에 온다.
+
+- **FULL** — 사진별 분석: ARNIQA·LAION·고전 지표·CLIP zero-shot 피사체 + 연사 클러스터 +
+  **임베딩 그룹**(`embed_group_id`, concat(DINOv3⊕CLIP) 계층 클러스터, 거리 0.2). CLIP 벡터는
+  `photo_analysis.clip_embedding` 에 저장한다. 끝에 naming 까지 이어 돈다.
+- **naming** — 크기순 상위 K그룹 대표 1장씩만 Bedrock Sonnet 에 (청크 → 통합 1회). 부모는 촬영
+  종류(`galleries.shoot_type`)별 닫힌 목록(스키마 enum 강제), 컨셉은 열린 이름. K 밖 소그룹은
+  concat 최근접 상속(τ 초과면 '기타'+needs_review), CLIP zero-shot 은 부모 **검증 전용**.
+  산출물은 `ai_concept_assignments`(잡에 매달림) — 폴더 구체화는 wes `POST /folder-groups/ai`.
+- model_version `photoselect-v3-a-0.1`, 로컬 출력 `out/v3/<gallery>/`.
+
+```bash
+python -m photoselect --pipeline v3 worker --llm                          # 웹 버튼(FULL·NAMING 잡) 처리
+python -m photoselect --pipeline v3 analyze --db --gallery 12 --llm       # FULL 수동 실행 (naming까지)
+python -m photoselect --pipeline v3 naming  --db --gallery 12 --job-id J  # naming만 다시
+```
+
+v3 잡(FULL·NAMING)은 naming 산출물까지가 계약이라 워커를 `--llm` 없이 띄우면 잡을 시작하지 않고
+바로 실패시킨다. v3 아닌 워커가 NAMING 잡을 집으면 명확한 메시지로 FAILED 처리한다.
+
 ## AI 추천 기능 지도 — 무엇이 기능이고 무엇이 아닌가
 
 ```
@@ -85,7 +109,7 @@ photoselect/
                                         ▼  ai_recommendations
 [C 텍스트 LLM]  B 안에서 호출, Bedrock, 텍스트만 전송    llm/
    client.py          Bedrock structured-output 래퍼
-   reasons.py         초안 확정 시 사진별 이유 문장 1회 일괄 — 코드북 프롬프트(수치의 뜻·한계), 재료는 draft 가 준 사실만
+   reasons.py         초안 확정 시 사진별 이유 문장 일괄 — 사진(본인 + 형제 컷) + 코드북 재료를 Sonnet 에 주고 설득형 문장을 받는다
    feedback.py        자연어 피드백("가족 사진 더") → 축 가중치 delta
 ```
 

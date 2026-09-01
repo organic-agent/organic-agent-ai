@@ -24,9 +24,12 @@ class V2Knobs:
     #: 컨셉 그룹 수가 이 범위를 벗어나면 임계를 자동 조정한다(갤러리마다 분포가 다르다).
     concept_min_groups: int = 4
     concept_max_share: float = 0.5     # 최대 그룹 ≤ N·share
-    #: CLIP zero-shot 피사체 태깅. 정밀도 스파이크 통과 전까지 **계산은 하되 점수·근거에는 안 쓴다**.
+    #: CLIP zero-shot 피사체 태깅. 2026-08-29 갤러리 1(822장, DINOv3 재임베딩 후) 사람 검증:
+    #: 확신 라벨(margin ≥ 0.01) 무작위 36장 = 36 정답(신부 12·신랑 12·커플 12). 보류(unknown) 84장의
+    #: argmax 는 커플 70 정답, 신부/신랑 14 중 9가 실은 커플 → margin 게이트가 애매한 것만 걸러낸다.
+    #: 그래서 trusted=True. 다른 갤러리(본식·야외)에서 같은 방식으로 재확인할 것.
     subjects_zero_shot: bool = True
-    subjects_trusted: bool = False
+    subjects_trusted: bool = True
 
     # ── 추천 B ──
     w_technical: float = 0.5
@@ -48,14 +51,22 @@ class V2Knobs:
 
 @dataclass(frozen=True)
 class LlmKnobs:
-    """C — Bedrock 텍스트 호출. tech-stack.md §5 · spike-report 08-20 가용성 확인."""
+    """C — Bedrock 호출. tech-stack.md §5 · client.py 머리말."""
 
-    #: 서울 온디맨드에 Haiku 4.5가 없어 global. 크로스 리전 프로필. 텍스트만 보내므로 무방.
+    #: 서울 온디맨드에 Sonnet이 없어 global. 크로스 리전 프로필. 이미지도 보내므로 국외 라우팅을 감수한다.
+    #: `global.anthropic.claude-sonnet-5` 는 이 계정에 모델 액세스가 아직 없다(2026-08-30 403) — Bedrock 콘솔에서
+    #: 열리면 그 id 로 바꾼다. 4.6 은 이미지 + output_config 실호출 확인.
     aws_region: str = "ap-northeast-2"
-    model_id: str = "global.anthropic.claude-haiku-4-5-20251001-v1:0"
-    #: 이유 문장 한 호출에 넣는 사진 수. 30장 초안이면 1회.
-    reasons_batch: int = 40
-    reasons_max_tokens: int = 4096
+    model_id: str = "global.anthropic.claude-sonnet-4-6"
+    #: 이유 문장 한 호출에 넣는 사진 수. 사진마다 이미지(본인 + 형제)가 붙으므로 작게 — 30장 초안이면 3회.
+    reasons_batch: int = 10
+    reasons_max_tokens: int = 8192
+    #: 사진을 LLM 에 보여 줄지. 끄면 텍스트 재료만 간다(옛 동작).
+    reasons_vision: bool = True
+    #: LLM 에 보내는 JPEG 의 긴 변. 768이면 장당 ~800 토큰.
+    reasons_image_long_edge: int = 768
+    #: 비교 대상으로 같이 보여 줄 형제(연사) 사진 최대 수.
+    reasons_sibling_images: int = 2
     feedback_max_tokens: int = 512
 
 

@@ -110,7 +110,8 @@ class LocalStore:
         recommendations.jsonl   초안 (round별 누적)
     """
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, dataset_root: Path | None = None) -> None:
+        # dataset_root 는 v2 와 생성자 모양을 맞추기 위한 것. v1 은 쓰지 않는다.
         self.root = Path(root)
 
     def _dir(self, gallery: str) -> Path:

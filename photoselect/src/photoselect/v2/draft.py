@@ -5,7 +5,7 @@
     score = z(0.5·tech_pct + 0.5·aes_pct)  [+ 균형·선호, 4단계]
     후보 = 전체 − 담은 사진 − 이전 라운드에 보여준 사진 − 거절
     컨셉 그룹 쿼터 → 연사 클러스터당 1장 → MMR → k장
-    근거: balance › quality › sibling › concept › score › diversity  → 템플릿 → (LLM 다듬기)
+    근거: balance › quality › sibling › concept › score › diversity  → 템플릿 → (LLM: 사진 + 형제 컷 + 재료로 설득문)
     → write_recommendations
 
 품질로 사진을 **제거하는 단계는 없다.** 점수가 낮아도 컨셉 쿼터·MMR 로 뽑힐 수 있고, 안 뽑힌 사진은
@@ -163,10 +163,21 @@ def run(store: Store, gallery: str, settings: Settings, selection_id: str | None
             breakdown["subjects"] = row.subjects
         recs.append(Recommendation(photo_id=row.photo_id, round=round_no, rank=rank,
                                    score_breakdown=breakdown, reason=text))
-        inputs.append(reasons.ReasonInput(photo_id=row.photo_id, primary=primary, facts=facts, fallback=text))
+        image_path, sib_images = None, []
+        if llm is not None and settings.llm.reasons_vision:
+            image_path = store.preview_path(gallery, row.photo_id)
+            if image_path:
+                for a in alternatives[:settings.llm.reasons_sibling_images]:
+                    sp = store.preview_path(gallery, a["photo_id"])
+                    if sp:
+                        sib_images.append(reasons.SiblingImage(a["photo_id"], a["why_not"], sp))
+        inputs.append(reasons.ReasonInput(photo_id=row.photo_id, primary=primary, facts=facts, fallback=text,
+                                          image_path=image_path, siblings=sib_images))
 
     if llm is not None and recs:
-        texts = reasons.generate(llm, inputs, settings.llm.reasons_batch, settings.llm.reasons_max_tokens)
+        lk = settings.llm
+        texts = reasons.generate(llm, inputs, lk.reasons_batch, lk.reasons_max_tokens,
+                                 vision=lk.reasons_vision, image_long_edge=lk.reasons_image_long_edge)
         for r in recs:
             r.reason = texts.get(r.photo_id, r.reason)
     store.write_recommendations(gallery, recs)

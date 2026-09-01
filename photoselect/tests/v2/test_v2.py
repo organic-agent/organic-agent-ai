@@ -132,13 +132,68 @@ def test_reasons_template_and_facts():
 def test_reasons_generate_guardrails():
     class Fake:
         def complete_json(self, system, user, schema, max_tokens):
+            assert isinstance(user, str) and "(사진 없음)" in user
             return {"reasons": [{"photo_id": "a", "reason": "짧고 좋은 문장이에요"},
                                 {"photo_id": "zzz", "reason": "요청에 없는 사진"},
                                 {"photo_id": "b", "reason": "x" * 61}]}
     items = [reasons.ReasonInput("a", "quality", ["품질: 미학 상위 5%"], "템플릿 a"),
              reasons.ReasonInput("b", "quality", [], "템플릿 b")]
-    out = reasons.generate(Fake(), items)
+    out = reasons.generate(Fake(), items, vision=False)
     assert out == {"a": "짧고 좋은 문장이에요", "b": "템플릿 b"}
+
+
+def test_reasons_generate_with_images(tmp_path):
+    """사진이 붙은 컷은 이미지 블록(본인 + 형제)이 가고 긴 문장이 허용된다. 사진 없는 컷은 60자 상한."""
+    a, s1 = tmp_path / "a.jpg", tmp_path / "s1.jpg"
+    Image.new("RGB", (1200, 800), "white").save(a)
+    Image.new("RGB", (800, 1200), "gray").save(s1)
+    seen = {}
+
+    class Fake:
+        def complete_json(self, system, user, schema, max_tokens):
+            seen["user"] = user
+            return {"reasons": [{"photo_id": "a", "reason": "조명이 정말 예술입니다. " * 12},
+                                {"photo_id": "b", "reason": "x" * 61}]}
+    items = [reasons.ReasonInput("a", "sibling", ["형제: 2장"], "템플릿 a", image_path=str(a),
+                                 siblings=[reasons.SiblingImage("s1", "덜 선명함", str(s1))]),
+             reasons.ReasonInput("b", "quality", [], "템플릿 b")]
+    out = reasons.generate(Fake(), items, image_long_edge=256)
+    user = seen["user"]
+    assert isinstance(user, list)
+    images = [p for k, p in user if k == "image"]
+    assert len(images) == 2 and all(isinstance(b, bytes) and b[:2] == b"\xff\xd8" for b in images)
+    texts = " ".join(p for k, p in user if k == "text")
+    assert "덜 선명함" in texts and "(사진 없음)" in texts
+    assert out["a"].startswith("조명이 정말") and len(out["a"]) > reasons.MAX_TEXT_ONLY_CHARS
+    assert out["b"] == "템플릿 b"
+
+    # 줄인 JPEG 의 긴 변 확인
+    from photoselect.v2.llm.client import jpeg_bytes, to_content
+    import io
+    assert max(Image.open(io.BytesIO(jpeg_bytes(str(a), 256))).size) == 256
+    blocks = to_content(user)
+    assert blocks[0]["type"] == "text" and any(b["type"] == "image" for b in blocks)
+
+
+def test_draft_sends_images_when_store_knows_paths(tmp_path):
+    store, rows, E, settings = _world(tmp_path)
+    ds = tmp_path / "ds"
+    ds.mkdir()
+    for r in rows:
+        Image.new("RGB", (64, 48), "white").save(ds / r.photo_id, format="JPEG")
+    store.dataset_root = ds
+    calls = []
+
+    class Fake:
+        def complete_json(self, system, user, schema, max_tokens):
+            calls.append(user)
+            ids = [p.split("photo_id: ")[1].split("\n")[0] for k, p in user if k == "text" and "photo_id: " in p]
+            return {"reasons": [{"photo_id": i, "reason": "사진을 보고 쓴 긴 문장입니다. " * 5} for i in ids]}
+    r1 = draft.run(store, "g", settings, top_k=10, target=20, llm=Fake())
+    assert r1["llm"] is True and len(calls) == 1
+    assert sum(1 for k, _ in calls[0] if k == "image") >= 10
+    recs = store.read_recommendations("g")
+    assert all(r.reason.startswith("사진을 보고") for r in recs)
 
 
 def test_draft_round_trip(tmp_path):

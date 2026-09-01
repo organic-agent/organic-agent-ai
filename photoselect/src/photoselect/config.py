@@ -35,8 +35,8 @@ class Settings:
     s3_bucket: str | None = None
     #: DB 모드에서 미리보기를 내려받는 자리. 갤러리마다 하위 폴더.
     work_dir: Path = Path("/tmp/photoselect")
-    #: 어느 파이프라인을 돌릴지 — "v1"(VLM·얼굴·BT) 또는 "v2"(슬림). CLI --pipeline 이 우선, 다음은
-    #: 환경변수 PHOTOSELECT_PIPELINE, 기본 v2. 워커·Lambda 도 이 값을 본다.
+    #: 어느 파이프라인을 돌릴지 — "v1"(VLM·얼굴·BT) / "v2"(슬림) / "v3"(폴더화, V45).
+    #: CLI --pipeline 이 우선, 다음은 환경변수 PHOTOSELECT_PIPELINE, 기본 v2. 워커·Lambda 도 이 값을 본다.
     pipeline: str = "v2"
 
     @property
