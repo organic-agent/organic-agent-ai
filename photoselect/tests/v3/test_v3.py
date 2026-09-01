@@ -10,7 +10,7 @@ from PIL import Image
 
 from photoselect.v3.analyze import assign_ranks, concat_space, percentile
 from photoselect.v3.config import PARENTS, Settings, V3Knobs, V3_MODEL_VERSION
-from photoselect.v3 import cluster, concept, draft, naming
+from photoselect.v3 import cluster, compare, concept, draft, naming
 from photoselect.v3.store import ConceptAssignment, FolderSetMissing, LocalStore, PhotoAnalysis
 
 
@@ -406,6 +406,78 @@ def test_draft_two_stage_reasons_with_llm(tmp_path):
     assert stages[1][0] == "update" and all(t.startswith("LLM이 본") for t in stages[1][1])
     assert llm.calls >= 1
     assert all(r.reason.startswith("LLM이 본") for r in spy.read_recommendations("g"))
+
+
+# ── 비교샷 (compare, plan-v3-folder-compare.md §3) ───────────────────────────
+def _pa(pid, tech=50.0, aes=50.0, sharp=100.0, cluster=-1, cluster_rank=0, subjects="couple"):
+    return PhotoAnalysis(photo_id=pid, subjects=subjects, technical_pct=tech, aesthetic_pct=aes,
+                         sub_scores={"sharpness": sharp}, cluster_id=cluster,
+                         cluster_rank=cluster_rank, model_version=V3_MODEL_VERSION)
+
+
+def test_compare_template_priority_sharpness_then_pcts():
+    a, b = _pa("a", sharp=200.0), _pa("b", sharp=100.0)
+    assert compare.template_verdict(a, b)[0] == "a"             # 초점 1.25배 우선
+    a, b = _pa("a", tech=40.0), _pa("b", tech=60.0)
+    assert compare.template_verdict(a, b)[0] == "b"             # 다음은 기술 백분위
+    a, b = _pa("a", aes=70.0), _pa("b", aes=60.0)
+    assert compare.template_verdict(a, b)[0] == "a"             # 다음은 미학
+    a, b = _pa("a"), _pa("b")
+    assert compare.template_verdict(a, b)[0] == "a"             # 차이 없으면 a
+
+
+def test_compare_facts_burst_folder_selected():
+    a = _pa("a", tech=70.0, cluster=3, cluster_rank=0)
+    b = _pa("b", tech=50.0, cluster=3, cluster_rank=1, subjects="bride")
+    facts, d = compare.collect_facts(a, b, "실내 › 세트0", "야외 › 해변", {"b"})
+    text = "\n".join(facts)
+    assert "연사" in text and d["same_burst"]["best"] == "a"
+    assert "기술" in text and "20포인트" in text
+    assert "실내 › 세트0" in text and "야외 › 해변" in text
+    assert "유형" in text and "이미 담은" in text
+
+
+class FakeCompareLlm:
+    def __init__(self, out):
+        self.out, self.calls = out, 0
+
+    def complete_json(self, system, user, schema, max_tokens):
+        self.calls += 1
+        if isinstance(self.out, Exception):
+            raise self.out
+        return self.out
+
+
+def _compare_world(tmp_path):
+    store, rows, *_ , settings = _named_world(tmp_path)
+    a, b = rows[0].photo_id, rows[1].photo_id
+    return store, settings, a, b
+
+
+def test_compare_llm_verdict_saved_and_cached_order_free(tmp_path):
+    store, settings, a, b = _compare_world(tmp_path)
+    llm = FakeCompareLlm({"chosen": "b", "confidence": "clear", "reason": "시선이 살아 있어요"})
+    r1 = compare.run(store, "g", settings, a, b, llm=llm)
+    assert r1["chosenPhotoId"] == b and r1["source"] == "llm" and not r1["cached"]
+    r2 = compare.run(store, "g", settings, b, a, llm=llm)     # 순서를 뒤집어도 캐시
+    assert r2["cached"] and r2["chosenPhotoId"] == b and llm.calls == 1
+
+
+def test_compare_falls_back_to_template_on_bad_llm(tmp_path):
+    store, settings, a, b = _compare_world(tmp_path)
+    for bad in (FakeCompareLlm({"chosen": "c", "confidence": "clear", "reason": "x"}),
+                FakeCompareLlm(RuntimeError("timeout"))):
+        (store._dir("g") / "verdicts.jsonl").unlink(missing_ok=True)
+        r = compare.run(store, "g", settings, a, b, llm=bad)
+        assert r["source"] == "template" and r["chosenPhotoId"] in (a, b) and r["reason"]
+
+
+def test_compare_without_llm_uses_template_and_requires_analysis(tmp_path):
+    store, settings, a, b = _compare_world(tmp_path)
+    r = compare.run(store, "g", settings, a, b, llm=None)
+    assert r["source"] == "template" and r["confidence"] == "slight"
+    with pytest.raises(SystemExit, match="분석되지 않은"):
+        compare.run(store, "g", settings, a, "ghost.jpg", llm=None)
 
 
 def test_quality_floor_gates_reason_material():
