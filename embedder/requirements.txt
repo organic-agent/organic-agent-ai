@@ -1,0 +1,12 @@
+# torch와 torchvision은 여기 없다. CUDA 빌드가 딸려오지 않게 Dockerfile에서 CPU 인덱스로
+# 따로 깐다. torchvision은 transformers의 fast 이미지 프로세서가 요구한다.
+transformers==5.15.1
+pillow==12.3.0
+# 아이폰 HEIC. 없으면 그 사진들만 통째로 실패한다.
+pillow-heif==1.5.0
+numpy==2.5.2
+psycopg[binary]==3.3.4
+pgvector==0.5.0
+# boto3는 Lambda 베이스 이미지에 이미 있지만, RDS IAM 토큰 생성과 S3 읽기에 쓰이고
+# 로컬 실행도 같은 requirements를 쓰므로 명시한다.
+boto3==1.42.97
