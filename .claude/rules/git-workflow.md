@@ -5,7 +5,7 @@
 
 ## 모듈 prefix
 
-최상위 디렉토리 이름이 곧 모듈 이름이다. 현재: `notionchat`, `photoselect`.
+최상위 디렉토리 이름이 곧 모듈 이름이다. 현재: `notionchat`, `photoselect`, `embedder`.
 새 모듈이 생기면 그 디렉토리 이름을 그대로 쓴다.
 
 - 한 이슈/브랜치/PR은 **한 모듈만** 다룬다. 두 모듈을 건드리면 이슈를 나눈다.

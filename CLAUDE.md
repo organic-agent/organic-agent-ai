@@ -82,7 +82,8 @@ RDS는 퍼블릭 접근이 없다. 로컬 실행 전 wes의 스크립트로 SSM 
 ## 참조 저장소 (sibling)
 
 - `../organic-agent-server/wes` — 메인 백엔드. 도메인 규칙·컨벤션은 그 repo의 `CLAUDE.md`와
-  `.claude/rules/`를 따른다. embedder가 이 서버의 배치 구조 원형이다.
+  `.claude/rules/`를 따른다. embedder는 그 repo에서 이 repo의 `embedder/` 모듈로 이관됐다(#20) —
+  배치 구조(handler/__main__ 동일 코드)의 원형이자 photoselect의 선행 단계(preview·DINOv3 적재)다.
 - `../organic-agent-test-web` — 프론트 (P1 앨범 에디터의 본체)
 - `../organic-agent-infra` — Terraform (VPC/RDS/S3/Lambda)
 - `../dataset` — 평가용 사진 데이터
