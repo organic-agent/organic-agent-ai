@@ -7,8 +7,8 @@ v2 store의 복제·개편. V45에서 바뀐 계약:
     임베더 것이라 여전히 건드리지 않는다
   · naming 잡의 산출물은 ai_concept_assignments (job_id에 매달림)
 
-접근 규칙(CLAUDE.md)은 그대로 인터페이스 모양으로 강제한다 — 쓰기는 `write_analysis`와
-`write_assignments` 둘뿐이고, photo_ratings·photo_selection_items는 읽지도 않는다.
+접근 규칙(CLAUDE.md)은 그대로 인터페이스 모양으로 강제한다 — 쓰기는 `write_scores`·`write_groups`
+(둘을 합친 `write_analysis`)와 `write_assignments`뿐이고, photo_ratings·photo_selection_items는 읽지도 않는다.
 추천·비교샷 저장소(폴더 세트·ai_recommendations·ai_pair_verdicts)는 wes로 갔다(#25).
 """
 
@@ -61,6 +61,9 @@ class Store(Protocol):
     def read_analysis(self, gallery: str) -> list[PhotoAnalysis]: ...
     def read_embeddings(self, gallery: str) -> tuple[list[str], np.ndarray]: ...
     def read_clip_embeddings(self, gallery: str) -> tuple[list[str], np.ndarray]: ...
+    def write_scores(self, gallery: str, rows: list[PhotoAnalysis],
+                     clip_embeddings: tuple[list[str], np.ndarray]) -> None: ...
+    def write_groups(self, gallery: str, rows: list[PhotoAnalysis]) -> None: ...
     def write_analysis(self, gallery: str, rows: list[PhotoAnalysis],
                        embeddings: tuple[list[str], np.ndarray],
                        clip_embeddings: tuple[list[str], np.ndarray]) -> None: ...
@@ -108,16 +111,52 @@ class LocalStore:
     def read_clip_embeddings(self, gallery: str) -> tuple[list[str], np.ndarray]:
         return self._read_npy(gallery, "clip_embeddings")
 
+    def _write_rows(self, gallery: str, rows: list[PhotoAnalysis]) -> None:
+        with (self._dir(gallery) / "analysis.jsonl").open("w", encoding="utf-8") as f:
+            for r in rows:
+                f.write(json.dumps(asdict(r), ensure_ascii=False) + "\n")
+
+    def _merge_rows(self, gallery: str, rows: list[PhotoAnalysis], fields: tuple[str, ...]) -> None:
+        """photo_id 로 합친다 — 주어진 필드만 덮고, 없던 사진은 새 행. 순서는 기존 → 신규."""
+        by_id = {r.photo_id: r for r in self.read_analysis(gallery)}
+        for r in rows:
+            cur = by_id.get(r.photo_id)
+            if cur is None:
+                by_id[r.photo_id] = r
+                continue
+            for f in fields:
+                setattr(cur, f, getattr(r, f))
+        self._write_rows(gallery, list(by_id.values()))
+
+    def _write_npy(self, gallery: str, name: str, ids: list[str], emb: np.ndarray) -> None:
+        d = self._dir(gallery)
+        (d / f"{name}_ids.json").write_text(json.dumps(ids, ensure_ascii=False), encoding="utf-8")
+        np.save(d / f"{name}.npy", emb)
+
+    def write_scores(self, gallery: str, rows: list[PhotoAnalysis],
+                     clip_embeddings: tuple[list[str], np.ndarray]) -> None:
+        """SCORE 의 컬럼만 — subjects · sub_scores · model_version + CLIP 벡터(기존과 합침)."""
+        self._merge_rows(gallery, rows, ("subjects", "sub_scores", "model_version"))
+        ids, emb = clip_embeddings
+        if len(ids):
+            prev_ids, prev = self.read_clip_embeddings(gallery)
+            merged = dict(zip(prev_ids, prev)) if len(prev_ids) else {}
+            merged.update(zip(ids, emb))
+            all_ids = list(merged)
+            self._write_npy(gallery, "clip_embeddings", all_ids, np.stack([merged[i] for i in all_ids]))
+
+    def write_groups(self, gallery: str, rows: list[PhotoAnalysis]) -> None:
+        """CATEGORIZE 의 컬럼만 — 백분위 · 연사 · 그룹 · sub_scores(sharpness_pct·rank_reason 포함)."""
+        self._merge_rows(gallery, rows, ("technical_pct", "aesthetic_pct", "sub_scores",
+                                         "cluster_id", "cluster_rank", "embed_group_id"))
+
     def write_analysis(self, gallery: str, rows: list[PhotoAnalysis],
                        embeddings: tuple[list[str], np.ndarray],
                        clip_embeddings: tuple[list[str], np.ndarray]) -> None:
-        d = self._dir(gallery)
-        with (d / "analysis.jsonl").open("w", encoding="utf-8") as f:
-            for r in rows:
-                f.write(json.dumps(asdict(r), ensure_ascii=False) + "\n")
+        """전부 한 번에 (테스트·합성 데이터용). 임베더 벡터는 여기서만 쓴다."""
+        self._write_rows(gallery, rows)
         for name, (ids, emb) in (("embeddings", embeddings), ("clip_embeddings", clip_embeddings)):
-            (d / f"{name}_ids.json").write_text(json.dumps(ids, ensure_ascii=False), encoding="utf-8")
-            np.save(d / f"{name}.npy", emb)
+            self._write_npy(gallery, name, ids, emb)
 
     def write_assignments(self, gallery: str, job_id: int | None,
                           rows: list[ConceptAssignment]) -> None:
@@ -169,7 +208,7 @@ class DbStore:
         self._storage = None
 
     def preview_path(self, gallery: str, photo_id: str) -> str | None:
-        """analyze가 내려받은 미리보기가 work_dir에 있으면 그것, 없으면 S3에서 다시 받는다."""
+        """score가 내려받은 미리보기가 work_dir에 있으면 그것, 없으면 S3에서 다시 받는다(naming 대표 사진용)."""
         dest = Path(self._settings.work_dir) / str(gallery) / f"{photo_id}.jpg"
         if dest.is_file() and dest.stat().st_size > 0:
             return str(dest)
@@ -237,6 +276,54 @@ class DbStore:
     def read_clip_embeddings(self, gallery: str) -> tuple[list[str], np.ndarray]:
         """이 배치가 저장한 CLIP ViT-L/14. naming 잡이 재분석 없이 다시 돌기 위한 저장분."""
         return self._read_vectors(gallery, "clip_embedding", None)
+
+    def write_scores(self, gallery: str, rows: list[PhotoAnalysis],
+                     clip_embeddings: tuple[list[str], np.ndarray]) -> None:
+        """SCORE 의 컬럼만 UPSERT — subjects · sub_scores · clip_embedding · model_version.
+        백분위·클러스터·그룹은 CATEGORIZE 의 것이라 건드리지 않는다(기존 값 유지).
+        embedding·embedding_model 은 임베더의 것 — 역시 건드리지 않는다."""
+        clip_map = dict(zip(*clip_embeddings)) if clip_embeddings[0] else {}
+        params = [(int(r.photo_id), r.subjects, _jsonb(r.sub_scores), clip_map.get(r.photo_id), r.model_version)
+                  for r in rows]
+        if not params:
+            return
+        with self.conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO photo_analysis
+                    (photo_id, subjects, sub_scores, clip_embedding, model_version,
+                     analyzed_at, created_at, updated_at)
+                VALUES (%s, %s, %s::jsonb, %s, %s, now(), now(), now())
+                ON CONFLICT (photo_id) DO UPDATE SET
+                    subjects = EXCLUDED.subjects, sub_scores = EXCLUDED.sub_scores,
+                    clip_embedding = EXCLUDED.clip_embedding, model_version = EXCLUDED.model_version,
+                    analyzed_at = now(), updated_at = now(), version = photo_analysis.version + 1
+                """,
+                params,
+            )
+        self.conn.commit()
+        log.info("photo_analysis 점수 적재: gallery=%s %d행", gallery, len(params))
+
+    def write_groups(self, gallery: str, rows: list[PhotoAnalysis]) -> None:
+        """CATEGORIZE 의 컬럼만 UPDATE — 행은 SCORE 가 만들어 두었다."""
+        params = [(float(r.technical_pct), float(r.aesthetic_pct), _jsonb(r.sub_scores),
+                   int(r.cluster_id), int(r.cluster_rank), int(r.embed_group_id), int(r.photo_id))
+                  for r in rows]
+        if not params:
+            return
+        with self.conn.cursor() as cur:
+            cur.executemany(
+                """
+                UPDATE photo_analysis
+                SET technical_pct = %s, aesthetic_pct = %s, sub_scores = %s::jsonb,
+                    cluster_id = %s, cluster_rank = %s, embed_group_id = %s,
+                    analyzed_at = now(), updated_at = now(), version = version + 1
+                WHERE photo_id = %s
+                """,
+                params,
+            )
+        self.conn.commit()
+        log.info("photo_analysis 그룹 적재: gallery=%s %d행", gallery, len(params))
 
     def write_analysis(self, gallery: str, rows: list[PhotoAnalysis],
                        embeddings: tuple[list[str], np.ndarray],

@@ -1,18 +1,23 @@
-"""photoselect_v1 단위 테스트 — 합성 데이터로 임베딩 그룹·naming(가짜 LLM)·LocalStore 왕복을 돈다. 모델 없음.
-추천·비교샷 테스트는 wes로 갔다(#25)."""
+"""photoselect_v1 단위 테스트 — 합성 데이터로 SCORE 재개·CATEGORIZE(임베딩 그룹)·naming(가짜 LLM)·
+LocalStore 왕복을 돈다. 모델 없음(torch 없이 돈다). 추천·비교샷 테스트는 wes로 갔다(#25)."""
 
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+import types
 
 import numpy as np
 import pytest
 from PIL import Image
 
-from photoselect_v1.foldering.analyze import assign_ranks, concat_space, percentile
+from photoselect_v1.foldering.categorize import assign_ranks, concat_space, percentile
 from photoselect_v1.config import PARENTS, Settings, Knobs, MODEL_VERSION
-from photoselect_v1.foldering import cluster, concept, naming
+from photoselect_v1.foldering import categorize, cluster, concept, naming, score
+from photoselect_v1.gallery import PhotoRef
 from photoselect_v1.store import ConceptAssignment, LocalStore, PhotoAnalysis
+from photoselect_v1.subjects import majority
 
 
 def _unit(v):
@@ -20,8 +25,9 @@ def _unit(v):
     return v / np.linalg.norm(v)
 
 
-def _world(tmp_path, n_groups=3, per_group=10, seed=0):
-    """그룹마다 중심 벡터 + 노이즈. E(임베더)·C(CLIP)는 같은 그룹 구조를 공유한다."""
+def _world(tmp_path, n_groups=3, per_group=10, seed=0, clip_parent="실내 스튜디오"):
+    """그룹마다 중심 벡터 + 노이즈. E(임베더)·C(CLIP)는 같은 그룹 구조를 공유한다.
+    clip_parent 는 SCORE 가 사진마다 저장하는 부모 검증 라벨(sub_scores.clip_parent)이다."""
     rng = np.random.default_rng(seed)
     dim = 32
     centers = [_unit(rng.normal(size=dim)) for _ in range(n_groups)]
@@ -35,7 +41,8 @@ def _world(tmp_path, n_groups=3, per_group=10, seed=0):
                 photo_id=pid, subjects="couple",
                 sub_scores={"technical_score": rng.uniform(0.3, 0.8),
                             "aesthetic_score": rng.uniform(5, 6.5),
-                            "sharpness": rng.uniform(50, 500)},
+                            "sharpness": rng.uniform(50, 500),
+                            "clip_parent": clip_parent},
                 model_version=MODEL_VERSION))
     E, C = np.stack(E), np.stack(C)
     for r, t in zip(rows, percentile([r.sub_scores["technical_score"] for r in rows])):
@@ -186,19 +193,10 @@ class FakeLlm:
         return {"groups": out}
 
 
-class FakeVerifier:
-    def __init__(self, answer):
-        self.answer = answer
-
-    def majority(self, clip_embs):
-        return self.answer
-
-
 def test_naming_all_groups_named_by_vlm(tmp_path):
     store, rows, *_ , settings = _world(tmp_path)
     llm = FakeLlm()
-    result = naming.run(store, "g", settings, llm, job_id=None,
-                        verifier=FakeVerifier("실내 스튜디오"))
+    result = naming.run(store, "g", settings, llm, job_id=None)
     back = store.read_assignments("g")
     n_groups = len({r.embed_group_id for r in rows})
     assert len(back) == n_groups == result["groups"]
@@ -208,12 +206,11 @@ def test_naming_all_groups_named_by_vlm(tmp_path):
 
 
 def test_naming_nearest_inherits_and_flags_far_groups(tmp_path):
-    store, rows, *_, settings = _world(tmp_path, n_groups=4, per_group=8)
+    store, rows, *_, settings = _world(tmp_path, n_groups=4, per_group=8, clip_parent=None)
     k = Knobs(naming_max_groups=2, nearest_tau=0.05)    # 상위 2그룹만 VLM, τ 빡빡하게
     settings = Settings(out_root=settings.out_root, dataset_root=settings.dataset_root,
                         knobs=k, llm=settings.llm)
-    result = naming.run(store, "g", settings, FakeLlm(), job_id=None,
-                        verifier=FakeVerifier(None))
+    result = naming.run(store, "g", settings, FakeLlm(), job_id=None)
     back = {a.embed_group_id: a for a in store.read_assignments("g")}
     assert result["vlmGroups"] == 2
     nearest = [a for a in back.values() if a.assigned_by == "nearest"]
@@ -226,11 +223,10 @@ def test_naming_nearest_inherits_and_flags_far_groups(tmp_path):
 
 
 def test_naming_low_confidence_and_clip_mismatch_need_review(tmp_path):
-    store, rows, *_, settings = _world(tmp_path)
+    store, rows, *_, settings = _world(tmp_path, clip_parent="야외 자연")   # VLM(실내 스튜디오)과 불일치
     gids = sorted({r.embed_group_id for r in rows})
     llm = FakeLlm(low_conf_gid=gids[0])
-    naming.run(store, "g", settings, llm, job_id=None,
-               verifier=FakeVerifier("야외 자연"))          # VLM(실내 스튜디오)과 불일치
+    naming.run(store, "g", settings, llm, job_id=None)
     back = store.read_assignments("g")
     assert all(a.needs_review for a in back)               # 불일치라 전부 review
     assert all(a.clip_parent == "야외 자연" for a in back)
@@ -243,8 +239,7 @@ def test_naming_merge_call_unifies_names_across_chunks(tmp_path):
     settings = Settings(out_root=settings.out_root, dataset_root=settings.dataset_root,
                         knobs=k, llm=settings.llm)
     llm = FakeLlm()
-    result = naming.run(store, "g", settings, llm, job_id=None,
-                        verifier=FakeVerifier("실내 스튜디오"))
+    result = naming.run(store, "g", settings, llm, job_id=None)
     kinds = [kind for kind, _ in llm.calls]
     assert kinds.count("vision") == 3 and kinds.count("merge") == 1
     assert result["llmCalls"] == 4
@@ -252,13 +247,12 @@ def test_naming_merge_call_unifies_names_across_chunks(tmp_path):
 
 
 def test_naming_coverage_target_limits_vlm_groups(tmp_path):
-    store, rows, *_, settings = _world(tmp_path, n_groups=4, per_group=8)
+    store, rows, *_, settings = _world(tmp_path, n_groups=4, per_group=8, clip_parent=None)
     # 커버리지 50% → 크기순 일부 그룹만 VLM, 나머지는 nearest 상속 (review-v3-design.md (3))
     k = Knobs(naming_coverage=0.5, nearest_tau=1.0)
     settings = Settings(out_root=settings.out_root, dataset_root=settings.dataset_root,
                         knobs=k, llm=settings.llm)
-    result = naming.run(store, "g", settings, FakeLlm(), job_id=None,
-                        verifier=FakeVerifier(None))
+    result = naming.run(store, "g", settings, FakeLlm(), job_id=None)
     assert result["vlmGroups"] < result["groups"]
     assert result["nearestGroups"] == result["groups"] - result["vlmGroups"]
     assert 0.5 <= result["coverage"] < 1.0          # 목표 도달 지점에서 멈춘 실측치
@@ -271,8 +265,7 @@ def test_naming_spread_adds_second_rep(tmp_path):
     settings = Settings(out_root=settings.out_root, dataset_root=settings.dataset_root,
                         knobs=k, llm=settings.llm)
     llm = FakeLlm()
-    result = naming.run(store, "g", settings, llm, job_id=None,
-                        verifier=FakeVerifier("실내 스튜디오"))
+    result = naming.run(store, "g", settings, llm, job_id=None)
     assert result["extraReps"] == result["groups"]
     assert result["vlmGroups"] == result["groups"]   # 대표가 늘어도 전 그룹이 이름을 받는다
 
@@ -287,9 +280,147 @@ def test_naming_requires_full_analysis(tmp_path):
     store = LocalStore(tmp_path / "out", dataset_root=tmp_path)
     settings = Settings(out_root=tmp_path / "out", dataset_root=tmp_path)
     with pytest.raises(RuntimeError, match="FULL"):
-        naming.run(store, "empty", settings, FakeLlm(), verifier=FakeVerifier(None))
+        naming.run(store, "empty", settings, FakeLlm())
 
 
 def test_parents_fixed_list():
     assert "기타" in PARENTS
     assert len(PARENTS) == len(set(PARENTS))
+
+
+# ── SCORE / CATEGORIZE 분리 (#26) ─────────────────────────────────────────────
+class _FakeLaion:
+    """CLIP 흉내 — 이미지·텍스트 모두 32차원 단위 벡터. torch 없음."""
+
+    def __init__(self, dim=32, seed=7):
+        self.rng = np.random.default_rng(seed)
+        self.dim = dim
+        self.embed_calls = 0
+
+    def embed(self, path):
+        self.embed_calls += 1
+        return _unit(self.rng.normal(size=self.dim))
+
+    def embed_texts(self, prompts):
+        return np.stack([_unit(self.rng.normal(size=self.dim)) for _ in prompts])
+
+    def score_from_embedding(self, emb):
+        return 5.5
+
+
+class _FakeArniqa:
+    def score(self, path):
+        return {"technical_score": 0.6}
+
+
+@pytest.fixture
+def fake_runners(monkeypatch):
+    """score.run 이 함수 안에서 import 하는 torch 러너·classical 을 가짜로 바꾼다."""
+    laion = _FakeLaion()
+    runners = types.ModuleType("photoselect_v1.foldering.runners")
+    runners.LaionRunner = lambda: laion
+    runners.ArniqaRunner = lambda: _FakeArniqa()
+    classical = types.ModuleType("photoselect_v1.foldering.classical")
+    classical.measure = lambda path: {"sharpness": 100.0, "highlight_clip": 0.0, "shadow_clip": 0.0, "mean_luma": 120.0}
+    monkeypatch.setitem(sys.modules, "photoselect_v1.foldering.runners", runners)
+    monkeypatch.setitem(sys.modules, "photoselect_v1.foldering.classical", classical)
+    return laion
+
+
+def _refs(store, gallery, rows):
+    return [PhotoRef(photo_id=r.photo_id, path=store.preview_path(gallery, r.photo_id)) for r in rows]
+
+
+def test_score_skips_scored_photos_and_stores_clip_parent(tmp_path, fake_runners):
+    store, rows, *_, settings = _world(tmp_path)
+    refs = _refs(store, "g", rows)
+
+    # 이미 같은 MODEL_VERSION + CLIP 벡터가 있다 → 전부 건너뛴다. 임베더 벡터 유무는 보지 않는다.
+    result = score.run(store, "g", refs, settings)
+    assert result["skipped"] == len(rows) and result["processed"] == 0
+    assert fake_runners.embed_calls == 0
+
+    # 새 사진 한 장만 추가되면 그것만 점수를 낸다. clip_parent·subjects 가 sub_scores 에 실린다.
+    new_id = "new-photo.jpg"
+    Image.new("RGB", (32, 32)).save(store.dataset_root / new_id)
+    result = score.run(store, "g", refs + [PhotoRef(photo_id=new_id, path=str(store.dataset_root / new_id))], settings)
+    assert result["processed"] == 1 and result["skipped"] == len(rows)
+    back = {r.photo_id: r for r in store.read_analysis("g")}
+    assert back[new_id].sub_scores["clip_parent"] in PARENTS
+    assert "technical_score" in back[new_id].sub_scores and back[new_id].model_version == MODEL_VERSION
+    ids, C = store.read_clip_embeddings("g")
+    assert new_id in ids and C.shape[0] == len(rows) + 1
+
+    # force 면 전부 다시.
+    result = score.run(store, "g", refs, settings, force=True)
+    assert result["processed"] == len(rows)
+
+
+def test_write_scores_keeps_group_columns_and_write_groups_keeps_score_columns(tmp_path):
+    store, rows, *_ = _world(tmp_path)
+    before = {r.photo_id: (r.technical_pct, r.cluster_id, r.embed_group_id, r.subjects) for r in rows}
+
+    # SCORE 의 쓰기: pct·cluster·group 기본값을 가진 행을 넘겨도 그 컬럼은 그대로다
+    fresh = [PhotoAnalysis(photo_id=r.photo_id, subjects="bride", sub_scores=dict(r.sub_scores),
+                           model_version=MODEL_VERSION) for r in rows]
+    store.write_scores("g", fresh, ([], np.zeros((0, 0))))
+    after = {r.photo_id: r for r in store.read_analysis("g")}
+    for pid, (pct, cid, gid, _) in before.items():
+        assert (after[pid].technical_pct, after[pid].cluster_id, after[pid].embed_group_id) == (pct, cid, gid)
+        assert after[pid].subjects == "bride"
+
+    # CATEGORIZE 의 쓰기: subjects 는 건드리지 않는다
+    grouped = [PhotoAnalysis(photo_id=r.photo_id, subjects="unknown", technical_pct=1.0,
+                             cluster_id=99, embed_group_id=7) for r in rows]
+    store.write_groups("g", grouped)
+    after = {r.photo_id: r for r in store.read_analysis("g")}
+    assert all(after[pid].subjects == "bride" for pid in before)
+    assert all(after[pid].embed_group_id == 7 and after[pid].cluster_id == 99 for pid in before)
+
+
+def test_categorize_groups_then_names_without_torch(tmp_path):
+    store, rows, E, C, settings = _world(tmp_path)
+    refs = [PhotoRef(photo_id=r.photo_id, path=None) for r in rows]   # CATEGORIZE 는 파일이 필요 없다
+    settings = Settings(out_root=settings.out_root, dataset_root=settings.dataset_root,
+                        knobs=Knobs(group_distance=0.4, group_min_groups=2, group_max_share=0.6),
+                        llm=settings.llm)
+    llm = FakeLlm()
+
+    result = categorize.run(store, "g", refs, settings, llm, job_id=None)
+
+    assert result["mode"] == "categorize" and result["photos"] == len(rows)
+    assert result["embeddingsSource"] == "dinov3"          # 로컬 world 는 E 를 저장해 두었다
+    assert result["clusters"] == len(rows)                 # 순서·시각 없음 → 연사 없음
+    assert result["naming"]["vlmGroups"] == result["groups"]["groups"]
+    back = store.read_analysis("g")
+    assert all(r.embed_group_id >= 0 and "sharpness_pct" in r.sub_scores for r in back)
+    assert all(a.assigned_by == "vlm" for a in store.read_assignments("g"))
+
+
+def test_categorize_falls_back_to_clip_when_no_embedder_vectors(tmp_path):
+    store, rows, E, C, settings = _world(tmp_path)
+    ids = [r.photo_id for r in rows]
+    store.write_analysis("g", rows, ([], np.zeros((0, 0))), (ids, C))   # 임베더 벡터 없음(로컬)
+    refs = [PhotoRef(photo_id=r.photo_id, path=None) for r in rows]
+
+    result = categorize.run(store, "g", refs, settings, None)
+
+    assert result["embeddingsSource"] == "clip"
+    assert result["naming"] == "skipped (no --llm)"
+
+
+def test_categorize_and_naming_do_not_import_torch():
+    code = ("import sys; import photoselect_v1.foldering.categorize, photoselect_v1.foldering.naming; "
+            "assert 'torch' not in sys.modules, 'torch imported'")
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+def test_worker_maps_wes_modes_to_steps():
+    from photoselect_v1 import worker
+    assert worker.MODE_STEPS == {"FULL": ("score", "categorize"), "NAMING": ("categorize",)}
+
+
+def test_majority_ignores_none_and_breaks_ties_by_first_seen():
+    assert majority(["야외 자연", None, "야외 자연", "실내 스튜디오"]) == "야외 자연"
+    assert majority([None, None]) is None
+    assert majority(["a", "b"]) == "a"
