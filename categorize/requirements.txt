@@ -1,0 +1,12 @@
+# categorize — 갤러리 단위 그룹화·이름 Lambda. torch 없음. 로컬 venv 는 categorize/.venv 또는 score/.venv 에 같이.
+numpy==1.26.4
+scipy==1.14.1
+pillow==10.4.0
+# naming — Bedrock 구조화 출력. SDK 1.x (output_config, aws_region 필수)
+anthropic[bedrock]>=1,<2
+# DB · S3 (대표 사진 몇 장)
+psycopg[binary]==3.2.3
+pgvector==0.3.6
+boto3==1.35.24
+# 테스트
+pytest==8.3.3

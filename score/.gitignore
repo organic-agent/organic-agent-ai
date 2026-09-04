@@ -1,0 +1,4 @@
+out/
+weights/
+__pycache__/
+*.egg-info/

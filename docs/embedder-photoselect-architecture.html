@@ -1,4 +1,4 @@
-<title>embedder · photoselect 아키텍처</title>
+<title>embedder · score · categorize 아키텍처</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
 <style>
 :root{
@@ -93,31 +93,31 @@ a:focus-visible{outline:2px solid var(--ai);outline-offset:2px}
 </style>
 
 <main>
-<h1>embedder · photoselect 아키텍처 — 원본에서 폴더 이름까지, 그 다음은 wes</h1>
-<p class="lede">두 배치 모듈이 어떻게 이어지고, 각각 어떤 파일이 어떤 테이블을 채우며, 어디서 LLM을 부르는지를 <code>embedder/embedder/</code>와 <code>photoselect/photoselect/</code>(2026-09-04, #24 · #25 · #26 · #31 반영)의 코드 기준으로 정리했다. 추천·비교샷은 wes로 갔다(<code>docs/plans/ai-feature-migration-to-wes.md</code>). 이 페이지는 <b>코드가 지금 무엇을 하는지</b>만 적는다.</p>
+<h1>embedder · score · categorize 아키텍처 — 원본에서 폴더 이름까지, 그 다음은 wes</h1>
+<p class="lede">Lambda 셋이 어떻게 이어지고, 각각 어떤 파일이 어떤 테이블을 채우며, 어디서 LLM을 부르는지를 <code>embedder/embedder/</code> · <code>score/score/</code> · <code>categorize/categorize/</code>(2026-09-04, #24 · #25 · #26 · #31 · #35 반영)의 코드 기준으로 정리했다. <b>최상위 디렉토리 하나 = Lambda 함수 하나</b>다(#35). 추천·비교샷은 wes로 갔다(<code>docs/plans/ai-feature-migration-to-wes.md</code>). 이 페이지는 <b>코드가 지금 무엇을 하는지</b>만 적는다.</p>
 
 <nav class="toc">
-<a href="#overview">전체 그림</a><a href="#principles">공통 원칙</a><a href="#embedder">embedder</a><a href="#ps">photoselect 구조</a><a href="#score">SCORE</a><a href="#categorize">CATEGORIZE</a><a href="#wes">wes 쪽</a><a href="#contract">데이터 계약</a><a href="#tests">테스트</a><a href="#gaps">개선 검토 자리</a><a href="#order">읽는 순서</a>
+<a href="#overview">전체 그림</a><a href="#principles">공통 원칙</a><a href="#embedder">embedder</a><a href="#score">score</a><a href="#categorize">categorize</a><a href="#wes">wes 쪽</a><a href="#contract">데이터 계약</a><a href="#tests">테스트</a><a href="#gaps">개선 검토 자리</a><a href="#order">읽는 순서</a>
 </nav>
 
 <h2 id="overview">전체 그림</h2>
-<p>웨딩 사진 갤러리를 놓고 배치 세 개가 순서대로 돈다. <b>embedder</b>는 갤러리당 1회, 원본을 열어 미리보기 JPEG를 S3에 올리고 <b>그 파일로</b> DINOv3 벡터를 계산해 EXIF와 함께 wes 공유 Postgres에 적는다. <b>photoselect SCORE</b>는 미리보기만 읽어 사진별 점수와 CLIP 벡터·zero-shot 라벨을 적고, <b>photoselect CATEGORIZE</b>는 저장된 벡터와 점수만으로(torch 없이) 연사·임베딩 그룹을 만들고 Bedrock으로 이름을 붙인다. 폴더 실체와 폴더별 추천·비교샷은 <b>wes</b>가 한다. 경계는 <b>"갤러리 전수에 torch 모델 추론이 필요한가"</b>이고, wes도 미리보기 몇 장을 읽어 Bedrock에 보낸다. 두 저장소는 HTTP로 데이터를 나르지 않는다 — <b>DB 테이블이 곧 인터페이스</b>다.</p>
+<p>웨딩 사진 갤러리를 놓고 Lambda 셋이 체인으로 돈다. <b>embedder</b>는 갤러리당 1회, 원본을 열어 미리보기 JPEG를 S3에 올리고 <b>그 파일로</b> DINOv3 벡터를 계산해 EXIF와 함께 wes 공유 Postgres에 적는다. <b>score</b>는 미리보기만 읽어 사진별 점수와 CLIP 벡터·zero-shot 라벨을 적고 끝나면 <b>categorize</b>를 EVENT로 깨운다. categorize는 저장된 벡터와 점수만으로(torch 없이) 연사·임베딩 그룹을 만들고 Bedrock으로 이름을 붙인다. 폴더 실체와 폴더별 추천·비교샷은 <b>wes</b>가 한다. 경계는 <b>"갤러리 전수에 torch 모델 추론이 필요한가"</b>이고, wes도 미리보기 몇 장을 읽어 Bedrock에 보낸다. 두 저장소는 HTTP로 데이터를 나르지 않는다 — <b>DB 테이블이 곧 인터페이스</b>다.</p>
 
 <div class="stat">
   <div><div class="v">768d</div><div class="k">DINOv3 ViT-B/16 CLS, L2 정규화 — S3에 올린 미리보기에서 계산 (#24)</div></div>
-  <div><div class="v">2</div><div class="k">photoselect 잡 — SCORE(사진, torch) · CATEGORIZE(갤러리, torch 없음)</div></div>
+  <div><div class="v">3</div><div class="k">Lambda = 디렉토리 — embedder · score(사진, torch) · categorize(갤러리, torch 없음)</div></div>
   <div><div class="v">⌈n/15⌉+1</div><div class="k">이름 짓기의 Bedrock 이미지 호출 상한 (n = 대표 사진 수)</div></div>
-  <div><div class="v">34 · 24</div><div class="k">pytest 통과 — embedder · photoselect (2026-09-04)</div></div>
+  <div><div class="v">34 · 13 · 23</div><div class="k">pytest 통과 — embedder · score · categorize (2026-09-04)</div></div>
 </div>
 
 <div class="lane">
-  <div class="w"><b>wes · Kotlin/Spring</b>업로드, 버튼마다 Lambda 호출 또는 <code>ai_analysis_jobs</code> PENDING INSERT, 배정 → 폴더 세트 구체화, <b>폴더별 추천·비교샷을 직접</b>(Bedrock 이미지 블록)<small>스키마 소유(Flyway). 이 repo는 마이그레이션을 만들지 않는다</small></div>
+  <div class="w"><b>wes · Kotlin/Spring</b>업로드, 버튼마다 <code>ai_analysis_jobs</code> INSERT + Lambda EVENT, 배정 → 폴더 세트 구체화, <b>폴더별 추천·비교샷을 직접</b>(Bedrock 이미지 블록)<small>스키마 소유(Flyway). 이 repo는 마이그레이션을 만들지 않는다</small></div>
   <div class="e"><b>embedder · Lambda / 로컬 CLI</b>S3 원본 → HEIC 디코드·EXIF 회전·1024px JPEG PUT → 올린 파일로 <b>DINOv3</b> 768d, EXIF 추출<small>원본을 여는 유일한 곳 · 타임아웃 앞에서 멈추고 자기 재호출 · admin 사진 교체 잡도 처리</small></div>
-  <div class="a"><b>photoselect · 워커</b>SCORE: CLIP·ARNIQA·고전 지표·zero-shot 라벨 (torch)<br>CATEGORIZE: 백분위·연사·임베딩 그룹 → naming (numpy·scipy)<small>미리보기만 읽는다 · <code>Store</code> 쓰기 3개 · 평탄 패키지(#31)</small></div>
+  <div class="a"><b>score → categorize · Lambda 둘</b>score: CLIP·ARNIQA·고전 지표·zero-shot 라벨 (torch, 사진마다, 데드라인·재호출)<br>categorize: 백분위·연사·임베딩 그룹 → naming (numpy·scipy, 갤러리 한 번)<small>미리보기만 읽는다 · score 가 끝에서 categorize 를 EVENT 로 · 모듈마다 자기 Dockerfile(#35)</small></div>
   <div class="l"><b>LLM · Bedrock Sonnet 4.6</b>여기: 그룹 대표 사진 → (부모 enum, 컨셉 이름). wes: 추천 이유(사진 + 형제 컷), 비교샷 판정<small><code>global.</code> 크로스 리전 · JSON 스키마 강제 · 실패는 항상 템플릿·최근접 폴백</small></div>
 </div>
 
-<div class="diagram" role="img" aria-label="embedder와 photoselect, wes의 실행 흐름과 DB 테이블 다이어그램">
+<div class="diagram" role="img" aria-label="embedder·score·categorize와 wes의 실행 흐름과 DB 테이블 다이어그램">
 <svg viewBox="0 0 1000 640" xmlns="http://www.w3.org/2000/svg">
 <defs><marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L8 4L0 8z" fill="var(--muted)"/></marker></defs>
 <rect x="0" y="0" width="1000" height="112" fill="var(--wes-bg)" class="lane-bg"/>
@@ -127,8 +127,8 @@ a:focus-visible{outline:2px solid var(--ai);outline-offset:2px}
 <rect x="0" y="492" width="1000" height="148" fill="var(--wes-bg)" class="lane-bg"/>
 <text x="12" y="18" class="lane-t" fill="var(--wes)">WES · 버튼과 호출</text>
 <text x="12" y="130" class="lane-t" fill="var(--emb)">EMBEDDER · 갤러리당 1회 · Lambda EVENT · torch</text>
-<text x="12" y="248" class="lane-t" fill="var(--ai)">PHOTOSELECT SCORE · 워커 · 사진 단위 · torch</text>
-<text x="12" y="374" class="lane-t" fill="var(--ai)">PHOTOSELECT CATEGORIZE · 워커 · 갤러리 단위 · torch 없음</text>
+<text x="12" y="248" class="lane-t" fill="var(--ai)">SCORE · Lambda EVENT {galleryId, jobId} · 사진 단위 · torch · 데드라인·자기 재호출</text>
+<text x="12" y="374" class="lane-t" fill="var(--ai)">CATEGORIZE · Lambda EVENT (score 체인 또는 wes NAMING) · 갤러리 단위 · torch 없음</text>
 <text x="12" y="510" class="lane-t" fill="var(--wes)">WES · 폴더 구체화 · 추천 · 비교샷 (저장된 숫자 + 미리보기 몇 장 + Bedrock)</text>
 
 <rect x="790" y="28" width="196" height="604" fill="var(--card)" stroke="var(--line)" class="box"/>
@@ -154,7 +154,7 @@ a:focus-visible{outline:2px solid var(--ai);outline-offset:2px}
 <rect x="170" y="32" width="170" height="66" fill="var(--card)" stroke="var(--wes)" class="box"/>
 <text x="180" y="52">"임베딩 실행"</text><text x="180" y="68" class="sub">Lambda EVENT</text><text x="180" y="84" class="sub">{"galleryId":N,"force":false}</text>
 <rect x="360" y="32" width="170" height="66" fill="var(--card)" stroke="var(--wes)" class="box"/>
-<text x="370" y="52">"AI 분석"</text><text x="370" y="68" class="sub">ai_analysis_jobs PENDING</text><text x="370" y="84" class="sub">mode FULL | NAMING (깨우지 않음)</text>
+<text x="370" y="52">"AI 분석"</text><text x="370" y="68" class="sub">ai_analysis_jobs PENDING + EVENT</text><text x="370" y="84" class="sub">FULL → score · NAMING → categorize</text>
 <rect x="550" y="32" width="222" height="66" fill="var(--card)" stroke="var(--wes)" class="box"/>
 <text x="560" y="52">POST /concept-folders/ai · "AI 추천" · 비교샷</text><text x="560" y="68" class="sub">배정 읽어 폴더 세트 · ai_selection_jobs 자기 실행</text><text x="560" y="84" class="sub">PairVerdictJudge 동기</text>
 </g>
@@ -172,11 +172,11 @@ a:focus-visible{outline:2px solid var(--ai);outline-offset:2px}
 
 <g class="lbl">
 <rect x="20" y="262" width="150" height="84" fill="var(--card)" stroke="var(--ai)" class="box"/>
-<text x="30" y="282">입력</text><text x="30" y="298" class="sub">photos EMBEDDED</text><text x="30" y="312" class="sub">preview_key → 다운로드</text><text x="30" y="328" class="sub">claim_next SKIP LOCKED</text><text x="30" y="342" class="sub">재개: MODEL_VERSION+CLIP</text>
+<text x="30" y="282">입력</text><text x="30" y="298" class="sub">photos EMBEDDED</text><text x="30" y="312" class="sub">preview_key → 다운로드</text><text x="30" y="328" class="sub">advisory lock · 잡 RUNNING</text><text x="30" y="342" class="sub">재개: MODEL_VERSION+CLIP</text>
 <rect x="190" y="262" width="300" height="84" fill="var(--card)" stroke="var(--ai)" class="box"/>
 <text x="200" y="282">사진별 (CPU ~0.8s/장)</text><text x="200" y="299" class="sub">CLIP ViT-L/14 → LAION 미학 · zero-shot 피사체 · zero-shot 부모 라벨</text><text x="200" y="313" class="sub">ARNIQA(spaq) → technical_score</text><text x="200" y="327" class="sub">고전: sharpness · highlight/shadow_clip</text><text x="200" y="342" class="sub">CLIP 벡터 저장 (clip_embedding)</text>
 <rect x="510" y="262" width="262" height="84" fill="var(--card)" stroke="var(--ai)" class="box"/>
-<text x="520" y="282">store.write_scores</text><text x="520" y="299" class="sub">subjects · sub_scores · clip_embedding · model_version</text><text x="520" y="313" class="sub">pct·cluster·group 은 건드리지 않는다</text><text x="520" y="331" class="sub">사진마다 독립 → 증분·재개 쉬움</text>
+<text x="520" y="282">write_scores (32장마다 commit)</text><text x="520" y="299" class="sub">subjects · sub_scores · clip_embedding · model_version</text><text x="520" y="313" class="sub">pct·cluster·group 은 건드리지 않는다</text><text x="520" y="331" class="sub">시간 부족 → 자기 재호출 · 끝 → categorize EVENT</text>
 </g>
 <path d="M445 98V260" class="arrow"/><path d="M170 304H188" class="arrow"/><path d="M490 304H508" class="arrow"/><path d="M772 304H800" class="arrow db"/>
 
@@ -188,7 +188,7 @@ a:focus-visible{outline:2px solid var(--ai);outline-offset:2px}
 <rect x="410" y="388" width="200" height="94" fill="var(--card)" stroke="var(--llm)" class="box"/>
 <text x="420" y="408">naming (Sonnet)</text><text x="420" y="425" class="sub">커버리지 85% 대표 1~2장, 15장 청크</text><text x="420" y="439" class="sub">parent enum · concept 열린 이름</text><text x="420" y="453" class="sub">소그룹 최근접 τ 0.25</text><text x="420" y="471" class="sub">저장된 clip_parent 다수결 검증</text>
 <rect x="630" y="388" width="142" height="94" fill="var(--card)" stroke="var(--ai)" class="box"/>
-<text x="640" y="408">write_assignments</text><text x="640" y="425" class="sub">ai_concept_assignments</text><text x="640" y="439" class="sub">job_id 에 매달림</text><text x="640" y="457" class="sub">FULL = SCORE→CATEGORIZE</text><text x="640" y="471" class="sub">NAMING = CATEGORIZE</text>
+<text x="640" y="408">write_assignments</text><text x="640" y="425" class="sub">ai_concept_assignments</text><text x="640" y="439" class="sub">job_id 에 매달림</text><text x="640" y="457" class="sub">잡 DONE (체인의 끝)</text><text x="640" y="471" class="sub">result = score ∪ categorize</text>
 </g>
 <path d="M95 346V386" class="arrow"/><path d="M170 435H188" class="arrow"/><path d="M390 435H408" class="arrow"/><path d="M610 435H628" class="arrow"/><path d="M772 435H800" class="arrow db"/>
 
@@ -204,18 +204,21 @@ a:focus-visible{outline:2px solid var(--ai);outline-offset:2px}
 </svg>
 </div>
 
-<div class="callout"><p><b>큐 = DB, 깨우는 건 임베딩뿐.</b> "임베딩 실행"은 wes가 Lambda를 EVENT로 부른다. "AI 분석"은 <code>ai_analysis_jobs</code>에 PENDING 행만 넣고 photoselect 워커(<code>python -m photoselect worker --llm</code>)가 <code>FOR UPDATE SKIP LOCKED</code>로 집는다. 추천·비교샷은 wes 안에서 끝난다 — 이 repo는 <code>ai_selection_jobs</code>를 더 폴링하지 않는다(#25).</p></div>
+<div class="callout"><p><b>체인 = EVENT 셋, 상태 = DB.</b> "임베딩 실행"은 wes가 embedder를 EVENT로 부른다. "AI 분석"(FULL)은 <code>ai_analysis_jobs</code> 행을 만들고 score를 <code>{galleryId, jobId}</code>로 부르며, score가 끝에서 categorize를 같은 페이로드로 부른다. NAMING은 wes가 categorize를 직접 부른다. 잡은 score가 RUNNING으로 열고 categorize가 DONE을 찍는다. 추천·비교샷은 wes 안에서 끝난다(#25). <b>wes 쪽 invoker와 인프라(함수 둘·VPC 엔드포인트)는 아직 없다</b> — 그 전까지 로컬은 <code>python -m score worker</code>가 PENDING을 폴링해 같은 체인을 돈다.</p></div>
 
-<h2 id="principles">공통 설계 원칙 — 두 모듈이 같은 모양인 이유</h2>
+<h2 id="principles">공통 설계 원칙 — 세 모듈이 같은 모양인 이유</h2>
 <div class="tw"><table>
-<tr><th>원칙</th><th>embedder</th><th>photoselect</th><th>왜</th></tr>
-<tr><td><b>평탄 패키지, 진입점 둘, 본체 하나</b></td><td><code>embedder/embedder/</code> — <code>handler.py</code> / <code>__main__.py</code> → <code>job.run()</code></td><td><code>photoselect/photoselect/</code> — <code>worker.py</code> / <code>__main__.py</code> → <code>run_analysis_job()</code></td><td>배포 전에 실제 S3·RDS 상대로 같은 코드를 로컬 검증. #31로 photoselect도 같은 깊이</td></tr>
-<tr><td><b>설정은 하나</b></td><td><code>Settings.from_env()</code></td><td><code>Settings</code> + <code>Knobs</code> + <code>LlmKnobs</code></td><td>코드 어디서도 <code>os.environ</code>을 직접 만지지 않는다</td></tr>
-<tr><td><b>스키마는 wes 소유</b></td><td>INSERT/UPDATE만</td><td>동일</td><td>Flyway는 wes에만. 컬럼이 없으면 명확한 에러로 죽는다</td></tr>
-<tr><td><b>한 장 실패가 잡을 안 죽인다</b></td><td><code>failed</code> / <code>metadataFailed</code></td><td>SCORE <code>failed</code></td><td>재실행 시 남은 것만 이어서</td></tr>
-<tr><td><b>재실행 안전(멱등)</b></td><td>"벡터 없음"만 대상. 미리보기 실패도 벡터가 없으니 자연히 재대상</td><td>SCORE: 같은 <code>MODEL_VERSION</code> + CLIP 저장 시 스킵. CATEGORIZE: 항상 전체</td><td>중간에 죽어도 다시 부르면 된다</td></tr>
-<tr><td><b>torch 경계가 디렉토리로</b></td><td>torch는 <code>model.py</code> 함수 안에서만 import</td><td>torch는 <code>runners/</code>뿐. categorize·naming·worker 는 미import(테스트 고정)</td><td>콜드 스타트, CATEGORIZE를 가벼운 환경으로 옮길 수 있게</td></tr>
-<tr><td><b>접근 규칙을 인터페이스로</b></td><td>벡터 두 컬럼만 <code>ON CONFLICT DO UPDATE</code></td><td><code>Store</code> 쓰기 3개, <code>photo_ratings</code>·<code>photo_selection_items</code> 읽기 없음</td><td>규칙이 타입으로 지켜진다</td></tr>
+<tr><th>원칙</th><th>embedder</th><th>score</th><th>categorize</th><th>왜</th></tr>
+<tr><td><b>평탄 패키지, 진입점 둘, 본체 하나</b></td><td><code>handler.py</code> / <code>__main__.py</code> → <code>job.run()</code></td><td>동일</td><td>동일</td><td>배포 전에 실제 S3·RDS 상대로 같은 코드를 로컬 검증. 실행 환경이 바뀌어도 진입점만 바뀐다</td></tr>
+<tr><td><b>모듈은 자기 완결</b></td><td>자기 <code>requirements</code> · <code>Dockerfile</code> · <code>deploy.sh</code> · <code>tests/</code></td><td>동일 (torch 컨테이너)</td><td>동일 (torch 없는 작은 이미지)</td><td>함수마다 이미지·의존이 다르다. 공용 코드(db·jobs·store)는 각자 필요한 만큼만</td></tr>
+<tr><td><b>설정은 하나</b></td><td><code>Settings.from_env()</code></td><td>+ <code>Knobs</code></td><td>+ <code>Knobs</code> + <code>LlmKnobs</code></td><td>코드 어디서도 <code>os.environ</code>을 직접 만지지 않는다</td></tr>
+<tr><td><b>스키마는 wes 소유</b></td><td>INSERT/UPDATE만</td><td>동일</td><td>동일</td><td>Flyway는 wes에만. 컬럼이 없으면 명확한 에러로 죽는다</td></tr>
+<tr><td><b>한 장 실패가 잡을 안 죽인다</b></td><td><code>failed</code> / <code>metadataFailed</code></td><td><code>failed</code></td><td>— (갤러리 단위)</td><td>재실행 시 남은 것만 이어서</td></tr>
+<tr><td><b>재실행 안전(멱등)</b></td><td>"벡터 없음"만 대상. 미리보기 실패도 벡터가 없으니 자연히 재대상</td><td>같은 <code>MODEL_VERSION</code> + CLIP 저장 시 스킵, 32장마다 commit</td><td>항상 전체 재계산</td><td>중간에 죽어도 다시 부르면 된다</td></tr>
+<tr><td><b>데드라인·재호출</b></td><td>배치 경계에서 멈춤 → 자기 재호출</td><td>동일 (같은 잡으로)</td><td>없음 (수 초)</td><td>15분 Lambda 한도</td></tr>
+<tr><td><b>torch 경계가 디렉토리로</b></td><td>torch는 <code>model.py</code> 함수 안에서만 import</td><td>torch는 <code>runners/</code>뿐</td><td><b>torch 미import</b> (테스트 고정)</td><td>콜드 스타트 · 이미지 크기 · 실행 환경 선택</td></tr>
+<tr><td><b>접근 규칙을 인터페이스로</b></td><td>벡터 두 컬럼만 <code>ON CONFLICT DO UPDATE</code></td><td><code>write_scores</code> 하나</td><td><code>write_groups</code> · <code>write_assignments</code></td><td>규칙이 타입으로 지켜진다. <code>photo_ratings</code>·<code>photo_selection_items</code>는 읽지 않는다</td></tr>
+<tr><td><b>모듈 간 계약은 상수 + 테스트</b></td><td><code>embedding_model</code></td><td><code>MODEL_VERSION</code> · <code>PARENTS</code></td><td>같은 값 — 상대 <code>config.py</code>를 파싱해 비교하는 테스트</td><td>따로 배포돼도 어긋나면 테스트가 잡는다</td></tr>
 </table></div>
 
 <h2 id="embedder"><span class="stage t-emb">embedder</span>갤러리당 1회 — 원본을 여는 유일한 곳</h2>
@@ -241,7 +244,7 @@ a:focus-visible{outline:2px solid var(--ai);outline-offset:2px}
 <div class="step e"><div class="n">E4</div><div><p><b>한 트랜잭션, 배치 단위 commit</b> — <code>photo_analysis</code> UPSERT는 <code>embedding</code>·<code>embedding_model</code>만. <code>photos</code> UPDATE는 <code>preview_key</code>를 덮어쓰고(이번에 올린 파일이 곧 벡터의 원본), EXIF만 <code>COALESCE</code>. <code>WHERE id=? AND storage_key=?</code> CAS로 선별 뒤 교체된 사진은 0행 갱신.</p></div></div>
 <div class="step e"><div class="n">E5</div><div><p><b>자기 재호출</b> <span class="who e">handler</span> — 멈췄고 이번 실행에서 한 장이라도 처리했으면 같은 갤러리로 자기 자신을 EVENT 재호출(<code>force</code> 없이). 처리 0장이면 재호출하지 않는다. best-effort — 실패하면 <code>reinvoked: false</code>로만 드러난다.</p></div></div>
 
-<div class="callout emb"><p><b>"미리보기 없는 벡터"는 구조적으로 생기지 않는다.</b> 벡터가 S3에 실제로 올라간 파일에서 나오므로 <code>status='EMBEDDED'</code>는 곧 "벡터와 미리보기가 둘 다 있다"는 뜻이고, photoselect·wes가 보는 픽셀과 벡터가 같은 파일이다. 실패는 두 종류뿐이다 — 벡터가 없으면 <code>failed</code>(다음 호출이 다시 집는다), EXIF만 실패하면 <code>metadataFailed</code>. <code>failed</code>가 대상 수와 같으면 임베딩이 아니라 IAM(<code>s3:PutObject</code>) 문제다.</p></div>
+<div class="callout emb"><p><b>"미리보기 없는 벡터"는 구조적으로 생기지 않는다.</b> 벡터가 S3에 실제로 올라간 파일에서 나오므로 <code>status='EMBEDDED'</code>는 곧 "벡터와 미리보기가 둘 다 있다"는 뜻이고, score·categorize·wes가 보는 픽셀과 벡터가 같은 파일이다. 실패는 두 종류뿐이다 — 벡터가 없으면 <code>failed</code>(다음 호출이 다시 집는다), EXIF만 실패하면 <code>metadataFailed</code>. <code>failed</code>가 대상 수와 같으면 임베딩이 아니라 IAM(<code>s3:PutObject</code>) 문제다.</p></div>
 
 <h3>배포·접속에서 알아야 할 것</h3>
 <div class="two">
@@ -256,33 +259,24 @@ a:focus-visible{outline:2px solid var(--ai);outline-offset:2px}
 </ul></div>
 </div>
 
-<h2 id="ps"><span class="stage t-ai">photoselect</span>미리보기만 읽고 두 잡을 돌린다</h2>
-<div class="tree"><i>photoselect/photoselect/</i>   ← #31 평탄화. src/·photoselect_v1·foldering/ 없음
-├── <b>__main__.py</b>     CLI: score | categorize | analyze(=둘) | naming(=categorize) | worker
-├── <b>worker.py</b>       ai_analysis_jobs 폴링 + run_analysis_job. MODE_STEPS = {FULL: (score, categorize), NAMING: (categorize,)}
-├── jobs.py         claim / claim_next(SKIP LOCKED) / finish / fail
-├── config.py       Settings · Knobs(손잡이) · LlmKnobs · PARENTS(부모 고정 목록) · PARENT_PROMPTS · MODEL_VERSION
-├── <b>store.py</b>        Store 프로토콜 + LocalStore(out/v3/) + DbStore — write_scores · write_groups · write_assignments
-├── gallery.py      PhotoRef 목록 — 로컬 폴더 / DB(EMBEDDED만, download=False 면 파일 없이)
-├── storage.py      S3 미리보기 다운로드 (있으면 재사용)
-├── llm.py          BedrockClient.complete_json — JSON 스키마 강제, 텍스트+이미지 블록
-├── subjects.py     CLIP zero-shot — SubjectsTagger(피사체) · ParentTagger(부모 라벨) · majority
-├── <b>score.py</b>        SCORE — 사진별 점수 (torch)
-├── <b>categorize.py</b>   CATEGORIZE — 백분위 · 연사 · 임베딩 그룹 → naming (torch 없음)
-├── <b>naming.py</b>       Bedrock 이름 · 소그룹 최근접 · 저장된 라벨 다수결 검증 → ai_concept_assignments
-├── cluster.py      연사 union-find (카메라 파티션 ∧ 순서 창 ∧ cos ≥ 0.96)
-├── concept.py      임베딩 그룹 — 평균연결 계층 클러스터, 적응 임계
+<h2 id="score"><span class="stage t-ai">score</span>사진별 점수 Lambda — CLIP 벡터 하나로 세 가지를 얻는다 (torch)</h2>
+<div class="tree"><i>score/score/</i>   ← #35. photoselect/ 의 SCORE 쪽이 독립 모듈이 됐다
+├── <b>handler.py</b>      Lambda: {galleryId, jobId?, force?} → job.run. 멈췄으면 자기 재호출, 끝났고 잡이면 chain, 체인 실패면 잡 FAILED
+├── <b>__main__.py</b>     CLI: --gallery-id N [--job-id J] [--force] | --local "갤러리" | --list | worker(로컬 폴링)
+├── <b>job.py</b>          갤러리 잡: advisory lock('SCO') → 잡 RUNNING → EMBEDDED 사진 + 미리보기 다운로드 → pipeline → result.score 기록
+├── <b>pipeline.py</b>     SCORE 본체 — 사진마다 CLIP·미학·피사체·부모 라벨·ARNIQA·고전 지표. 32장마다 commit, 데드라인 정지
+├── <b>chain.py</b>        categorize 호출 — CATEGORIZE_FUNCTION_NAME(Lambda EVENT) | CATEGORIZE_COMMAND(서브프로세스)
+├── worker.py       로컬 폴링 워커 — wes 에 분석 invoker 가 생기면 삭제
+├── subjects.py     CLIP zero-shot — SubjectsTagger(피사체) · ParentTagger(부모 라벨)
 ├── classical.py    Laplacian 선명도 · 하이라이트/섀도 클립
-└── runners/        ArniqaRunner(기술) · LaionRunner(CLIP ViT-L/14 + 미학 MLP) — torch는 여기만</div>
-
-<div class="tw"><table>
-<tr><th>잡</th><th>트리거 <span class="who w">wes</span></th><th>단위</th><th>재개</th><th>torch</th></tr>
-<tr><td><b>SCORE</b> (<code>score.py</code>)</td><td>"AI 분석" FULL → <code>ai_analysis_jobs</code> PENDING → 워커 <code>claim_next</code></td><td>사진</td><td>같은 <code>MODEL_VERSION</code> + CLIP 벡터 저장된 사진 스킵</td><td>필요, ~0.8s/장 CPU</td></tr>
-<tr><td><b>CATEGORIZE</b> (<code>categorize.py</code>)</td><td>FULL 뒤 이어서, 또는 NAMING 단독</td><td>갤러리</td><td>항상 전체 재계산 (수 초 + Bedrock)</td><td><b>없음</b></td></tr>
-</table></div>
-<div class="callout"><p><b>wes mode는 그대로 FULL·NAMING.</b> 워커가 두 잡으로 매핑한다. 잡(job_id 있음)은 산출물 계약이 <code>ai_concept_assignments</code>까지라 llm 없이 시작하지 않는다. 가른 이유(#26): 무게(torch 유무)·단위(사진 vs 갤러리)·재계산 이유(모델 vs 임계값·프롬프트)가 다르다.</p></div>
-
-<h2 id="score"><span class="stage t-ai">SCORE</span>사진별 점수 — CLIP 벡터 하나로 세 가지를 얻는다</h2>
+├── runners/        ArniqaRunner(torch.hub, 커밋 SHA 고정) · LaionRunner(open_clip ViT-L/14 + 미학 MLP) — torch 는 여기만
+├── config.py       Settings · Knobs · MODEL_VERSION · PARENTS · PARENT_PROMPTS
+├── store.py        LocalStore · DbStore — write_scores (subjects · sub_scores · clip_embedding · model_version)
+└── gallery.py · storage.py · db.py · jobs.py(start · record · fail · claim_next)</div>
+<div class="step"><div class="n">S0</div><div><p><b>잠금과 잡</b> — <code>pg_try_advisory_lock(0x53434F, gallery_id)</code>. 겹치면 <code>skipped</code>. 잡이면 <code>jobs.start</code>로 PENDING→RUNNING(재호출이면 이미 RUNNING). categorize 실행기가 설정돼 있지 않으면 시작 전에 FAILED — 30분 점수를 낸 뒤 매달리는 것보다 낫다.</p></div></div>
+<div class="step"><div class="n">S1</div><div><p><b>대상과 재개</b> — <code>photos</code> EMBEDDED + <code>preview_key</code>를 S3에서 <code>/tmp</code>로. 같은 <code>MODEL_VERSION</code>이고 <code>clip_embedding</code>이 있는 사진은 건너뛴다(<code>force</code>면 전부).</p></div></div>
+<div class="step"><div class="n">S2</div><div><p><b>사진마다 계산, 32장마다 commit</b> — 아래 그림. 배치 경계에서 남은 시간 &lt; (가장 긴 배치 + 60s)면 <code>stopped</code>. 저장분은 이미 commit돼 있다.</p></div></div>
+<div class="step"><div class="n">S3</div><div><p><b>끝맺음</b> <span class="who a">handler</span> — 멈췄고 처리분이 있으면 같은 <code>{galleryId, jobId}</code>로 자기 재호출. 다 끝났고 잡이면 <code>jobs.record</code>로 <code>result.score</code>를 남기고 categorize를 EVENT로. DONE은 여기서 찍지 않는다.</p></div></div>
 <div class="formula">사진마다 (미리보기 JPEG 입력)
   LaionRunner.embed         → CLIP 768d (저장: photo_analysis.clip_embedding)
      ├─ score_from_embedding → aesthetic_score (LAION MLP)
@@ -291,10 +285,23 @@ a:focus-visible{outline:2px solid var(--ai);outline-offset:2px}
   ArniqaRunner.score        → technical_score (spaq 회귀기)
   classical.measure         → sharpness · highlight_clip · shadow_clip · mean_luma
 → store.write_scores  (subjects · sub_scores · clip_embedding · model_version 만)</div>
-<p>텍스트 프롬프트는 추가 비용 0이라 미학·피사체·부모 라벨을 한 벡터에서 뽑는다. 부모 라벨을 사진 단위로 저장해 두는 덕에 CATEGORIZE가 CLIP 텍스트 인코더 없이 검증할 수 있다. <code>write_scores</code>는 백분위·클러스터·그룹 컬럼을 건드리지 않으므로 새 업로드분만 증분 처리해도 기존 그룹이 깨지지 않는다.</p>
+<p>텍스트 프롬프트는 추가 비용 0이라 미학·피사체·부모 라벨을 한 벡터에서 뽑는다. 부모 라벨을 사진 단위로 저장해 두는 덕에 categorize가 CLIP 텍스트 인코더 없이 검증할 수 있다. <code>write_scores</code>는 백분위·클러스터·그룹 컬럼을 건드리지 않으므로 새 업로드분만 증분 처리해도 기존 그룹이 깨지지 않는다.</p>
+<div class="callout emb"><p><b>배포.</b> 컨테이너 Lambda. 가중치 셋(CLIP openai · LAION MLP · ARNIQA hub)을 <b>빌드 시</b> <code>/opt</code> 아래에 굽는다 — NAT 없는 서브넷이라 런타임 다운로드가 전부 실패한다. 실행 역할에 S3 읽기와 <code>lambda:InvokeFunction</code>(자기 함수 + categorize), 인터페이스 VPC 엔드포인트 <code>lambda</code>. 메모리 6–8GB 권장, 장당 ~0.8s CPU → 호출당 ~1,000장. <b>인프라·실측·Docker 빌드 아직 없음.</b></p></div>
 
-<h2 id="categorize"><span class="stage t-ai">CATEGORIZE</span>갤러리 그룹화 + 이름 — 경계는 임베딩, 이름은 VLM, 부모 목록은 고정</h2>
-<div class="step"><div class="n">C1</div><div><p><b>입력은 전부 DB</b> — 임베더의 DINOv3 E, SCORE의 CLIP C와 원점수·<code>clip_parent</code>. 미리보기 파일은 필요 없다(<code>load_db(download=False)</code>). 대표 사진은 naming이 <code>preview_path</code>로 지연 다운로드한다. 로컬 데이터셋 모드는 임베더가 없어 CLIP을 E 자리에 쓴다(<code>embeddingsSource: clip</code>).</p></div></div>
+<h2 id="categorize"><span class="stage t-ai">categorize</span>갤러리 그룹화 + 이름 Lambda — 경계는 임베딩, 이름은 VLM, 부모 목록은 고정 (torch 없음)</h2>
+<div class="tree"><i>categorize/categorize/</i>   ← #35. photoselect/ 의 CATEGORIZE 쪽이 독립 모듈이 됐다
+├── <b>handler.py</b>      Lambda: {galleryId, jobId?} → job.run (Bedrock 클라이언트 주입). score 가 체인으로(FULL) / wes 가 직접(NAMING)
+├── <b>__main__.py</b>     CLI: --gallery-id N --job-id J | --gallery-id N [--llm] | --local "갤러리" [--llm]
+├── <b>job.py</b>          잡: RUNNING(이어받거나 열거나) → EMBEDDED 사진 목록(다운로드 없음) → pipeline → DONE/FAILED
+├── <b>pipeline.py</b>     백분위 · 연사 · 임베딩 그룹 → write_groups → naming.run
+├── <b>naming.py</b>       Bedrock 이름 · 소그룹 최근접 · 저장된 clip_parent 다수결(majority) → write_assignments
+├── cluster.py      연사 union-find (카메라 파티션 ∧ 순서 창 ∧ cos ≥ 0.96)
+├── concept.py      임베딩 그룹 — 평균연결 계층 클러스터, 적응 임계
+├── llm.py          BedrockClient.complete_json — JSON 스키마 강제, 텍스트+이미지 블록
+├── config.py       Settings · Knobs · LlmKnobs · MODEL_VERSION · PARENTS
+├── store.py        LocalStore · DbStore — read_analysis/embeddings/clip · write_groups · write_assignments · preview_path
+└── gallery.py · storage.py · db.py · jobs.py(start · finish · fail)</div>
+<div class="step"><div class="n">C1</div><div><p><b>입력은 전부 DB</b> — 임베더의 DINOv3 E, score의 CLIP C와 원점수·<code>clip_parent</code>(<code>model_version == MODEL_VERSION</code>인 행만). 미리보기 파일은 필요 없다(<code>load_db(download=False)</code>). 대표 사진은 naming이 <code>preview_path</code>로 지연 다운로드한다. 로컬 데이터셋 모드는 임베더가 없어 CLIP을 E 자리에 쓴다(<code>embeddingsSource: clip</code>).</p></div></div>
 <div class="step"><div class="n">C2</div><div><p><b>그룹화</b></p>
 <div class="formula">백분위        technical/aesthetic_score · sharpness → *_pct (NaN → 50)
 연사(burst)   E, 카메라 파티션 ∧ taken_at 순 창 ≤ 8 ∧ cos ≥ 0.96                → cluster_id · cluster_rank(대표 0)
@@ -305,8 +312,8 @@ a:focus-visible{outline:2px solid var(--ai);outline-offset:2px}
 → store.write_groups  (pct · cluster · group · sub_scores 만)</div></div></div>
 <div class="step"><div class="n">C3</div><div><p><b>이름 짓기</b> <span class="who l">naming ②</span> — 크기순 커버리지 85%(상한 120그룹)까지 대표 1장(spread &gt; 0.12면 최원점 1장 추가)을 15장 청크로 Sonnet에. 부모는 <code>PARENTS</code> 고정 목록을 JSON 스키마 enum으로 강제, 컨셉은 열린 한국어 이름. 청크 둘 이상이면 통합 텍스트 호출 1회.</p></div></div>
 <div class="step"><div class="n">C4</div><div><p><b>소그룹 배정</b> <span class="who a">naming ③</span> — VLM에 안 간 그룹은 concat 공간 최근접 이름 상속. 거리 &gt; 0.25면 <code>기타/기타</code> + <code>needs_review</code>.</p></div></div>
-<div class="step"><div class="n">C5</div><div><p><b>검증</b> <span class="who a">naming ④</span> — 저장된 <code>clip_parent</code>의 그룹 다수결이 VLM 부모와 다르거나 confidence &lt; 0.8이면 <code>needs_review</code>. 검증 전용 — 판정은 VLM의 것. 결과는 <code>ai_concept_assignments</code>에 잡 id로 매달린다.</p></div></div>
-<div class="callout llm"><p><b>비용 상한이 구조로 잡혀 있다.</b> Bedrock 이미지 호출 수 ≤ ⌈대표 수/15⌉ + 1. 갤러리가 7,000장이 되어도 커버리지 목표와 그룹 상한이 정한 범위를 넘지 않는다. CATEGORIZE 전체가 torch 없이 돌아 수백 MB 이미지로 Lambda에 올리거나 wes로 옮길 수 있다.</p></div>
+<div class="step"><div class="n">C5</div><div><p><b>검증</b> <span class="who a">naming ④</span> — 저장된 <code>clip_parent</code>의 그룹 다수결이 VLM 부모와 다르거나 confidence &lt; 0.8이면 <code>needs_review</code>. 검증 전용 — 판정은 VLM의 것. 결과는 <code>ai_concept_assignments</code>에 잡 id로 매달리고, <code>jobs.finish</code>가 DONE과 함께 <code>result</code>에 score의 것을 합쳐 남긴다.</p></div></div>
+<div class="callout llm"><p><b>비용 상한이 구조로 잡혀 있다.</b> Bedrock 이미지 호출 수 ≤ ⌈대표 수/15⌉ + 1. 갤러리가 7,000장이 되어도 커버리지 목표와 그룹 상한이 정한 범위를 넘지 않는다. categorize 전체가 torch 없이 돌아 이미지가 작다(메모리 2–3GB). 실행 역할에 <code>bedrock:InvokeModel</code>(크로스 리전 프로필 포함), 서브넷에 <code>bedrock-runtime</code> 인터페이스 VPC 엔드포인트가 있어야 naming이 닿는다 — 지금 인프라에는 S3 게이트웨이 엔드포인트뿐이다.</p></div>
 
 <h2 id="wes"><span class="stage t-wes">wes</span>배정이 폴더가 되고, 추천·비교샷이 도는 곳</h2>
 <p>이 repo 밖이지만 계약의 반쪽이라 적어 둔다. wes <code>docs/category-architecture.md</code>·<code>docs/plans/ai-feature-migration-to-wes.md</code>가 정본이다.</p>
@@ -321,22 +328,22 @@ a:focus-visible{outline:2px solid var(--ai);outline-offset:2px}
 <h2 id="contract">데이터 계약 — 누가 어떤 컬럼을 쓰나</h2>
 <div class="tw"><table>
 <tr><th>테이블</th><th>쓰는 쪽</th><th>컬럼</th><th>읽는 쪽</th></tr>
-<tr><td><code>photos</code></td><td><span class="who e">embedder</span></td><td>preview_key · EXIF · status</td><td>photoselect(대상·정렬), wes</td></tr>
-<tr><td rowspan="3"><code>photo_analysis</code></td><td><span class="who e">embedder</span></td><td>embedding · embedding_model</td><td>CATEGORIZE, wes 추천 MMR</td></tr>
-<tr><td><span class="who a">SCORE</span></td><td>subjects · sub_scores · clip_embedding · model_version</td><td>CATEGORIZE, wes</td></tr>
-<tr><td><span class="who a">CATEGORIZE</span></td><td>technical_pct · aesthetic_pct · cluster_id · cluster_rank · embed_group_id · sub_scores(+sharpness_pct·rank_reason)</td><td>naming, wes</td></tr>
+<tr><td><code>photos</code></td><td><span class="who e">embedder</span></td><td>preview_key · EXIF · status</td><td>score·categorize(대상·정렬), wes</td></tr>
+<tr><td rowspan="3"><code>photo_analysis</code></td><td><span class="who e">embedder</span></td><td>embedding · embedding_model</td><td>categorize, wes 추천 MMR</td></tr>
+<tr><td><span class="who a">score</span></td><td>subjects · sub_scores · clip_embedding · model_version</td><td>categorize, wes</td></tr>
+<tr><td><span class="who a">categorize</span></td><td>technical_pct · aesthetic_pct · cluster_id · cluster_rank · embed_group_id · sub_scores(+sharpness_pct·rank_reason)</td><td>naming, wes</td></tr>
 <tr><td><code>ai_concept_assignments</code></td><td><span class="who a">naming</span></td><td>job_id · embed_group_id · parent_name · concept_name · confidence · assigned_by · proposed_parent · clip_parent · needs_review</td><td>wes 폴더 구체화</td></tr>
-<tr><td><code>ai_analysis_jobs</code></td><td><span class="who w">PENDING</span> → <span class="who a">이후</span></td><td>status · result · error</td><td>wes 폴링</td></tr>
+<tr><td><code>ai_analysis_jobs</code></td><td><span class="who w">PENDING</span> → <span class="who a">score RUNNING, result.score</span> → <span class="who a">categorize DONE/FAILED, result.categorize</span></td><td>status · result · error</td><td>wes 폴링</td></tr>
 <tr><td><code>concept_folders</code> · <code>detail_folders</code> · <code>photo_category_assignments</code></td><td><span class="who w">wes</span></td><td>—</td><td>wes 추천·비교샷</td></tr>
 <tr><td><code>ai_selection_jobs</code> · <code>ai_recommendations</code> · <code>ai_pair_verdicts</code></td><td><span class="who w">wes</span></td><td>—</td><td>wes</td></tr>
 <tr><td><code>photo_ratings</code></td><td colspan="3"><b>접근 금지</b></td></tr>
 </table></div>
-<div class="callout warn"><p><b>암묵 계약 셋.</b> ① wes가 <code>sub_scores</code>에서 읽는 키 — <code>sharpness</code> · <code>sharpness_pct</code> · <code>highlight_clip</code> · <code>shadow_clip</code> · <code>technical_score</code> · <code>aesthetic_score</code>. 스키마가 강제하지 않으므로 이름을 바꾸면 wes와 함께 바꾼다. ② 용어 뒤집힘 — 이 repo의 <code>parent_name</code>이 wes <code>ConceptFolder</code>, <code>concept_name</code>이 wes <code>DetailFolder</code>. ③ wes <code>isAnalyzed = model_version != null</code> — SCORE→CATEGORIZE 사이 창에서는 백분위가 비어 있으므로 <code>embed_group_id != null</code>을 조건에 더하는 것이 wes 후속 과제.</p></div>
+<div class="callout warn"><p><b>암묵 계약 셋.</b> ① wes가 <code>sub_scores</code>에서 읽는 키 — <code>sharpness</code> · <code>sharpness_pct</code> · <code>highlight_clip</code> · <code>shadow_clip</code> · <code>technical_score</code> · <code>aesthetic_score</code>. 스키마가 강제하지 않으므로 이름을 바꾸면 wes와 함께 바꾼다. ② 용어 뒤집힘 — 이 repo의 <code>parent_name</code>이 wes <code>ConceptFolder</code>, <code>concept_name</code>이 wes <code>DetailFolder</code>. ③ score ↔ categorize — <code>MODEL_VERSION</code>("photoselect-v3-a-0.1")과 <code>PARENTS</code>가 두 <code>config.py</code>에 같은 값으로 있고 각 모듈의 테스트가 상대 파일을 파싱해 비교한다. 이벤트는 <code>{galleryId, jobId}</code>. wes <code>isAnalyzed</code>는 #138이 백분위까지 보도록 고쳐 score→categorize 사이 창을 막았다.</p></div>
 
 <h3>로컬 모드와 DB 모드</h3>
 <div class="tw"><table>
-<tr><th></th><th>LocalStore (<code>out/v3/&lt;gallery&gt;/</code>)</th><th>DbStore (wes Postgres V45~)</th></tr>
-<tr><td>사진 목록</td><td><code>../dataset</code> 폴더, id = 상대 경로</td><td><code>photos</code> EMBEDDED, id = <code>photos.id</code>, 미리보기 S3 다운로드</td></tr>
+<tr><th></th><th>LocalStore (<code>out/v3/&lt;gallery&gt;/</code>, score·categorize 같은 규약)</th><th>DbStore (wes Postgres)</th></tr>
+<tr><td>사진 목록</td><td><code>../dataset</code> 폴더, id = 상대 경로</td><td><code>photos</code> EMBEDDED, id = <code>photos.id</code>, 미리보기 S3 다운로드(score) / 대표만(categorize)</td></tr>
 <tr><td>임베딩 E</td><td><b>CLIP이 겸임</b> (concat이 CLIP 단독으로 퇴화)</td><td>DINOv3</td></tr>
 <tr><td>용도</td><td>데이터셋 회귀 · 프롬프트 실험</td><td>E2E · 운영. 로컬 E2E는 wes <code>scripts/local-worker.sh</code>·<code>local-ai.sh</code></td></tr>
 </table></div>
@@ -345,28 +352,28 @@ a:focus-visible{outline:2px solid var(--ai);outline-offset:2px}
 <div class="tw"><table>
 <tr><th>모듈</th><th>파일</th><th>건수</th><th>무엇을 고정하나</th></tr>
 <tr><td>embedder</td><td><code>tests/</code> 6파일</td><td>34 passed</td><td>fetch_targets 조건, PUT→encode 순서, PUT 실패 격리, 데드라인 중단·재호출, advisory lock, admin CAS, quality</td></tr>
-<tr><td>photoselect</td><td><code>tests/test_photoselect.py</code></td><td>24 passed</td><td>concat 공간 성질, 카메라 파티션, 적응 임계 대칭, naming 4단계, SCORE 재개, write_scores/write_groups 컬럼 분리, CATEGORIZE 로컬 실행·CLIP 폴백, torch 미import, mode 매핑</td></tr>
+<tr><td>score</td><td><code>tests/test_score.py</code></td><td>13 passed</td><td>재개(MODEL_VERSION+CLIP), write_scores 가 categorize 컬럼 보존, 배치 쓰기·데드라인 정지, chain 인자, handler(재호출·체인·체인 실패 시 FAILED), categorize 와 상수 일치</td></tr>
+<tr><td>categorize</td><td><code>tests/test_categorize.py</code></td><td>23 passed</td><td>concat 공간 성질, 카메라 파티션, 적응 임계 대칭, naming 4단계, write_groups 가 score 컬럼 보존, CLIP 폴백, <b>torch 미import</b>, score 와 상수 일치, handler</td></tr>
 </table></div>
-<p>LLM·러너는 전부 Fake다. 실제 Bedrock·DB를 치는 테스트는 없다.</p>
+<p>LLM·러너는 전부 Fake다. 실제 Bedrock·DB를 치는 테스트는 없다. Dockerfile 빌드는 아직 돌려 보지 않았다.</p>
 
 <h2 id="gaps">개선을 검토할 때 볼 자리</h2>
 <ul class="gap">
-<li><b>임베더 자기 재호출의 인프라.</b> Lambda 인터페이스 VPC 엔드포인트와 자기 함수 <code>lambda:InvokeFunction</code>이 아직 없다. 없으면 7,000장 갤러리는 앱이 여러 번 불러야 끝난다.</li>
-<li><b>워커의 실행 환경이 미정.</b> 상시 EC2 vs 온디맨드 Fargate <code>--once</code>. CATEGORIZE가 torch에서 풀렸으니 SCORE만 무거운 환경이 필요하다. SCORE를 embedder Lambda에 합쳐 미리보기 한 번에 DINOv3·CLIP·ARNIQA를 다 뽑는 선택지도 열려 있다.</li>
-<li><b>wes <code>isAnalyzed</code> 조건.</b> SCORE→CATEGORIZE 창에서 백분위가 null인 사진을 "분석됨"으로 본다. <code>embedGroupId != null</code> 추가가 후속.</li>
+<li><b>인프라.</b> score·categorize 함수·ECR, 인터페이스 VPC 엔드포인트 <code>lambda</code>(embedder 재호출·score 체인)와 <code>bedrock-runtime</code>(categorize naming), IAM 체인 권한. 없으면 로컬 워커(<code>python -m score worker</code>)가 그 자리를 대신한다.</li>
+<li><b>wes 분석 invoker.</b> wes는 아직 PENDING만 만들고 깨우지 않는다. <code>EmbeddingInvoker</code>와 같은 <code>AnalysisInvoker</code>(Lambda EVENT / 로컬 서브프로세스)가 생기면 <code>score/worker.py</code>를 지운다.</li>
 <li><b><code>MODEL_VERSION</code> 하나가 SCORE 재개 키.</b> 러너·임계값을 바꿔도 안 올리면 재점수되지 않고, 올리면 전 갤러리가 대상. 변경 규칙 미문서화.</li>
 <li><b>로컬 러너 리사이즈 1600 vs 미리보기 1024.</b> DB 모드는 축소만 하니 무해하지만 로컬 실험값을 운영 임계로 옮길 때 스케일이 다르다.</li>
-<li><b>ARNIQA <code>torch.hub</code> <code>:main</code> 참조와 LAION MLP URL 다운로드.</b> Lambda로 갈 때 가중치 번들링·커밋 SHA 고정이 선행 조건.</li>
-<li><b>워커는 잡마다 러너를 다시 올린다.</b> SCORE 안에서 <code>LaionRunner()</code>(890MB)·<code>ArniqaRunner()</code>를 매번 생성. embedder의 <code>lru_cache</code> 패턴이 후보.</li>
+<li><b>러너를 호출마다 다시 올린다.</b> <code>LaionRunner()</code>(890MB)·<code>ArniqaRunner()</code>를 <code>job.run</code>마다 생성. embedder의 <code>lru_cache</code> 패턴으로 웜 컨테이너에서 재사용하는 것이 후보.</li>
 <li><b>연사 0.96 · 그룹 0.2 재측정.</b> CLIP/DINOv2 시절 실측값. <code>categorize</code> 결과의 <code>similarityProfile</code>·<code>groupDistance</code>가 근거.</li>
+<li><b>Dockerfile 미검증.</b> score의 가중치 굽기(HOME·TORCH_HOME 캐시 위치)는 실제 빌드로 확인해야 한다.</li>
 </ul>
 
 <h2 id="order">읽는 순서 추천 — 남에게 설명하기 전에</h2>
 <ol>
 <li><code>embedder/embedder/job.py</code> → <code>db.py</code>의 <code>store_embeddings</code> — 배치 패턴의 원형과 #24 순서</li>
-<li><code>photoselect/photoselect/store.py</code>의 <code>Store</code> 프로토콜 — 데이터 경계 전부</li>
-<li><code>worker.py</code> → <code>jobs.py</code> — 잡이 어떻게 집히고 두 잡으로 갈리나</li>
-<li><code>score.py</code> → <code>categorize.py</code> → <code>naming.py</code> — 폴더화 세 단계</li>
+<li><code>score/score/job.py</code> → <code>pipeline.py</code> → <code>handler.py</code> — 재개·데드라인·체인이 어떻게 이어지나</li>
+<li><code>categorize/categorize/store.py</code>의 <code>Store</code> 프로토콜 — 데이터 경계 전부</li>
+<li><code>categorize/categorize/pipeline.py</code> → <code>naming.py</code> — 그룹 → 이름</li>
 <li>wes <code>docs/category-architecture.md</code> — 배정이 폴더가 되는 쪽</li>
 <li>wes <code>docs/plans/ai-feature-migration-to-wes.md</code> — 추천·비교샷이 wes에 있는 이유와 경계</li>
 </ol>

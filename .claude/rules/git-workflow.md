@@ -5,7 +5,8 @@
 
 ## 모듈 prefix
 
-최상위 디렉토리 이름이 곧 모듈 이름이다. 현재: `notionchat`, `photoselect`, `embedder`.
+최상위 디렉토리 이름이 곧 모듈 이름이다. 현재: `embedder`, `score`, `categorize`, `notionchat`.
+배치 모듈은 **디렉토리 하나 = Lambda 함수 하나**다(#35).
 새 모듈이 생기면 그 디렉토리 이름을 그대로 쓴다.
 
 - 한 이슈/브랜치/PR은 **한 모듈만** 다룬다. 두 모듈을 건드리면 이슈를 나눈다.
@@ -19,7 +20,7 @@
 
 ## 이슈
 
-- 제목: `[<모듈>] <타입>: <한글 설명>` — 예: `[photoselect] feat: 0단계 점수 파이프라인(배치 A) 구현`
+- 제목: `[<모듈>] <타입>: <한글 설명>` — 예: `[score] feat: 러너 캐시로 웜 컨테이너 재사용`
 - 라벨: 타입에 해당하는 이모지 라벨 1개
 - 본문: `.github/ISSUE_TEMPLATE/issue-template.md` — Description / Task 체크리스트 /
   **산출물** / Related Module 네 섹션. 산출물 섹션에 "이 이슈가 끝나면 무엇이 존재해야
@@ -29,7 +30,7 @@
 
 ## 브랜치
 
-- 형식: `<모듈>/<타입>/<이슈번호>-<kebab-slug>` — 예: `photoselect/feat/3-score-pipeline`
+- 형식: `<모듈>/<타입>/<이슈번호>-<kebab-slug>` — 예: `score/feat/40-runner-cache`
 - repo 전체 작업: `<타입>/<이슈번호>-<slug>` (server 방식 그대로)
 - 항상 `main`에서 분기한다.
 
@@ -37,7 +38,7 @@
 
 - 작업 브랜치 안의 커밋 메시지는 자유. `main`에 남는 메시지는 PR squash 머지 제목이다.
 - `main`에 남는 형식: `[<모듈>] <타입>: <한글 설명>(#이슈번호)` —
-  예: `[photoselect] feat: 0단계 점수 파이프라인 구현(#3)`
+  예: `[score] feat: 러너 캐시로 웜 컨테이너 재사용(#40)`
 - 문서만 바꾸는 소규모 변경은 이슈·PR 없이 `main` 직접 커밋을 허용한다
   (형식: `[<모듈>] docs: ...` 또는 `docs: ...`). 코드 변경은 반드시 PR을 거친다.
 

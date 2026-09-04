@@ -29,14 +29,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | 워크로드 | 모양 | 예 |
 |---|---|---|
-| 배치 (갤러리/앨범당 1회) | embedder 패턴 Lambda — `handler.py`(EVENT) / `__main__.py`(로컬 CLI) 동일 코드 | 임베딩·미리보기, 사진 분석·폴더화, 자동 레이아웃 초안 |
+| 배치 (갤러리/앨범당 1회) | Lambda — **최상위 디렉토리 하나 = 함수 하나**, `handler.py`(EVENT) / `__main__.py`(로컬 CLI) 동일 코드 | `embedder`(미리보기·DINOv3) → `score`(사진별 점수, torch) → `categorize`(그룹·이름, torch 없음), 자동 레이아웃 초안 |
 | 사용자 기능 (저장된 숫자 + 미리보기 몇 장 + LLM) | **wes가 직접** (Kotlin, Bedrock) — 이 repo에 없다 | 폴더별 추천, 비교샷, 보정 요청 구조화 |
 
 경계는 **"갤러리 전수에 torch 모델 추론이 필요한가"**다. 그렇다면 이 repo, 아니면 wes
 (wes `docs/plans/ai-feature-migration-to-wes.md`, 2026-09-04). wes도 미리보기를 읽어 Bedrock에 보낸다.
 
 - wes 백엔드가 실행 조건을 검증하고 트리거한다. 배치는 `InvocationType.EVENT`, 이벤트는
-  `{"galleryId": N, "jobId": M}`.
+  `{"galleryId": N, "jobId": M}`. 분석 체인은 score 가 끝에서 categorize 를 EVENT 로 부른다(FULL);
+  NAMING 은 wes 가 categorize 를 직접 부른다. `ai_analysis_jobs` 는 score 가 열고 categorize 가 닫는다.
 - **공유 Postgres(RDS)를 직접 읽고 쓴다.** HTTP payload로 데이터를 나르지 않는다.
 - 이미지는 원본이 아니라 embedder가 만든 **미리보기 파생본**(`photos.preview_key`, EXIF
   회전·리사이즈 JPEG)을 S3에서 읽는다. HEIC 디코드는 이 서버의 일이 아니다.
@@ -66,8 +67,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 빌드 & 실행
 
-두 모듈 모두 embedder 패턴이다 — 패키지 바로 아래에 실행 코드, `__main__.py`(로컬 CLI)와 `handler.py`/`worker.py`(배포)가
-같은 `run()`을 부른다.
+배치 모듈 셋(`embedder` · `score` · `categorize`)은 같은 모양이다 — 패키지 바로 아래에 실행 코드, `__main__.py`(로컬 CLI)와
+`handler.py`(Lambda)가 같은 `job.run()`을 부른다. 모듈마다 자기 `requirements.txt` · `Dockerfile` · `deploy.sh` · `tests/`.
 
 ```bash
 # embedder — 갤러리당 1회: 미리보기 PUT → DINOv3 → photo_analysis
@@ -76,15 +77,21 @@ cd embedder && python -m venv .venv && .venv/bin/pip install torch torchvision -
 .venv/bin/python -m embedder --gallery-id 1 [--force]
 .venv/bin/python -m pytest tests -q                         # 34
 
-# photoselect — 폴더화: SCORE(사진별 점수, torch) → CATEGORIZE(그룹·이름, torch 없음)
-cd photoselect && python -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/pip install -e . --no-deps
-.venv/bin/python -m photoselect analyze --db --gallery 12 --llm   # = score → categorize (wes FULL)
-.venv/bin/python -m photoselect worker --llm                       # ai_analysis_jobs 폴링
-.venv/bin/python -m pytest tests -q                                 # 24
+# score — 사진별 점수 (CLIP · ARNIQA · 미학, torch). 끝나면 categorize 를 깨운다
+cd score && python -m venv .venv && .venv/bin/pip install -r requirements.txt \
+  && .venv/bin/pip install -e . --no-deps && .venv/bin/pip install -e ../categorize --no-deps   # 한 venv 에 둘 다
+.venv/bin/python -m score --gallery-id 12 [--job-id J] [--force]   # CATEGORIZE_COMMAND=".venv/bin/python -m categorize"
+.venv/bin/python -m score worker                                   # 로컬 폴링 워커 (wes 에 invoker 가 생기기 전 대용)
+.venv/bin/python -m pytest -q                                      # 13
+
+# categorize — 그룹 · 이름 (numpy · scipy · Bedrock, torch 없음)
+cd categorize && python -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/pip install -e . --no-deps
+.venv/bin/python -m categorize --gallery-id 12 --job-id J          # wes NAMING 잡과 같음 (Bedrock)
+.venv/bin/python -m pytest -q                                      # 23
 ```
 
-로컬 E2E는 wes 쪽 스크립트가 감싼다: `../organic-agent-server/wes/scripts/local-worker.sh --llm`(워커),
-`local-ai.sh <galleryId>`(임베딩 → 분석 한 번에). RDS는 퍼블릭 접근이 없다. 직접 붙을 때는 wes의
+로컬 E2E는 wes 쪽 스크립트가 감싼다: `../organic-agent-server/wes/scripts/local-worker.sh`(워커),
+`local-ai.sh <galleryId>`(임베딩 → 점수 → 카테고리 한 번에). RDS는 퍼블릭 접근이 없다. 직접 붙을 때는 wes의
 `scripts/db-tunnel.sh`로 SSM 포트 포워딩을 연다(기본 15432).
 
 ## 구현 순서와 리스크
@@ -96,7 +103,7 @@ cd photoselect && python -m venv .venv && .venv/bin/pip install -r requirements.
 
 - `../organic-agent-server/wes` — 메인 백엔드. 도메인 규칙·컨벤션은 그 repo의 `CLAUDE.md`와
   `.claude/rules/`를 따른다. embedder는 그 repo에서 이 repo의 `embedder/` 모듈로 이관됐다(#20) —
-  배치 구조(handler/__main__ 동일 코드)의 원형이자 photoselect의 선행 단계(preview·DINOv3 적재)다.
+  배치 구조(handler/__main__ 동일 코드)의 원형이자 score·categorize 의 선행 단계(preview·DINOv3 적재)다.
 - `../organic-agent-test-web` — 프론트 (P1 앨범 에디터의 본체)
 - `../organic-agent-infra` — Terraform (VPC/RDS/S3/Lambda)
 - `../dataset` — 평가용 사진 데이터
