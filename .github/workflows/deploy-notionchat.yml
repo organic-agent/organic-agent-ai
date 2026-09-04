@@ -1,10 +1,15 @@
 # main 푸시 → Vercel 프로덕션 자동 배포 (notionchat)
+# notionchat/ 이 바뀐 푸시만 돈다 — Lambda 모듈(embedder·score·categorize)은 deploy-lambda.yml 이 맡는다(#37).
 # 필요한 시크릿: VERCEL_TOKEN, VERCEL_ORG_ID, VERCEL_PROJECT_ID
 name: Deploy notionchat
 
 on:
   push:
     branches: [main]
+    paths:
+      - "notionchat/**"
+      - ".github/workflows/deploy-notionchat.yml"
+  workflow_dispatch:
 
 concurrency:
   group: vercel-prod

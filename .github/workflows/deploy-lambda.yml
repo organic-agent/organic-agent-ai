@@ -1,0 +1,98 @@
+# main 푸시 → 바뀐 Lambda 모듈만 ECR 푸시 + update-function-code (#37)
+#
+# 최상위 디렉토리 하나 = Lambda 함수 하나(embedder · score · categorize). 어느 디렉토리가 바뀌었는지 보고 그 모듈의
+# `<모듈>/deploy.sh` 를 그대로 돌린다 — 노트북에서 손으로 하는 배포와 같은 스크립트라 두 경로가 어긋나지 않는다.
+#
+# 필요한 설정
+#   변수   AWS_LAMBDA_DEPLOY_ROLE_ARN   OIDC 로 assume 할 역할. 인프라 github-actions 모듈의 worker_deploy 를 이 repo main 으로
+#                                      trust 하고 세 ECR·세 함수로 범위를 넓힌 것. 비어 있으면 이 워크플로는 조용히 skip 한다
+#   시크릿 HF_TOKEN                     embedder 만 — DINOv3 는 게이트 모델이라 빌드 시 Hugging Face 토큰이 필요하다
+#
+# 수동 실행(workflow_dispatch)은 모듈 하나를 골라 강제 배포한다 — 인프라만 바뀌어 다시 밀어야 할 때.
+name: Deploy Lambda modules
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "embedder/**"
+      - "score/**"
+      - "categorize/**"
+      - ".github/workflows/deploy-lambda.yml"
+  workflow_dispatch:
+    inputs:
+      module:
+        description: "배포할 모듈"
+        required: true
+        type: choice
+        options: [embedder, score, categorize]
+
+permissions:
+  contents: read
+  id-token: write # OIDC 로 AWS 역할을 assume 하기 위한 토큰 발급 권한
+
+jobs:
+  changes:
+    name: 바뀐 모듈 찾기
+    runs-on: ubuntu-latest
+    outputs:
+      modules: ${{ steps.pick.outputs.modules }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        if: github.event_name == 'push'
+        with:
+          filters: |
+            embedder:
+              - "embedder/**"
+            score:
+              - "score/**"
+            categorize:
+              - "categorize/**"
+      - name: 모듈 목록 확정
+        id: pick
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo 'modules=["${{ inputs.module }}"]' >> "$GITHUB_OUTPUT"
+          else
+            echo 'modules=${{ steps.filter.outputs.changes }}' >> "$GITHUB_OUTPUT"
+          fi
+
+  deploy:
+    name: ${{ matrix.module }} → ECR · Lambda
+    needs: changes
+    # 역할 ARN 이 없으면(인프라 전) 실패 대신 skip — main 머지마다 빨간 불이 켜지지 않게.
+    if: needs.changes.outputs.modules != '[]' && vars.AWS_LAMBDA_DEPLOY_ROLE_ARN != ''
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: ${{ fromJSON(needs.changes.outputs.modules) }}
+    concurrency:
+      group: lambda-deploy-${{ matrix.module }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_LAMBDA_DEPLOY_ROLE_ARN }}
+          aws-region: ap-northeast-2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          # deploy.sh 가 --push 로 바로 밀고 --metadata-file 로 다이제스트를 읽는다. docker-container 드라이버가 둘 다 지원한다.
+          driver: docker-container
+
+      - name: Free disk space (torch 이미지는 수 GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h / | tail -1
+
+      - name: Build · push · update-function-code
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: ${{ matrix.module }}/deploy.sh
