@@ -110,7 +110,7 @@ class Settings:
     #: RDS는 평문 접속을 거부하므로 기본 require. 로컬 docker pg는 DB_SSLMODE=disable.
     db_sslmode: str = "require"
     db_sslrootcert: str | None = None
-    #: 미리보기 JPEG가 있는 버킷. analyze --db 가 여기서 내려받는다.
+    #: 미리보기 JPEG가 있는 버킷. score --db 가 여기서 내려받는다.
     s3_bucket: str | None = None
     #: DB 모드에서 미리보기를 내려받는 자리. 갤러리마다 하위 폴더.
     work_dir: Path = Path("/tmp/photoselect")
