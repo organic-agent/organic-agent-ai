@@ -8,8 +8,9 @@ ai-folder-structure.md의 ②~④ 구현. 층마다 잘하는 도구:
              · 컨셉 = 열린 이름
     ③ 배정   K 밖 소그룹 → concat 공간에서 이름 붙은 그룹 중심과 최근접. 거리 > τ 면 '기타/기타'
              + needs_review. CLIP 텍스트는 안 쓴다 — 컨셉 층은 텍스트로 못 가른다
-    ④ 검증   CLIP zero-shot(부모 고정 목록) 사진 단위 → 그룹 다수결. VLM 부모와 다르거나
-             confidence < 기준이면 needs_review. 검증 전용 — 판정은 VLM의 것
+    ④ 검증   SCORE 가 사진마다 저장한 CLIP zero-shot 부모 라벨(sub_scores.clip_parent) → 그룹 다수결.
+             VLM 부모와 다르거나 confidence < 기준이면 needs_review. 검증 전용 — 판정은 VLM의 것.
+             여기서 CLIP 텍스트 인코더를 올리지 않는다 — 이 모듈은 torch 없이 돈다(#26)
 
 Bedrock 이미지 호출은 그룹 수 상한으로 절대 상한이 잡힌다(⌈이미지 수/naming_chunk⌉+1회) —
 갤러리가 커져도 비용은 커버리지 목표와 상한이 정한 범위를 넘지 않는다.
@@ -25,10 +26,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from photoselect_v1.foldering.analyze import concat_space
-from photoselect_v1.config import PARENT_PROMPTS, PARENTS, Settings
+from photoselect_v1.config import PARENTS, Settings
+from photoselect_v1.foldering.categorize import concat_space
 from photoselect_v1.llm import LlmClient, jpeg_bytes
 from photoselect_v1.store import ConceptAssignment, Store
+from photoselect_v1.subjects import majority
 
 log = logging.getLogger(__name__)
 
@@ -150,26 +152,8 @@ def _merge_names(llm: LlmClient, named: dict[int, dict], sizes: dict[int, int], 
     return named
 
 
-class ParentVerifier:
-    """④ CLIP zero-shot 부모 검증 — 고정 목록 텍스트 vs 사진 CLIP 임베딩, 그룹 다수결."""
-
-    def __init__(self, laion_runner, parents: list[str]) -> None:
-        self.labels = [p for p in parents if p in PARENT_PROMPTS]
-        vecs = []
-        for p in self.labels:
-            t = laion_runner.embed_texts(PARENT_PROMPTS[p]).mean(axis=0)
-            vecs.append(t / np.linalg.norm(t))
-        self._T = np.stack(vecs) if vecs else np.zeros((0, 768))
-
-    def majority(self, clip_embs: np.ndarray) -> str | None:
-        if not len(self._T) or not len(clip_embs):
-            return None
-        votes = np.argmax(clip_embs @ self._T.T, axis=1)
-        return self.labels[int(np.bincount(votes).argmax())]
-
-
 def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
-        job_id: int | None = None, verifier: ParentVerifier | None = None) -> dict:
+        job_id: int | None = None) -> dict:
     if llm is None:
         raise RuntimeError("naming 은 Bedrock 이 필요하다 — --llm 으로 실행하라 (AWS 자격 필요)")
     started = time.monotonic()
@@ -178,7 +162,7 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
 
     rows = [r for r in store.read_analysis(gallery) if r.embed_group_id >= 0]
     if not rows:
-        raise RuntimeError(f"갤러리 {gallery}: embed_group_id 가 없다 — FULL 분석이 먼저다")
+        raise RuntimeError(f"갤러리 {gallery}: embed_group_id 가 없다 — FULL(SCORE→CATEGORIZE) 분석이 먼저다")
     emb_ids, E = store.read_embeddings(gallery)
     clip_ids, C = store.read_clip_embeddings(gallery)
     emb_map, clip_map = dict(zip(emb_ids, E)), dict(zip(clip_ids, C))
@@ -186,7 +170,6 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
     ids = [r.photo_id for r in rows]
     E = np.stack([emb_map[i] for i in ids])
     C = np.stack([clip_map[i] for i in ids])
-    Cn = C / np.clip(np.linalg.norm(C, axis=1, keepdims=True), 1e-8, None)
     X = concat_space(E, C)
     gids = np.array([r.embed_group_id for r in rows], dtype=int)
 
@@ -244,17 +227,13 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
     if not named_groups:
         raise RuntimeError(f"갤러리 {gallery}: VLM 이 어떤 그룹에도 이름을 붙이지 못했다")
 
-    # ④ CLIP 부모 검증기 (텍스트 임베딩 — LaionRunner 의 CLIP 텍스트 인코더)
-    if verifier is None:
-        from photoselect_v1.foldering.runners import LaionRunner
-        verifier = ParentVerifier(LaionRunner(), parents)
-
     # 배정 만들기 — vlm(K 안) / nearest(K 밖·이미지 없음·응답 누락)
     named_centroids = np.stack([g.centroid for g in named_groups])
     assignments: list[ConceptAssignment] = []
     counts = {"vlm": 0, "nearest": 0, "review": 0}
     for g in groups:
-        clip_parent = verifier.majority(Cn[g.members])
+        # ④ 저장된 사진별 CLIP 부모 라벨의 그룹 다수결 — SCORE 가 계산해 둔 것
+        clip_parent = majority([rows[i].sub_scores.get("clip_parent") for i in g.members])
         if g.gid in named:
             d = named[g.gid]
             parent, concept = str(d["parent"]), str(d["concept"])

@@ -1,6 +1,7 @@
 """photoselect-v1 — AI 클러스터링 폴더화 배치 (기능별 구조).
 
-    foldering/   analyze(FULL: 사진별 점수·연사 클러스터·임베딩 그룹) → naming(VLM 이름·배정·검증)
+    foldering/   score(SCORE: 사진별 점수·CLIP 벡터·라벨, torch) → categorize(CATEGORIZE: 백분위·연사·
+                 임베딩 그룹 → naming, torch 없음). wes mode FULL = 둘 다, NAMING = categorize (#26).
                  산출물: photo_analysis · ai_concept_assignments. 폴더 생성은 wes(POST /concept-folders/ai).
 
 공용(루트): config(설정·손잡이) · store(DB/로컬 저장소) · gallery(미리보기 로드) · llm(Bedrock) ·
