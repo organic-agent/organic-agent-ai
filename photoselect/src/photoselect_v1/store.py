@@ -8,7 +8,8 @@ v2 store의 복제·개편. V45에서 바뀐 계약:
   · naming 잡의 산출물은 ai_concept_assignments (job_id에 매달림)
 
 접근 규칙(CLAUDE.md)은 그대로 인터페이스 모양으로 강제한다 — 쓰기는 `write_analysis`와
-`write_assignments` 둘뿐이고, photo_ratings는 읽지도 않는다.
+`write_assignments` 둘뿐이고, photo_ratings·photo_selection_items는 읽지도 않는다.
+추천·비교샷 저장소(폴더 세트·ai_recommendations·ai_pair_verdicts)는 wes로 갔다(#25).
 """
 
 from __future__ import annotations
@@ -55,63 +56,6 @@ class ConceptAssignment:
     needs_review: bool = False
 
 
-class FolderSetMissing(RuntimeError):
-    """AI 폴더 세트가 없다 — wes 는 409(FOLDERS_NOT_READY)로 변환한다. 컨셉 폴백은 없다(§2.1)."""
-
-
-@dataclass
-class Folder:
-    """추천 단위인 **자식 폴더** 하나 — wes `photo_folders` 또는 로컬 배정 파생.
-
-    photo_ids 는 **현재 소속** 기준이다(§7 — 사용자가 옮긴 뒤 상태). DB 는 photo_folder_items,
-    로컬은 assignments 의 embed_group_id 매핑에서 온다.
-    """
-
-    folder_id: str                  # DB: photo_folders.id (str), 로컬: "부모›컨셉"
-    parent_name: str
-    name: str
-    photo_ids: list[str] = field(default_factory=list)
-
-
-@dataclass
-class Recommendation:
-    """`ai_recommendations` 한 행 (wes V46 계약 — §2.5). reason 은 2단계라 None 허용."""
-
-    photo_id: str
-    round: int
-    rank: int                       # 폴더 안 순위
-    score_breakdown: dict
-    reason: str | None = None
-    folder_id: str | None = None    # 미분류 가상 폴더는 None
-
-
-@dataclass
-class Evidence:
-    """추천이 읽는 상태 신호. selected 는 photo_selection_items(읽기 전용), rejected 는
-    ai_recommendations.rejected_at. photo_ratings 는 접근 금지(CLAUDE.md)."""
-
-    selected: list[str] = field(default_factory=list)
-    rejected: list[str] = field(default_factory=list)
-
-
-@dataclass
-class PairVerdict:
-    """`ai_pair_verdicts` 한 행 (wes V47 계약 — §3.3) — 두 장 중 AI가 고른 것과 그 이유.
-
-    사람의 답(`pair_comparison_events`)과 절대 같은 테이블에 섞지 않는다. facts 는 재현용
-    사실 목록, model_version 은 모델 id + 프롬프트 버전 — 캐시를 세대로 가른다.
-    """
-
-    photo_a: str
-    photo_b: str
-    chosen_photo_id: str
-    confidence: str          # clear | slight
-    reason: str
-    facts: dict
-    model_version: str
-    source: str              # llm | template
-
-
 # ── 인터페이스 ───────────────────────────────────────────────────────────────
 class Store(Protocol):
     def read_analysis(self, gallery: str) -> list[PhotoAnalysis]: ...
@@ -123,15 +67,6 @@ class Store(Protocol):
     def write_assignments(self, gallery: str, job_id: int | None,
                           rows: list[ConceptAssignment]) -> None: ...
     def preview_path(self, gallery: str, photo_id: str) -> str | None: ...
-    def read_folder_set(self, gallery: str, analysis_job_id: int | None) -> list[Folder]: ...
-    def read_evidence(self, gallery: str, selection_id: str | None) -> Evidence: ...
-    def read_recommendations(self, gallery: str) -> list[Recommendation]: ...
-    def write_recommendations(self, gallery: str, rows: list[Recommendation]) -> None: ...
-    def update_reasons(self, gallery: str, round_no: int, reasons: dict[str, str]) -> None: ...
-    def read_pair_verdict(self, gallery: str, photo_a: str, photo_b: str,
-                          model_version: str) -> PairVerdict | None: ...
-    def write_pair_verdict(self, gallery: str, verdict: PairVerdict) -> None: ...
-    def folder_names(self, gallery: str, photo_ids: list[str]) -> dict[str, str]: ...
 
 
 # ── 로컬 구현 ────────────────────────────────────────────────────────────────
@@ -204,91 +139,6 @@ class LocalStore:
                     out.append(ConceptAssignment(**d))
         return out
 
-    # ── 추천 (plan-v3-folder-compare.md §2) ──
-    def read_folder_set(self, gallery: str, analysis_job_id: int | None = None) -> list[Folder]:
-        """로컬 폴더 세트 — naming 배정에서 파생한다. wes 플래너처럼 같은 (부모, 컨셉) 이름의
-        임베딩 그룹들을 폴더 하나로 합친다. analysis_job_id 는 로컬에서 무시(세트가 하나뿐)."""
-        assignments = self.read_assignments(gallery)
-        if not assignments:
-            raise FolderSetMissing(f"갤러리 {gallery}: AI 폴더 세트가 없다 — naming 이 먼저다")
-        by_group = {a.embed_group_id: a for a in assignments}
-        folders: dict[str, Folder] = {}
-        for r in self.read_analysis(gallery):
-            a = by_group.get(r.embed_group_id)
-            if a is None:
-                continue
-            fid = f"{a.parent_name}›{a.concept_name}"
-            f = folders.setdefault(fid, Folder(folder_id=fid, parent_name=a.parent_name,
-                                               name=a.concept_name))
-            f.photo_ids.append(r.photo_id)
-        return sorted(folders.values(), key=lambda f: (-len(f.photo_ids), f.folder_id))
-
-    def target_count(self, gallery: str) -> int | None:
-        return None
-
-    def read_evidence(self, gallery: str, selection_id: str | None = None) -> Evidence:
-        p = self._dir(gallery) / (f"evidence-{selection_id}.json" if selection_id else "evidence.json")
-        if not p.exists():
-            return Evidence()
-        raw = json.loads(p.read_text(encoding="utf-8"))
-        return Evidence(selected=[str(x) for x in raw.get("selected", [])],
-                        rejected=[str(x) for x in raw.get("rejected", [])])
-
-    def read_recommendations(self, gallery: str) -> list[Recommendation]:
-        p = self._dir(gallery) / "recommendations.jsonl"
-        if not p.exists():
-            return []
-        with p.open(encoding="utf-8") as f:
-            return [Recommendation(**json.loads(line)) for line in f if line.strip()]
-
-    def write_recommendations(self, gallery: str, rows: list[Recommendation]) -> None:
-        p = self._dir(gallery) / "recommendations.jsonl"
-        existing = [r for r in self.read_recommendations(gallery) if not rows or r.round != rows[0].round]
-        with p.open("w", encoding="utf-8") as f:
-            for r in existing + rows:
-                f.write(json.dumps(asdict(r), ensure_ascii=False) + "\n")
-
-    def update_reasons(self, gallery: str, round_no: int, reasons: dict[str, str]) -> None:
-        rows = self.read_recommendations(gallery)
-        for r in rows:
-            if r.round == round_no and r.photo_id in reasons:
-                r.reason = reasons[r.photo_id]
-        p = self._dir(gallery) / "recommendations.jsonl"
-        with p.open("w", encoding="utf-8") as f:
-            for r in rows:
-                f.write(json.dumps(asdict(r), ensure_ascii=False) + "\n")
-
-    # ── 비교샷 (§3) ──
-    def read_pair_verdict(self, gallery: str, photo_a: str, photo_b: str,
-                          model_version: str) -> PairVerdict | None:
-        """순서 무관 캐시 — (a, b) 와 (b, a) 는 같은 판정. 모델·프롬프트 세대가 다르면 무시한다."""
-        p = self._dir(gallery) / "verdicts.jsonl"
-        if not p.exists():
-            return None
-        key = frozenset((photo_a, photo_b))
-        with p.open(encoding="utf-8") as f:
-            for line in f:
-                if not line.strip():
-                    continue
-                v = PairVerdict(**json.loads(line))
-                if frozenset((v.photo_a, v.photo_b)) == key and v.model_version == model_version:
-                    return v
-        return None
-
-    def write_pair_verdict(self, gallery: str, verdict: PairVerdict) -> None:
-        p = self._dir(gallery) / "verdicts.jsonl"
-        with p.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(asdict(verdict), ensure_ascii=False) + "\n")
-
-    def folder_names(self, gallery: str, photo_ids: list[str]) -> dict[str, str]:
-        """photo_id → '부모 › 컨셉'. 배정이 없으면 빈 dict — compare 는 폴더 없이도 돈다."""
-        try:
-            folders = self.read_folder_set(gallery, None)
-        except FolderSetMissing:
-            return {}
-        want = set(photo_ids)
-        return {p: f"{f.parent_name} › {f.name}" for f in folders for p in f.photo_ids if p in want}
-
 
 def _jsonb(value) -> str:
     """jsonb 컬럼용 — NaN/Inf는 JSON 표준에 없어 null로 보낸다."""
@@ -305,17 +155,16 @@ def _jsonb(value) -> str:
 
 # ── DB 구현 ─────────────────────────────────────────────────────────────────
 class DbStore:
-    """wes 공유 Postgres (V45). id 규약은 v2와 같다 — 읽을 때 str(), 쓸 때 int()."""
+    """wes 공유 Postgres (V45). id 규약: 읽을 때 str(), 쓸 때 int()."""
 
     ANALYSIS_COLUMNS = (
         "subjects", "technical_pct", "aesthetic_pct", "sub_scores",
         "cluster_id", "cluster_rank", "embed_group_id", "model_version",
     )
 
-    def __init__(self, settings, selection_id: str | None = None, connection=None) -> None:
+    def __init__(self, settings, connection=None) -> None:
         from photoselect_v1 import db as db_mod
         self.conn = connection or db_mod.connect(settings)
-        self.selection_id = int(selection_id) if selection_id is not None else None
         self._settings = settings
         self._storage = None
 
@@ -339,22 +188,6 @@ class DbStore:
         except Exception as exc:  # noqa: BLE001
             log.warning("미리보기 내려받기 실패 photo=%s: %s", photo_id, exc)
             return None
-
-    # 워커 배관 호환 (run_selection_job이 v3로 들어와도 명확한 에러까지는 도달하게)
-    def gallery_of_selection(self, selection_id: str | int) -> str:
-        with self.conn.cursor() as cur:
-            cur.execute("SELECT gallery_id FROM photo_selections WHERE id = %s AND deleted_at IS NULL",
-                        (int(selection_id),))
-            row = cur.fetchone()
-        if row is None:
-            raise SystemExit(f"셀렉이 없다: photo_selections.id={selection_id}")
-        return str(row[0])
-
-    def target_count(self, gallery: str) -> int | None:
-        with self.conn.cursor() as cur:
-            cur.execute("SELECT max_selectable_photo_count FROM galleries WHERE id = %s", (int(gallery),))
-            row = cur.fetchone()
-        return int(row[0]) if row and row[0] is not None else None
 
     # ── analysis ──
     def read_analysis(self, gallery: str) -> list[PhotoAnalysis]:
@@ -478,206 +311,3 @@ class DbStore:
             )
         self.conn.commit()
         log.info("ai_concept_assignments 적재: gallery=%s job=%s %d그룹", gallery, job_id, len(params))
-
-    # ── 추천 (plan-v3-folder-compare.md §2 — wes V46 계약) ──
-    #: ai_selection_jobs·ai_recommendations 는 wes V46 마이그레이션에서 온다.
-    #: 이 코드는 §2.5 계약(folder_id·UNIQUE(selection, round, photo))을 전제한다.
-    _V46_HINT = ("wes 에 추천 테이블이 아직 없다 — V46 마이그레이션"
-                 "(ai_selection_jobs 재생성 + ai_recommendations.folder_id) 뒤에 돌려라")
-
-    def _v46(self, exc: Exception) -> RuntimeError:
-        self.conn.rollback()
-        return RuntimeError(f"{self._V46_HINT} ({type(exc).__name__})")
-
-    def read_folder_set(self, gallery: str, analysis_job_id: int | None = None) -> list[Folder]:
-        """최신(또는 지정) AI 세트의 자식 폴더들 — **현재 photo_folder_items 기준**(§7).
-        photo_folder_* 는 wes 소유라 읽기 전용이다. 세트가 없으면 FolderSetMissing(→ 409)."""
-        with self.conn.cursor() as cur:
-            if analysis_job_id is None:
-                cur.execute(
-                    "SELECT max(analysis_job_id) FROM photo_folder_groups "
-                    "WHERE gallery_id = %s AND origin = 'AI' AND analysis_job_id IS NOT NULL",
-                    (int(gallery),),
-                )
-                row = cur.fetchone()
-                analysis_job_id = int(row[0]) if row and row[0] is not None else None
-            if analysis_job_id is None:
-                raise FolderSetMissing(f"갤러리 {gallery}: AI 폴더 세트가 없다 (FOLDERS_NOT_READY)")
-            cur.execute(
-                """
-                SELECT f.id, g.name, f.name, i.photo_id
-                FROM photo_folder_groups g
-                JOIN photo_folders f ON f.group_id = g.id
-                LEFT JOIN photo_folder_items i ON i.folder_id = f.id
-                WHERE g.gallery_id = %s AND g.origin = 'AI' AND g.analysis_job_id = %s
-                ORDER BY f.id, i.sort_order, i.id
-                """,
-                (int(gallery), int(analysis_job_id)),
-            )
-            rows = cur.fetchall()
-        if not rows:
-            raise FolderSetMissing(f"갤러리 {gallery}: AI 세트 {analysis_job_id} 에 폴더가 없다")
-        folders: dict[str, Folder] = {}
-        for fid, parent, name, photo_id in rows:
-            f = folders.setdefault(str(fid), Folder(folder_id=str(fid), parent_name=str(parent),
-                                                    name=str(name)))
-            if photo_id is not None:
-                f.photo_ids.append(str(photo_id))
-        return sorted(folders.values(), key=lambda f: (-len(f.photo_ids), int(f.folder_id)))
-
-    def _require_selection(self) -> int:
-        if self.selection_id is None:
-            raise SystemExit("DB 모드의 추천은 셀렉 단위다 — --selection-id 가 필요하다")
-        return self.selection_id
-
-    def read_evidence(self, gallery: str, selection_id: str | None = None) -> Evidence:
-        import psycopg
-
-        sid = int(selection_id) if selection_id is not None else self.selection_id
-        if sid is None:
-            return Evidence()
-        with self.conn.cursor() as cur:
-            cur.execute("SELECT photo_id FROM photo_selection_items WHERE selection_id = %s", (sid,))
-            selected = [str(r[0]) for r in cur.fetchall()]
-            try:
-                cur.execute(
-                    "SELECT photo_id FROM ai_recommendations WHERE selection_id = %s AND rejected_at IS NOT NULL",
-                    (sid,),
-                )
-                rejected = [str(r[0]) for r in cur.fetchall()]
-            except psycopg.errors.UndefinedTable:
-                self.conn.rollback()   # V46 전 — 거절 신호가 아직 없다
-                rejected = []
-        return Evidence(selected=selected, rejected=rejected)
-
-    def read_recommendations(self, gallery: str) -> list[Recommendation]:
-        import psycopg
-
-        sid = self._require_selection()
-        try:
-            with self.conn.cursor() as cur:
-                cur.execute(
-                    "SELECT photo_id, round, rank, score_breakdown, reason, folder_id "
-                    "FROM ai_recommendations WHERE selection_id = %s ORDER BY round, folder_id, rank",
-                    (sid,),
-                )
-                rows = cur.fetchall()
-        except psycopg.errors.UndefinedTable as exc:
-            raise self._v46(exc) from exc
-        return [Recommendation(photo_id=str(p), round=int(rd), rank=int(rk), score_breakdown=bd or {},
-                               reason=reason, folder_id=str(fid) if fid is not None else None)
-                for p, rd, rk, bd, reason, fid in rows]
-
-    def write_recommendations(self, gallery: str, rows: list[Recommendation]) -> None:
-        """한 라운드를 INSERT (reason 은 2단계라 보통 NULL). UNIQUE(selection, round, photo) 전제."""
-        import psycopg
-
-        sid = self._require_selection()
-        params = [
-            (sid, int(r.photo_id), int(r.round), int(r.rank),
-             int(r.folder_id) if r.folder_id is not None else None,
-             _jsonb(r.score_breakdown), r.reason)
-            for r in rows
-        ]
-        try:
-            with self.conn.cursor() as cur:
-                cur.executemany(
-                    """
-                    INSERT INTO ai_recommendations
-                        (selection_id, photo_id, round, rank, folder_id, score_breakdown, reason,
-                         presented_at, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s, now(), now(), now())
-                    """,
-                    params,
-                )
-            self.conn.commit()
-        except (psycopg.errors.UndefinedTable, psycopg.errors.UndefinedColumn) as exc:
-            raise self._v46(exc) from exc
-        log.info("ai_recommendations 적재: selection=%s round=%s %d장", sid,
-                 rows[0].round if rows else "-", len(params))
-
-    def update_reasons(self, gallery: str, round_no: int, reasons: dict[str, str]) -> None:
-        import psycopg
-
-        sid = self._require_selection()
-        try:
-            with self.conn.cursor() as cur:
-                cur.executemany(
-                    "UPDATE ai_recommendations SET reason = %s, updated_at = now(), "
-                    "version = version + 1 WHERE selection_id = %s AND round = %s AND photo_id = %s",
-                    [(text, sid, int(round_no), int(pid)) for pid, text in reasons.items()],
-                )
-            self.conn.commit()
-        except (psycopg.errors.UndefinedTable, psycopg.errors.UndefinedColumn) as exc:
-            raise self._v46(exc) from exc
-        log.info("추천 이유 UPDATE: selection=%s round=%s %d장", sid, round_no, len(reasons))
-
-    # ── 비교샷 (§3.3 — wes ai_pair_verdicts 계약) ──
-    _PAIR_HINT = "wes 에 ai_pair_verdicts 가 아직 없다 — 비교샷 마이그레이션 뒤에 돌려라"
-
-    def read_pair_verdict(self, gallery: str, photo_a: str, photo_b: str,
-                          model_version: str) -> PairVerdict | None:
-        """순서 무관 캐시. 저장된 세대(model_version)가 다르면 miss — 호출부가 다시 판정해 덮는다."""
-        import psycopg
-
-        sid = self._require_selection()
-        try:
-            with self.conn.cursor() as cur:
-                cur.execute(
-                    "SELECT photo_a, photo_b, chosen_photo_id, confidence, reason, facts, model_version, source "
-                    "FROM ai_pair_verdicts WHERE selection_id = %s "
-                    "AND LEAST(photo_a, photo_b) = LEAST(%s::bigint, %s::bigint) "
-                    "AND GREATEST(photo_a, photo_b) = GREATEST(%s::bigint, %s::bigint) "
-                    "AND model_version = %s",
-                    (sid, int(photo_a), int(photo_b), int(photo_a), int(photo_b), model_version),
-                )
-                row = cur.fetchone()
-        except psycopg.errors.UndefinedTable as exc:
-            self.conn.rollback()
-            raise RuntimeError(f"{self._PAIR_HINT} ({type(exc).__name__})") from exc
-        if row is None:
-            return None
-        a, b, chosen, conf, reason, facts, mv, source = row
-        return PairVerdict(photo_a=str(a), photo_b=str(b), chosen_photo_id=str(chosen),
-                           confidence=str(conf), reason=str(reason), facts=dict(facts or {}),
-                           model_version=str(mv), source=str(source))
-
-    def write_pair_verdict(self, gallery: str, verdict: PairVerdict) -> None:
-        """같은 쌍의 재판정(새 모델·프롬프트 세대)은 덮어쓴다 — 쌍당 한 행(순서 무관 유니크)."""
-        import psycopg
-
-        sid = self._require_selection()
-        try:
-            with self.conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO ai_pair_verdicts
-                        (selection_id, photo_a, photo_b, chosen_photo_id, confidence, reason,
-                         facts, model_version, source, created_at, updated_at)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s, %s, now(), now())
-                    ON CONFLICT (selection_id, LEAST(photo_a, photo_b), GREATEST(photo_a, photo_b))
-                    DO UPDATE SET chosen_photo_id = EXCLUDED.chosen_photo_id,
-                        confidence = EXCLUDED.confidence, reason = EXCLUDED.reason,
-                        facts = EXCLUDED.facts, model_version = EXCLUDED.model_version,
-                        source = EXCLUDED.source, updated_at = now(),
-                        version = ai_pair_verdicts.version + 1
-                    """,
-                    (sid, int(verdict.photo_a), int(verdict.photo_b), int(verdict.chosen_photo_id),
-                     verdict.confidence, verdict.reason, _jsonb(verdict.facts),
-                     verdict.model_version, verdict.source),
-                )
-            self.conn.commit()
-        except psycopg.errors.UndefinedTable as exc:
-            self.conn.rollback()
-            raise RuntimeError(f"{self._PAIR_HINT} ({type(exc).__name__})") from exc
-        log.info("ai_pair_verdicts 저장: selection=%s (%s, %s) → %s [%s]", sid,
-                 verdict.photo_a, verdict.photo_b, verdict.chosen_photo_id, verdict.source)
-
-    def folder_names(self, gallery: str, photo_ids: list[str]) -> dict[str, str]:
-        """photo_id → '부모 › 컨셉' (최신 AI 세트, 현재 items 기준). 세트가 없으면 빈 dict."""
-        try:
-            folders = self.read_folder_set(gallery, None)
-        except FolderSetMissing:
-            return {}
-        want = set(photo_ids)
-        return {p: f"{f.parent_name} › {f.name}" for f in folders for p in f.photo_ids if p in want}

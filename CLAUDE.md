@@ -29,8 +29,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 | 워크로드 | 모양 | 예 |
 |---|---|---|
-| 배치 (갤러리/앨범당 1회) | embedder 패턴 Lambda — `handler.py`(EVENT) / `__main__.py`(로컬 CLI) 동일 코드 | 사진 분석, 자동 레이아웃 초안, 1차 셀렉 |
-| 대화형 (사용자 대기) | 저지연 동기 API | 보정 요청 구조화 |
+| 배치 (갤러리/앨범당 1회) | embedder 패턴 Lambda — `handler.py`(EVENT) / `__main__.py`(로컬 CLI) 동일 코드 | 임베딩·미리보기, 사진 분석·폴더화, 자동 레이아웃 초안 |
+| 사용자 기능 (저장된 숫자 + 미리보기 몇 장 + LLM) | **wes가 직접** (Kotlin, Bedrock) — 이 repo에 없다 | 폴더별 추천, 비교샷, 보정 요청 구조화 |
+
+경계는 **"갤러리 전수에 torch 모델 추론이 필요한가"**다. 그렇다면 이 repo, 아니면 wes
+(wes `docs/plans/ai-feature-migration-to-wes.md`, 2026-09-04). wes도 미리보기를 읽어 Bedrock에 보낸다.
 
 - wes 백엔드가 실행 조건을 검증하고 트리거한다. 배치는 `InvocationType.EVENT`, 이벤트는
   `{"galleryId": N, "jobId": M}`.

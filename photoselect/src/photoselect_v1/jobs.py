@@ -1,8 +1,8 @@
-"""잡 상태 전이 — `ai_analysis_jobs`·`ai_selection_jobs`.
+"""잡 상태 전이 — `ai_analysis_jobs`.
 
-Store 인터페이스에 일부러 없다(파이프라인 코드는 잡을 모른다). 진입점(CLI·handler·워커)이
-잡을 집고(claim) 파이프라인을 돌린 뒤 닫는다(finish/fail). wes는 PENDING만 만들고 이후 전이는
-전부 여기다.
+Store 인터페이스에 일부러 없다(파이프라인 코드는 잡을 모른다). 진입점(CLI·워커)이 잡을
+집고(claim) 파이프라인을 돌린 뒤 닫는다(finish/fail). wes는 PENDING만 만들고 이후 전이는
+전부 여기다. `ai_selection_jobs`(추천)는 wes가 자기 안에서 집는다(#25) — 여기서 폴링하지 않는다.
 """
 
 from __future__ import annotations
@@ -12,7 +12,6 @@ import json
 import psycopg
 
 ANALYSIS = "ai_analysis_jobs"
-SELECTION = "ai_selection_jobs"
 
 
 def claim(conn: psycopg.Connection, table: str, job_id: int) -> bool:
@@ -42,15 +41,13 @@ def claim_next(conn: psycopg.Connection, table: str) -> int | None:
     return int(row[0]) if row else None
 
 
-def finish(conn: psycopg.Connection, table: str, job_id: int, result: dict, round_no: int | None = None) -> None:
-    sets = "status = 'DONE', finished_at = now(), updated_at = now(), version = version + 1, result = %s::jsonb"
-    params: list = [json.dumps(result, ensure_ascii=False)]
-    if table == SELECTION:
-        sets += ", round = %s"
-        params.append(round_no)
-    params.append(job_id)
+def finish(conn: psycopg.Connection, table: str, job_id: int, result: dict) -> None:
     with conn.cursor() as cur:
-        cur.execute(f"UPDATE {table} SET {sets} WHERE id = %s", params)
+        cur.execute(
+            f"UPDATE {table} SET status = 'DONE', finished_at = now(), updated_at = now(), "
+            f"version = version + 1, result = %s::jsonb WHERE id = %s",
+            (json.dumps(result, ensure_ascii=False), job_id),
+        )
     conn.commit()
 
 
@@ -63,14 +60,6 @@ def fail(conn: psycopg.Connection, table: str, job_id: int, error: str) -> None:
             (error[:4000], job_id),
         )
     conn.commit()
-
-
-def selection_job_info(conn: psycopg.Connection, job_id: int) -> tuple[int, str] | None:
-    """(selection_id, mode). handler가 이벤트 대신 잡 행을 믿는 데 쓴다."""
-    with conn.cursor() as cur:
-        cur.execute(f"SELECT selection_id, mode FROM {SELECTION} WHERE id = %s", (job_id,))
-        row = cur.fetchone()
-    return (int(row[0]), str(row[1])) if row else None
 
 
 def analysis_job_info(conn: psycopg.Connection, job_id: int) -> tuple[int, str] | None:
