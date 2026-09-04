@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 구성 과정에서 작가의 업무 시간을 줄이는 AI 기능을 담당한다. AI는 초안·구조화·제안만 하고,
 최종 결정(사진 선택·제출·보정 확정)은 언제나 사람이 한다.
 
-> **현재 상태: 계획 확정, 구현 전.** 제품 우선순위·아키텍처·설계는 `docs/plan.md`가 단일
-> 소스다. 이 문서는 그 요약과 작업 규칙만 담는다.
+> 제품 우선순위·아키텍처·설계는 `docs/plan.md`가 단일 소스다. **현재 구성**(모듈·잡·계약)은
+> `docs/embedder-photoselect-architecture.md`에 있다. 이 문서는 요약과 작업 규칙만 담는다.
 
 ## 제품 우선순위 (인터뷰 3건 기반 — 근거는 docs/plan.md §1)
 
@@ -62,20 +62,30 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `photo_selection_items`는 `source='AI'` 행만 쓴다. MANUAL 행은 읽기 전용
 - `photo_ratings`는 **접근 금지** — 개인 취향 신호, 정책상 AI 입력에서 제외
 
-파이프라인 불변식은 `.claude/rules/pipeline.md`, Bedrock 호출 규칙은
-`.claude/rules/bedrock.md`가 강제한다. 이슈·브랜치·커밋·PR 규칙은
-`.claude/rules/git-workflow.md` (모듈 prefix + organic-agent-server 방식).
+이슈·브랜치·커밋·PR 규칙은 `.claude/rules/git-workflow.md` (모듈 prefix + organic-agent-server 방식).
 
-## 빌드 & 실행 (스캐폴드 후 이 형태를 유지한다)
+## 빌드 & 실행
+
+두 모듈 모두 embedder 패턴이다 — 패키지 바로 아래에 실행 코드, `__main__.py`(로컬 CLI)와 `handler.py`/`worker.py`(배포)가
+같은 `run()`을 부른다.
 
 ```bash
-python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt
-python -m <module> --gallery-id 1 --job-id 1    # 배치 로컬 실행 (RDS 터널 필요)
-pytest                                           # 테스트
+# embedder — 갤러리당 1회: 미리보기 PUT → DINOv3 → photo_analysis
+cd embedder && python -m venv .venv && .venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu \
+  && .venv/bin/pip install -r requirements.txt
+.venv/bin/python -m embedder --gallery-id 1 [--force]
+.venv/bin/python -m pytest tests -q                         # 34
+
+# photoselect — 폴더화: SCORE(사진별 점수, torch) → CATEGORIZE(그룹·이름, torch 없음)
+cd photoselect && python -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/pip install -e . --no-deps
+.venv/bin/python -m photoselect analyze --db --gallery 12 --llm   # = score → categorize (wes FULL)
+.venv/bin/python -m photoselect worker --llm                       # ai_analysis_jobs 폴링
+.venv/bin/python -m pytest tests -q                                 # 24
 ```
 
-RDS는 퍼블릭 접근이 없다. 로컬 실행 전 wes의 스크립트로 SSM 포트 포워딩을 연다:
-`../organic-agent-server/wes/scripts/db-tunnel.sh` (기본 15432).
+로컬 E2E는 wes 쪽 스크립트가 감싼다: `../organic-agent-server/wes/scripts/local-worker.sh --llm`(워커),
+`local-ai.sh <galleryId>`(임베딩 → 분석 한 번에). RDS는 퍼블릭 접근이 없다. 직접 붙을 때는 wes의
+`scripts/db-tunnel.sh`로 SSM 포트 포워딩을 연다(기본 15432).
 
 ## 구현 순서와 리스크
 

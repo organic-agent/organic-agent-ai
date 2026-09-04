@@ -1,0 +1,373 @@
+<title>embedder · photoselect 아키텍처</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+:root{
+  --paper:#f6f7f4; --ink:#1b1f24; --muted:#5b6470; --line:#d6dad3; --card:#ffffff;
+  --wes:#2f5d8a; --emb:#5a7d2e; --ai:#0e6f6b; --llm:#7a3f7f; --warn:#a8532a;
+  --wes-bg:#e6eef7; --emb-bg:#e9f0dc; --ai-bg:#dff0ee; --llm-bg:#efe3f0; --warn-bg:#f8e8df;
+  --code-bg:#eceee9;
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --paper:#15181c; --ink:#e6e8e3; --muted:#9aa3ad; --line:#2f353c; --card:#1d2126;
+    --wes:#7fb0e0; --emb:#a5cc6e; --ai:#5fc5bf; --llm:#cf9bd3; --warn:#e69a6f;
+    --wes-bg:#1f2d3d; --emb-bg:#26311b; --ai-bg:#16302f; --llm-bg:#301f32; --warn-bg:#3a2519;
+    --code-bg:#23282e;
+  }
+}
+:root[data-theme="dark"]{
+  --paper:#15181c; --ink:#e6e8e3; --muted:#9aa3ad; --line:#2f353c; --card:#1d2126;
+  --wes:#7fb0e0; --emb:#a5cc6e; --ai:#5fc5bf; --llm:#cf9bd3; --warn:#e69a6f;
+  --wes-bg:#1f2d3d; --emb-bg:#26311b; --ai-bg:#16302f; --llm-bg:#301f32; --warn-bg:#3a2519;
+  --code-bg:#23282e;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:"IBM Plex Sans KR",-apple-system,"Apple SD Gothic Neo",sans-serif;line-height:1.65;font-size:15.5px}
+main{max-width:1040px;margin:0 auto;padding:48px 28px 96px}
+h1{font-size:2.1rem;line-height:1.2;margin:0 0 8px;font-weight:700;letter-spacing:-.01em;text-wrap:balance}
+.lede{color:var(--muted);max-width:68ch;margin:0 0 40px;font-size:1.02rem}
+h2{font-size:1.35rem;margin:56px 0 14px;padding-top:14px;border-top:2px solid var(--ink);font-weight:700;text-wrap:balance}
+h2 .stage{display:inline-block;font-family:"IBM Plex Mono",monospace;font-size:.72rem;letter-spacing:.08em;text-transform:uppercase;padding:2px 8px;border-radius:3px;margin-right:10px;vertical-align:3px;color:#fff}
+h3{font-size:1.05rem;margin:28px 0 8px;font-weight:600}
+p{max-width:72ch} p,li{margin:0 0 10px} ul,ol{padding-left:1.3em;max-width:74ch}
+code,pre{font-family:"IBM Plex Mono",monospace;font-size:.86em}
+code{background:var(--code-bg);padding:1px 5px;border-radius:3px}
+pre{background:var(--code-bg);padding:14px 16px;border-radius:6px;overflow-x:auto;line-height:1.5;margin:12px 0 18px}
+pre code{background:none;padding:0}
+table{border-collapse:collapse;width:100%;margin:12px 0 22px;font-size:.92rem}
+.tw{overflow-x:auto}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:600;font-size:.8rem;letter-spacing:.05em;text-transform:uppercase;color:var(--muted)}
+td code{white-space:nowrap}
+.t-wes{background:var(--wes)} .t-emb{background:var(--emb)} .t-ai{background:var(--ai)} .t-llm{background:var(--llm)}
+.lane{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:18px 0 28px}
+.lane>div{padding:12px 14px;border-radius:6px;border:1px solid var(--line);background:var(--card)}
+.lane b{display:block;font-size:.78rem;letter-spacing:.06em;text-transform:uppercase;margin-bottom:6px}
+.lane .w b{color:var(--wes)} .lane .e b{color:var(--emb)} .lane .a b{color:var(--ai)} .lane .l b{color:var(--llm)}
+.lane small{color:var(--muted);display:block;font-size:.85rem;margin-top:6px}
+.callout{border-left:3px solid var(--ai);background:var(--ai-bg);padding:12px 16px;border-radius:0 6px 6px 0;margin:16px 0 20px;max-width:78ch}
+.callout.warn{border-color:var(--warn);background:var(--warn-bg)}
+.callout.llm{border-color:var(--llm);background:var(--llm-bg)}
+.callout.emb{border-color:var(--emb);background:var(--emb-bg)}
+.callout.wes{border-color:var(--wes);background:var(--wes-bg)}
+.callout p:last-child{margin:0}
+.formula{font-family:"IBM Plex Mono",monospace;background:var(--card);border:1px solid var(--line);border-radius:6px;padding:12px 16px;margin:10px 0 16px;overflow-x:auto;white-space:pre;line-height:1.7;font-size:.9rem}
+.diagram{overflow-x:auto;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px;margin:14px 0 26px}
+.diagram svg{display:block;min-width:920px;width:100%;height:auto}
+.diagram .lbl{font-family:"IBM Plex Sans KR",sans-serif;font-size:12.5px;fill:var(--ink)}
+.diagram .sub{font-family:"IBM Plex Mono",monospace;font-size:10.5px;fill:var(--muted)}
+.diagram .lane-t{font-family:"IBM Plex Mono",monospace;font-size:10.5px;letter-spacing:.08em;font-weight:500}
+.diagram .box{stroke-width:1.2;rx:5}
+.diagram .arrow{fill:none;stroke:var(--muted);stroke-width:1.4;marker-end:url(#ah)}
+.diagram .arrow.db{stroke-dasharray:4 3}
+.diagram .lane-bg{opacity:.55}
+.step{display:grid;grid-template-columns:34px 1fr;gap:10px;margin:0 0 14px;max-width:80ch}
+.step .n{font-family:"IBM Plex Mono",monospace;font-weight:500;color:var(--ai);font-size:.95rem;padding-top:2px}
+.step.e .n{color:var(--emb)}
+.step p{margin:0 0 4px}
+.who{display:inline-block;font-size:.75rem;padding:1px 7px;border-radius:3px;font-family:"IBM Plex Mono",monospace;vertical-align:1px}
+.who.w{background:var(--wes-bg);color:var(--wes)} .who.e{background:var(--emb-bg);color:var(--emb)} .who.a{background:var(--ai-bg);color:var(--ai)} .who.l{background:var(--llm-bg);color:var(--llm)}
+.gap{list-style:none;padding:0;counter-reset:gap}
+.gap li{border:1px solid var(--line);background:var(--card);padding:10px 14px 10px 46px;border-radius:6px;margin-bottom:8px;max-width:none;position:relative}
+.gap li::before{counter-increment:gap;content:counter(gap);position:absolute;left:14px;top:10px;font-family:"IBM Plex Mono",monospace;color:var(--warn);font-weight:500}
+.gap li b{color:var(--warn)}
+.stat{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:14px 0 24px}
+.stat>div{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:12px 14px}
+.stat .v{font-family:"IBM Plex Mono",monospace;font-size:1.5rem;font-weight:500;color:var(--ai);font-variant-numeric:tabular-nums}
+.stat .k{font-size:.8rem;color:var(--muted)}
+.toc{display:flex;flex-wrap:wrap;gap:6px 14px;font-size:.9rem;margin-bottom:6px}
+.toc a{color:var(--ai);text-decoration:none;border-bottom:1px solid var(--line)}
+a{color:var(--ai)}
+a:focus-visible{outline:2px solid var(--ai);outline-offset:2px}
+.two{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:12px 0 22px}
+.two>div{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:12px 16px}
+.two h4{margin:0 0 6px;font-size:.95rem}
+.two ul{margin:0;padding-left:1.1em;font-size:.92rem}
+.two li{margin:0 0 4px}
+.tree{font-family:"IBM Plex Mono",monospace;font-size:.84rem;line-height:1.55;background:var(--code-bg);border-radius:6px;padding:14px 16px;overflow-x:auto;margin:12px 0 18px;white-space:pre}
+.tree i{font-style:normal;color:var(--muted)}
+.tree b{font-weight:500;color:var(--ai)}
+.tree b.e{color:var(--emb)}
+@media (max-width:760px){.lane,.stat{grid-template-columns:1fr 1fr}.two{grid-template-columns:1fr}}
+@media (prefers-reduced-motion:reduce){*{scroll-behavior:auto}}
+</style>
+
+<main>
+<h1>embedder · photoselect 아키텍처 — 원본에서 폴더 이름까지, 그 다음은 wes</h1>
+<p class="lede">두 배치 모듈이 어떻게 이어지고, 각각 어떤 파일이 어떤 테이블을 채우며, 어디서 LLM을 부르는지를 <code>embedder/embedder/</code>와 <code>photoselect/photoselect/</code>(2026-09-04, #24 · #25 · #26 · #31 반영)의 코드 기준으로 정리했다. 추천·비교샷은 wes로 갔다(<code>docs/plans/ai-feature-migration-to-wes.md</code>). 이 페이지는 <b>코드가 지금 무엇을 하는지</b>만 적는다.</p>
+
+<nav class="toc">
+<a href="#overview">전체 그림</a><a href="#principles">공통 원칙</a><a href="#embedder">embedder</a><a href="#ps">photoselect 구조</a><a href="#score">SCORE</a><a href="#categorize">CATEGORIZE</a><a href="#wes">wes 쪽</a><a href="#contract">데이터 계약</a><a href="#tests">테스트</a><a href="#gaps">개선 검토 자리</a><a href="#order">읽는 순서</a>
+</nav>
+
+<h2 id="overview">전체 그림</h2>
+<p>웨딩 사진 갤러리를 놓고 배치 세 개가 순서대로 돈다. <b>embedder</b>는 갤러리당 1회, 원본을 열어 미리보기 JPEG를 S3에 올리고 <b>그 파일로</b> DINOv3 벡터를 계산해 EXIF와 함께 wes 공유 Postgres에 적는다. <b>photoselect SCORE</b>는 미리보기만 읽어 사진별 점수와 CLIP 벡터·zero-shot 라벨을 적고, <b>photoselect CATEGORIZE</b>는 저장된 벡터와 점수만으로(torch 없이) 연사·임베딩 그룹을 만들고 Bedrock으로 이름을 붙인다. 폴더 실체와 폴더별 추천·비교샷은 <b>wes</b>가 한다. 경계는 <b>"갤러리 전수에 torch 모델 추론이 필요한가"</b>이고, wes도 미리보기 몇 장을 읽어 Bedrock에 보낸다. 두 저장소는 HTTP로 데이터를 나르지 않는다 — <b>DB 테이블이 곧 인터페이스</b>다.</p>
+
+<div class="stat">
+  <div><div class="v">768d</div><div class="k">DINOv3 ViT-B/16 CLS, L2 정규화 — S3에 올린 미리보기에서 계산 (#24)</div></div>
+  <div><div class="v">2</div><div class="k">photoselect 잡 — SCORE(사진, torch) · CATEGORIZE(갤러리, torch 없음)</div></div>
+  <div><div class="v">⌈n/15⌉+1</div><div class="k">이름 짓기의 Bedrock 이미지 호출 상한 (n = 대표 사진 수)</div></div>
+  <div><div class="v">34 · 24</div><div class="k">pytest 통과 — embedder · photoselect (2026-09-04)</div></div>
+</div>
+
+<div class="lane">
+  <div class="w"><b>wes · Kotlin/Spring</b>업로드, 버튼마다 Lambda 호출 또는 <code>ai_analysis_jobs</code> PENDING INSERT, 배정 → 폴더 세트 구체화, <b>폴더별 추천·비교샷을 직접</b>(Bedrock 이미지 블록)<small>스키마 소유(Flyway). 이 repo는 마이그레이션을 만들지 않는다</small></div>
+  <div class="e"><b>embedder · Lambda / 로컬 CLI</b>S3 원본 → HEIC 디코드·EXIF 회전·1024px JPEG PUT → 올린 파일로 <b>DINOv3</b> 768d, EXIF 추출<small>원본을 여는 유일한 곳 · 타임아웃 앞에서 멈추고 자기 재호출 · admin 사진 교체 잡도 처리</small></div>
+  <div class="a"><b>photoselect · 워커</b>SCORE: CLIP·ARNIQA·고전 지표·zero-shot 라벨 (torch)<br>CATEGORIZE: 백분위·연사·임베딩 그룹 → naming (numpy·scipy)<small>미리보기만 읽는다 · <code>Store</code> 쓰기 3개 · 평탄 패키지(#31)</small></div>
+  <div class="l"><b>LLM · Bedrock Sonnet 4.6</b>여기: 그룹 대표 사진 → (부모 enum, 컨셉 이름). wes: 추천 이유(사진 + 형제 컷), 비교샷 판정<small><code>global.</code> 크로스 리전 · JSON 스키마 강제 · 실패는 항상 템플릿·최근접 폴백</small></div>
+</div>
+
+<div class="diagram" role="img" aria-label="embedder와 photoselect, wes의 실행 흐름과 DB 테이블 다이어그램">
+<svg viewBox="0 0 1000 640" xmlns="http://www.w3.org/2000/svg">
+<defs><marker id="ah" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0 0L8 4L0 8z" fill="var(--muted)"/></marker></defs>
+<rect x="0" y="0" width="1000" height="112" fill="var(--wes-bg)" class="lane-bg"/>
+<rect x="0" y="112" width="1000" height="118" fill="var(--emb-bg)" class="lane-bg"/>
+<rect x="0" y="230" width="1000" height="126" fill="var(--ai-bg)" class="lane-bg"/>
+<rect x="0" y="356" width="1000" height="136" fill="var(--ai-bg)" class="lane-bg" opacity=".35"/>
+<rect x="0" y="492" width="1000" height="148" fill="var(--wes-bg)" class="lane-bg"/>
+<text x="12" y="18" class="lane-t" fill="var(--wes)">WES · 버튼과 호출</text>
+<text x="12" y="130" class="lane-t" fill="var(--emb)">EMBEDDER · 갤러리당 1회 · Lambda EVENT · torch</text>
+<text x="12" y="248" class="lane-t" fill="var(--ai)">PHOTOSELECT SCORE · 워커 · 사진 단위 · torch</text>
+<text x="12" y="374" class="lane-t" fill="var(--ai)">PHOTOSELECT CATEGORIZE · 워커 · 갤러리 단위 · torch 없음</text>
+<text x="12" y="510" class="lane-t" fill="var(--wes)">WES · 폴더 구체화 · 추천 · 비교샷 (저장된 숫자 + 미리보기 몇 장 + Bedrock)</text>
+
+<rect x="790" y="28" width="196" height="604" fill="var(--card)" stroke="var(--line)" class="box"/>
+<text x="888" y="48" text-anchor="middle" class="lbl" font-weight="600">Postgres (RDS, pgvector)</text>
+<g class="lbl">
+<rect x="802" y="60" width="172" height="42" fill="var(--wes-bg)" stroke="var(--wes)" class="box"/>
+<text x="810" y="77">photos</text><text x="810" y="93" class="sub">status · storage_key · display_order</text>
+<rect x="802" y="140" width="172" height="80" fill="var(--emb-bg)" stroke="var(--emb)" class="box"/>
+<text x="810" y="157">photo_analysis</text><text x="810" y="172" class="sub">embedding vector(768) · model</text><text x="810" y="188" class="sub">photos.preview_key · EXIF</text><text x="810" y="204" class="sub">photos.status = EMBEDDED</text>
+<rect x="802" y="256" width="172" height="90" fill="var(--ai-bg)" stroke="var(--ai)" class="box"/>
+<text x="810" y="273">photo_analysis (SCORE 컬럼)</text><text x="810" y="288" class="sub">subjects · sub_scores{score,</text><text x="810" y="302" class="sub">  sharpness, clip, clip_parent}</text><text x="810" y="316" class="sub">clip_embedding · model_version</text><text x="810" y="336" class="sub">사진 단위 UPSERT</text>
+<rect x="802" y="384" width="172" height="98" fill="var(--ai-bg)" stroke="var(--ai)" class="box"/>
+<text x="810" y="401">photo_analysis (CATEGORIZE)</text><text x="810" y="416" class="sub">tech/aes_pct · sharpness_pct</text><text x="810" y="430" class="sub">cluster_id/rank · embed_group_id</text><text x="810" y="450">ai_concept_assignments</text><text x="810" y="464" class="sub">group → parent/concept · review</text>
+<rect x="802" y="520" width="172" height="52" fill="var(--wes-bg)" stroke="var(--wes)" class="box"/>
+<text x="810" y="537">concept_folders / detail_folders</text><text x="810" y="552" class="sub">photo_category_assignments</text><text x="810" y="566" class="sub">배정 → 폴더 (wes 소유)</text>
+<rect x="802" y="580" width="172" height="46" fill="var(--wes-bg)" stroke="var(--wes)" class="box"/>
+<text x="810" y="597">ai_recommendations</text><text x="810" y="612" class="sub">ai_pair_verdicts · ai_*_jobs</text>
+</g>
+
+<g class="lbl">
+<rect x="20" y="32" width="130" height="66" fill="var(--card)" stroke="var(--wes)" class="box"/>
+<text x="30" y="52">업로드</text><text x="30" y="68" class="sub">presigned S3 PUT</text><text x="30" y="84" class="sub">photos UPLOADED</text>
+<rect x="170" y="32" width="170" height="66" fill="var(--card)" stroke="var(--wes)" class="box"/>
+<text x="180" y="52">"임베딩 실행"</text><text x="180" y="68" class="sub">Lambda EVENT</text><text x="180" y="84" class="sub">{"galleryId":N,"force":false}</text>
+<rect x="360" y="32" width="170" height="66" fill="var(--card)" stroke="var(--wes)" class="box"/>
+<text x="370" y="52">"AI 분석"</text><text x="370" y="68" class="sub">ai_analysis_jobs PENDING</text><text x="370" y="84" class="sub">mode FULL | NAMING (깨우지 않음)</text>
+<rect x="550" y="32" width="222" height="66" fill="var(--card)" stroke="var(--wes)" class="box"/>
+<text x="560" y="52">POST /concept-folders/ai · "AI 추천" · 비교샷</text><text x="560" y="68" class="sub">배정 읽어 폴더 세트 · ai_selection_jobs 자기 실행</text><text x="560" y="84" class="sub">PairVerdictJudge 동기</text>
+</g>
+<path d="M150 65H168" class="arrow"/><path d="M340 65H358" class="arrow"/><path d="M530 65H548" class="arrow"/><path d="M772 65H800" class="arrow db"/>
+
+<g class="lbl">
+<rect x="20" y="146" width="190" height="72" fill="var(--card)" stroke="var(--emb)" class="box"/>
+<text x="30" y="166">S3 원본 → 두 갈래</text><text x="30" y="182" class="sub">open_original → EXIF (회전 전)</text><text x="30" y="198" class="sub">prepare: HEIC·exif_transpose·1024</text><text x="30" y="212" class="sub">advisory lock · 데드라인 검사</text>
+<rect x="240" y="146" width="230" height="72" fill="var(--card)" stroke="var(--emb)" class="box"/>
+<text x="250" y="166">① JPEG → S3 PUT previews/…</text><text x="250" y="182" class="sub">② open_preview(올린 바이트) → DINOv3</text><text x="250" y="198" class="sub">768d, L2 정규화, 8장 배치</text><text x="250" y="212" class="sub">PUT 실패 = 그 사진 failed</text>
+<rect x="500" y="146" width="272" height="72" fill="var(--card)" stroke="var(--emb)" class="box"/>
+<text x="510" y="166">한 트랜잭션, 배치 단위 commit</text><text x="510" y="182" class="sub">photo_analysis UPSERT (벡터 두 컬럼만)</text><text x="510" y="198" class="sub">photos SET preview·EXIF·EMBEDDED WHERE storage_key CAS</text><text x="510" y="212" class="sub">시간 부족 → stopped, 자기 EVENT 재호출</text>
+</g>
+<path d="M255 98V144" class="arrow"/><path d="M210 182H238" class="arrow"/><path d="M470 182H498" class="arrow"/><path d="M772 182H800" class="arrow db"/>
+
+<g class="lbl">
+<rect x="20" y="262" width="150" height="84" fill="var(--card)" stroke="var(--ai)" class="box"/>
+<text x="30" y="282">입력</text><text x="30" y="298" class="sub">photos EMBEDDED</text><text x="30" y="312" class="sub">preview_key → 다운로드</text><text x="30" y="328" class="sub">claim_next SKIP LOCKED</text><text x="30" y="342" class="sub">재개: MODEL_VERSION+CLIP</text>
+<rect x="190" y="262" width="300" height="84" fill="var(--card)" stroke="var(--ai)" class="box"/>
+<text x="200" y="282">사진별 (CPU ~0.8s/장)</text><text x="200" y="299" class="sub">CLIP ViT-L/14 → LAION 미학 · zero-shot 피사체 · zero-shot 부모 라벨</text><text x="200" y="313" class="sub">ARNIQA(spaq) → technical_score</text><text x="200" y="327" class="sub">고전: sharpness · highlight/shadow_clip</text><text x="200" y="342" class="sub">CLIP 벡터 저장 (clip_embedding)</text>
+<rect x="510" y="262" width="262" height="84" fill="var(--card)" stroke="var(--ai)" class="box"/>
+<text x="520" y="282">store.write_scores</text><text x="520" y="299" class="sub">subjects · sub_scores · clip_embedding · model_version</text><text x="520" y="313" class="sub">pct·cluster·group 은 건드리지 않는다</text><text x="520" y="331" class="sub">사진마다 독립 → 증분·재개 쉬움</text>
+</g>
+<path d="M445 98V260" class="arrow"/><path d="M170 304H188" class="arrow"/><path d="M490 304H508" class="arrow"/><path d="M772 304H800" class="arrow db"/>
+
+<g class="lbl">
+<rect x="20" y="388" width="150" height="94" fill="var(--card)" stroke="var(--ai)" class="box"/>
+<text x="30" y="408">입력 (전부 DB)</text><text x="30" y="424" class="sub">E = DINOv3 (임베더)</text><text x="30" y="438" class="sub">C = CLIP (SCORE)</text><text x="30" y="452" class="sub">원점수 · clip_parent</text><text x="30" y="470" class="sub">파일 없음 (download=False)</text>
+<rect x="190" y="388" width="200" height="94" fill="var(--card)" stroke="var(--ai)" class="box"/>
+<text x="200" y="408">그룹화</text><text x="200" y="425" class="sub">백분위 tech·aes·sharpness</text><text x="200" y="439" class="sub">연사: 카메라 파티션 ∧ 창≤8 ∧ cos≥0.96</text><text x="200" y="453" class="sub">그룹: concat(E⊕C) d≤0.2 적응</text><text x="200" y="471" class="sub">→ write_groups</text>
+<rect x="410" y="388" width="200" height="94" fill="var(--card)" stroke="var(--llm)" class="box"/>
+<text x="420" y="408">naming (Sonnet)</text><text x="420" y="425" class="sub">커버리지 85% 대표 1~2장, 15장 청크</text><text x="420" y="439" class="sub">parent enum · concept 열린 이름</text><text x="420" y="453" class="sub">소그룹 최근접 τ 0.25</text><text x="420" y="471" class="sub">저장된 clip_parent 다수결 검증</text>
+<rect x="630" y="388" width="142" height="94" fill="var(--card)" stroke="var(--ai)" class="box"/>
+<text x="640" y="408">write_assignments</text><text x="640" y="425" class="sub">ai_concept_assignments</text><text x="640" y="439" class="sub">job_id 에 매달림</text><text x="640" y="457" class="sub">FULL = SCORE→CATEGORIZE</text><text x="640" y="471" class="sub">NAMING = CATEGORIZE</text>
+</g>
+<path d="M95 346V386" class="arrow"/><path d="M170 435H188" class="arrow"/><path d="M390 435H408" class="arrow"/><path d="M610 435H628" class="arrow"/><path d="M772 435H800" class="arrow db"/>
+
+<g class="lbl">
+<rect x="20" y="524" width="220" height="100" fill="var(--card)" stroke="var(--wes)" class="box"/>
+<text x="30" y="544">AiCategoryFolderService</text><text x="30" y="560" class="sub">최신 잡의 배정 + photo_analysis</text><text x="30" y="574" class="sub">parent → ConceptFolder</text><text x="30" y="588" class="sub">concept → DetailFolder (용어 뒤집힘)</text><text x="30" y="606" class="sub">subjects 다수결 → 세부폴더 칩</text>
+<rect x="260" y="524" width="250" height="100" fill="var(--card)" stroke="var(--wes)" class="box"/>
+<text x="270" y="544">AiSelectionJobRunner (추천)</text><text x="270" y="560" class="sub">z(prior) · 폴더 쿼터 · 연사 대표 1장 · MMR</text><text x="270" y="574" class="sub">1단계 reason NULL → 2단계 이유 UPDATE</text><text x="270" y="588" class="sub">사진 + 형제 2장 → Sonnet</text><text x="270" y="606" class="sub">스레드풀 · claim · 기동 복구 · 스윕</text>
+<rect x="530" y="524" width="242" height="100" fill="var(--card)" stroke="var(--wes)" class="box"/>
+<text x="540" y="544">PairVerdictJudge (비교샷, 동기)</text><text x="540" y="560" class="sub">캐시 → 사실 수집 → 템플릿 → Sonnet 8s</text><text x="540" y="574" class="sub">PreviewImageReader → 768px JPEG 2장</text><text x="540" y="588" class="sub">실패는 템플릿 판정</text><text x="540" y="606" class="sub">→ ai_pair_verdicts</text>
+</g>
+<path d="M701 482V522" class="arrow"/><path d="M240 574H258" class="arrow"/><path d="M510 574H528" class="arrow"/><path d="M772 574H800" class="arrow db"/>
+</svg>
+</div>
+
+<div class="callout"><p><b>큐 = DB, 깨우는 건 임베딩뿐.</b> "임베딩 실행"은 wes가 Lambda를 EVENT로 부른다. "AI 분석"은 <code>ai_analysis_jobs</code>에 PENDING 행만 넣고 photoselect 워커(<code>python -m photoselect worker --llm</code>)가 <code>FOR UPDATE SKIP LOCKED</code>로 집는다. 추천·비교샷은 wes 안에서 끝난다 — 이 repo는 <code>ai_selection_jobs</code>를 더 폴링하지 않는다(#25).</p></div>
+
+<h2 id="principles">공통 설계 원칙 — 두 모듈이 같은 모양인 이유</h2>
+<div class="tw"><table>
+<tr><th>원칙</th><th>embedder</th><th>photoselect</th><th>왜</th></tr>
+<tr><td><b>평탄 패키지, 진입점 둘, 본체 하나</b></td><td><code>embedder/embedder/</code> — <code>handler.py</code> / <code>__main__.py</code> → <code>job.run()</code></td><td><code>photoselect/photoselect/</code> — <code>worker.py</code> / <code>__main__.py</code> → <code>run_analysis_job()</code></td><td>배포 전에 실제 S3·RDS 상대로 같은 코드를 로컬 검증. #31로 photoselect도 같은 깊이</td></tr>
+<tr><td><b>설정은 하나</b></td><td><code>Settings.from_env()</code></td><td><code>Settings</code> + <code>Knobs</code> + <code>LlmKnobs</code></td><td>코드 어디서도 <code>os.environ</code>을 직접 만지지 않는다</td></tr>
+<tr><td><b>스키마는 wes 소유</b></td><td>INSERT/UPDATE만</td><td>동일</td><td>Flyway는 wes에만. 컬럼이 없으면 명확한 에러로 죽는다</td></tr>
+<tr><td><b>한 장 실패가 잡을 안 죽인다</b></td><td><code>failed</code> / <code>metadataFailed</code></td><td>SCORE <code>failed</code></td><td>재실행 시 남은 것만 이어서</td></tr>
+<tr><td><b>재실행 안전(멱등)</b></td><td>"벡터 없음"만 대상. 미리보기 실패도 벡터가 없으니 자연히 재대상</td><td>SCORE: 같은 <code>MODEL_VERSION</code> + CLIP 저장 시 스킵. CATEGORIZE: 항상 전체</td><td>중간에 죽어도 다시 부르면 된다</td></tr>
+<tr><td><b>torch 경계가 디렉토리로</b></td><td>torch는 <code>model.py</code> 함수 안에서만 import</td><td>torch는 <code>runners/</code>뿐. categorize·naming·worker 는 미import(테스트 고정)</td><td>콜드 스타트, CATEGORIZE를 가벼운 환경으로 옮길 수 있게</td></tr>
+<tr><td><b>접근 규칙을 인터페이스로</b></td><td>벡터 두 컬럼만 <code>ON CONFLICT DO UPDATE</code></td><td><code>Store</code> 쓰기 3개, <code>photo_ratings</code>·<code>photo_selection_items</code> 읽기 없음</td><td>규칙이 타입으로 지켜진다</td></tr>
+</table></div>
+
+<h2 id="embedder"><span class="stage t-emb">embedder</span>갤러리당 1회 — 원본을 여는 유일한 곳</h2>
+<div class="tree"><i>embedder/embedder/</i>
+├── <b class="e">handler.py</b>      Lambda 진입점. {"galleryId"} → job.run / {"jobId"} → admin_job.run. 멈췄으면 자기 재호출
+├── <b class="e">__main__.py</b>     CLI: python -m embedder --gallery-id N [--force]
+├── config.py       Settings (DB·S3·모델 id·리사이즈·JPEG 품질·STOP_MARGIN_SECONDS). 모델 revision 고정
+├── <b class="e">job.py</b>          본체 — 잠금 → 대상 조회 → 8장 배치 루프(데드라인 검사) → 배치 단위 commit
+├── db.py           fetch_targets / store_embeddings / try_lock_gallery + admin 잡용 CAS SQL
+├── images.py       open_original / prepare(회전·RGB·1024) / to_jpeg / <b class="e">open_preview</b>(올린 JPEG 재디코드) / preview_key_for
+├── model.py        DinoEmbedder — CLS 토큰 L2 정규화, 프로세스당 1개(lru_cache)
+├── metadata.py     EXIF → PhotoMetadata (회전·축소 <i>전</i> 원본에서 읽는다)
+├── storage.py      S3 get/put — 게이트웨이 엔드포인트 경유, NAT 없음
+├── quality.py      기술 품질 신호 0..100 (admin QUALITY_ANALYSIS 잡 전용)
+├── admin_event.py  관리자 사진 교체 이벤트 계약 (DERIVATIVE | EMBEDDING | QUALITY_ANALYSIS)
+└── admin_job.py    한 사진·한 리비전 exact 처리 — 검증 → 계산 → CAS commit</div>
+
+<h3>갤러리 잡 — <code>job.run</code>, 순서가 계약이다 (#24)</h3>
+<div class="step e"><div class="n">E0</div><div><p><b>잠금</b> — 갤러리 id로 세션 수준 <code>pg_try_advisory_lock</code>. 이미 잡혀 있으면 모델을 올리기 전에 <code>{"skipped": "already running"}</code>으로 끝난다. 연결이 닫히면(타임아웃 포함) 풀린다.</p></div></div>
+<div class="step e"><div class="n">E1</div><div><p><b>대상 선별</b> — <code>photos</code> 중 <code>status ≠ PENDING</code>, 휴지통 아님, <code>photo_analysis.embedding</code>이 <b>없는</b> 것만. <code>force</code>면 마지막 조건을 뺀다.</p></div></div>
+<div class="step e"><div class="n">E2</div><div><p><b>배치 시작 전 데드라인 검사</b> — 남은 시간이 "지금까지 가장 긴 배치 + <code>STOP_MARGIN_SECONDS</code>(60)"보다 적으면 배치 경계에서 멈추고 commit. 결과에 <code>stopped</code>·<code>remaining</code>.</p></div></div>
+<div class="step e"><div class="n">E3</div><div><p><b>원본을 열어 두 갈래</b> — 회전 전 원본에서 EXIF(best-effort), <code>prepare</code>가 HEIC 디코드·회전·RGB·1024 축소. 그 다음 <b>① JPEG로 인코딩해 S3 PUT</b>, <b>② 올린 바로 그 바이트를 <code>open_preview</code>로 다시 열어 DINOv3</b>. PUT이 실패하면 encode에 들어가지 않고 그 사진은 <code>failed</code>다.</p></div></div>
+<div class="step e"><div class="n">E4</div><div><p><b>한 트랜잭션, 배치 단위 commit</b> — <code>photo_analysis</code> UPSERT는 <code>embedding</code>·<code>embedding_model</code>만. <code>photos</code> UPDATE는 <code>preview_key</code>를 덮어쓰고(이번에 올린 파일이 곧 벡터의 원본), EXIF만 <code>COALESCE</code>. <code>WHERE id=? AND storage_key=?</code> CAS로 선별 뒤 교체된 사진은 0행 갱신.</p></div></div>
+<div class="step e"><div class="n">E5</div><div><p><b>자기 재호출</b> <span class="who e">handler</span> — 멈췄고 이번 실행에서 한 장이라도 처리했으면 같은 갤러리로 자기 자신을 EVENT 재호출(<code>force</code> 없이). 처리 0장이면 재호출하지 않는다. best-effort — 실패하면 <code>reinvoked: false</code>로만 드러난다.</p></div></div>
+
+<div class="callout emb"><p><b>"미리보기 없는 벡터"는 구조적으로 생기지 않는다.</b> 벡터가 S3에 실제로 올라간 파일에서 나오므로 <code>status='EMBEDDED'</code>는 곧 "벡터와 미리보기가 둘 다 있다"는 뜻이고, photoselect·wes가 보는 픽셀과 벡터가 같은 파일이다. 실패는 두 종류뿐이다 — 벡터가 없으면 <code>failed</code>(다음 호출이 다시 집는다), EXIF만 실패하면 <code>metadataFailed</code>. <code>failed</code>가 대상 수와 같으면 임베딩이 아니라 IAM(<code>s3:PutObject</code>) 문제다.</p></div>
+
+<h3>배포·접속에서 알아야 할 것</h3>
+<div class="two">
+<div><h4>배포는 <code>deploy.sh</code>만이 한다</h4><ul>
+<li>Lambda 컨테이너 이미지 — zip 250MB 한도를 torch가 넘는다. DINOv3 가중치는 <b>빌드 시</b> HF 토큰으로 굽고 런타임은 오프라인.</li>
+<li><code>--platform linux/amd64 --provenance=false --sbom=false</code> 셋 다 필수.</li>
+<li><code>terraform apply</code>도 <code>:latest</code> 푸시도 배포가 아니다. 다이제스트로 <code>update-function-code</code> 후 <code>CodeSha256</code> 검증.</li>
+</ul></div>
+<div><h4>네트워크·접속</h4><ul>
+<li>원래 RDS IAM 토큰 설계. 조직 SCP가 막아 임시로 <code>DB_PASSWORD</code>(apply 밖에서 주입).</li>
+<li>서브넷에 NAT가 없다. S3는 게이트웨이 엔드포인트. HF·Parameter Store·<b>Lambda API</b>는 접근 불가 — 자기 재호출은 인터페이스 엔드포인트가 생겨야 실제로 동작한다.</li>
+</ul></div>
+</div>
+
+<h2 id="ps"><span class="stage t-ai">photoselect</span>미리보기만 읽고 두 잡을 돌린다</h2>
+<div class="tree"><i>photoselect/photoselect/</i>   ← #31 평탄화. src/·photoselect_v1·foldering/ 없음
+├── <b>__main__.py</b>     CLI: score | categorize | analyze(=둘) | naming(=categorize) | worker
+├── <b>worker.py</b>       ai_analysis_jobs 폴링 + run_analysis_job. MODE_STEPS = {FULL: (score, categorize), NAMING: (categorize,)}
+├── jobs.py         claim / claim_next(SKIP LOCKED) / finish / fail
+├── config.py       Settings · Knobs(손잡이) · LlmKnobs · PARENTS(부모 고정 목록) · PARENT_PROMPTS · MODEL_VERSION
+├── <b>store.py</b>        Store 프로토콜 + LocalStore(out/v3/) + DbStore — write_scores · write_groups · write_assignments
+├── gallery.py      PhotoRef 목록 — 로컬 폴더 / DB(EMBEDDED만, download=False 면 파일 없이)
+├── storage.py      S3 미리보기 다운로드 (있으면 재사용)
+├── llm.py          BedrockClient.complete_json — JSON 스키마 강제, 텍스트+이미지 블록
+├── subjects.py     CLIP zero-shot — SubjectsTagger(피사체) · ParentTagger(부모 라벨) · majority
+├── <b>score.py</b>        SCORE — 사진별 점수 (torch)
+├── <b>categorize.py</b>   CATEGORIZE — 백분위 · 연사 · 임베딩 그룹 → naming (torch 없음)
+├── <b>naming.py</b>       Bedrock 이름 · 소그룹 최근접 · 저장된 라벨 다수결 검증 → ai_concept_assignments
+├── cluster.py      연사 union-find (카메라 파티션 ∧ 순서 창 ∧ cos ≥ 0.96)
+├── concept.py      임베딩 그룹 — 평균연결 계층 클러스터, 적응 임계
+├── classical.py    Laplacian 선명도 · 하이라이트/섀도 클립
+└── runners/        ArniqaRunner(기술) · LaionRunner(CLIP ViT-L/14 + 미학 MLP) — torch는 여기만</div>
+
+<div class="tw"><table>
+<tr><th>잡</th><th>트리거 <span class="who w">wes</span></th><th>단위</th><th>재개</th><th>torch</th></tr>
+<tr><td><b>SCORE</b> (<code>score.py</code>)</td><td>"AI 분석" FULL → <code>ai_analysis_jobs</code> PENDING → 워커 <code>claim_next</code></td><td>사진</td><td>같은 <code>MODEL_VERSION</code> + CLIP 벡터 저장된 사진 스킵</td><td>필요, ~0.8s/장 CPU</td></tr>
+<tr><td><b>CATEGORIZE</b> (<code>categorize.py</code>)</td><td>FULL 뒤 이어서, 또는 NAMING 단독</td><td>갤러리</td><td>항상 전체 재계산 (수 초 + Bedrock)</td><td><b>없음</b></td></tr>
+</table></div>
+<div class="callout"><p><b>wes mode는 그대로 FULL·NAMING.</b> 워커가 두 잡으로 매핑한다. 잡(job_id 있음)은 산출물 계약이 <code>ai_concept_assignments</code>까지라 llm 없이 시작하지 않는다. 가른 이유(#26): 무게(torch 유무)·단위(사진 vs 갤러리)·재계산 이유(모델 vs 임계값·프롬프트)가 다르다.</p></div>
+
+<h2 id="score"><span class="stage t-ai">SCORE</span>사진별 점수 — CLIP 벡터 하나로 세 가지를 얻는다</h2>
+<div class="formula">사진마다 (미리보기 JPEG 입력)
+  LaionRunner.embed         → CLIP 768d (저장: photo_analysis.clip_embedding)
+     ├─ score_from_embedding → aesthetic_score (LAION MLP)
+     ├─ SubjectsTagger.tag   → subjects (bride|groom|couple|group, margin &lt; 0.01 → unknown)
+     └─ ParentTagger.tag     → sub_scores.clip_parent (부모 고정 목록 argmax — 검증용 라벨)
+  ArniqaRunner.score        → technical_score (spaq 회귀기)
+  classical.measure         → sharpness · highlight_clip · shadow_clip · mean_luma
+→ store.write_scores  (subjects · sub_scores · clip_embedding · model_version 만)</div>
+<p>텍스트 프롬프트는 추가 비용 0이라 미학·피사체·부모 라벨을 한 벡터에서 뽑는다. 부모 라벨을 사진 단위로 저장해 두는 덕에 CATEGORIZE가 CLIP 텍스트 인코더 없이 검증할 수 있다. <code>write_scores</code>는 백분위·클러스터·그룹 컬럼을 건드리지 않으므로 새 업로드분만 증분 처리해도 기존 그룹이 깨지지 않는다.</p>
+
+<h2 id="categorize"><span class="stage t-ai">CATEGORIZE</span>갤러리 그룹화 + 이름 — 경계는 임베딩, 이름은 VLM, 부모 목록은 고정</h2>
+<div class="step"><div class="n">C1</div><div><p><b>입력은 전부 DB</b> — 임베더의 DINOv3 E, SCORE의 CLIP C와 원점수·<code>clip_parent</code>. 미리보기 파일은 필요 없다(<code>load_db(download=False)</code>). 대표 사진은 naming이 <code>preview_path</code>로 지연 다운로드한다. 로컬 데이터셋 모드는 임베더가 없어 CLIP을 E 자리에 쓴다(<code>embeddingsSource: clip</code>).</p></div></div>
+<div class="step"><div class="n">C2</div><div><p><b>그룹화</b></p>
+<div class="formula">백분위        technical/aesthetic_score · sharpness → *_pct (NaN → 50)
+연사(burst)   E, 카메라 파티션 ∧ taken_at 순 창 ≤ 8 ∧ cos ≥ 0.96                → cluster_id · cluster_rank(대표 0)
+임베딩 그룹    X = normalize([ normalize(E) ⊕ normalize(C) ])  cos(X) = 두 공간 코사인의 평균
+              평균연결 계층 클러스터, 코사인 거리 0.2, 적응 규칙(대칭)          → embed_group_id
+                과병합: 그룹 &lt; 4 또는 최대 &gt; 50%   → 0.05씩 하강 (하한 0.05)
+                과분할: 그룹 &gt; n×0.35             → 0.05씩 상승 (상한 +0.15), 과병합되면 되돌림
+→ store.write_groups  (pct · cluster · group · sub_scores 만)</div></div></div>
+<div class="step"><div class="n">C3</div><div><p><b>이름 짓기</b> <span class="who l">naming ②</span> — 크기순 커버리지 85%(상한 120그룹)까지 대표 1장(spread &gt; 0.12면 최원점 1장 추가)을 15장 청크로 Sonnet에. 부모는 <code>PARENTS</code> 고정 목록을 JSON 스키마 enum으로 강제, 컨셉은 열린 한국어 이름. 청크 둘 이상이면 통합 텍스트 호출 1회.</p></div></div>
+<div class="step"><div class="n">C4</div><div><p><b>소그룹 배정</b> <span class="who a">naming ③</span> — VLM에 안 간 그룹은 concat 공간 최근접 이름 상속. 거리 &gt; 0.25면 <code>기타/기타</code> + <code>needs_review</code>.</p></div></div>
+<div class="step"><div class="n">C5</div><div><p><b>검증</b> <span class="who a">naming ④</span> — 저장된 <code>clip_parent</code>의 그룹 다수결이 VLM 부모와 다르거나 confidence &lt; 0.8이면 <code>needs_review</code>. 검증 전용 — 판정은 VLM의 것. 결과는 <code>ai_concept_assignments</code>에 잡 id로 매달린다.</p></div></div>
+<div class="callout llm"><p><b>비용 상한이 구조로 잡혀 있다.</b> Bedrock 이미지 호출 수 ≤ ⌈대표 수/15⌉ + 1. 갤러리가 7,000장이 되어도 커버리지 목표와 그룹 상한이 정한 범위를 넘지 않는다. CATEGORIZE 전체가 torch 없이 돌아 수백 MB 이미지로 Lambda에 올리거나 wes로 옮길 수 있다.</p></div>
+
+<h2 id="wes"><span class="stage t-wes">wes</span>배정이 폴더가 되고, 추천·비교샷이 도는 곳</h2>
+<p>이 repo 밖이지만 계약의 반쪽이라 적어 둔다. wes <code>docs/category-architecture.md</code>·<code>docs/plans/ai-feature-migration-to-wes.md</code>가 정본이다.</p>
+<div class="tw"><table>
+<tr><th>wes 컴포넌트</th><th>읽는 것</th><th>하는 일</th></tr>
+<tr><td><code>AiCategoryFolderService</code> + <code>AiCategoryFolderPlanner</code></td><td>최신 잡의 <code>ai_concept_assignments</code>, <code>photo_analysis</code>(embed_group_id·subjects·cluster_id)</td><td><code>POST /concept-folders/ai</code> — parent → <b>ConceptFolder</b>, concept → <b>DetailFolder</b>(용어 뒤집힘), subjects 다수결 → 세부폴더 칩, 사진당 배정 1행</td></tr>
+<tr><td><code>AiSelectionJobRunner</code></td><td>폴더 세트(현재 배정), <code>photo_analysis</code> 백분위·연사·embedding·sub_scores, 담은 사진</td><td>z(prior) · 폴더 쿼터(비례·최소 1·절반 상한) · 연사 대표 1장 · MMR → reason NULL INSERT → Sonnet 이유(사진 + 형제 2장) UPDATE. 스레드풀·claim·기동 복구·스윕</td></tr>
+<tr><td><code>PairVerdictJudge</code></td><td>두 사진의 백분위·sharpness·highlight_clip·연사·폴더·담김, 미리보기 2장</td><td>캐시 → 사실 수집 → 템플릿 판정 → Sonnet(8s, 재시도 0) → <code>ai_pair_verdicts</code>. 실패는 템플릿</td></tr>
+</table></div>
+<div class="callout wes"><p><b>경계 한 줄.</b> 모델이 사진을 <b>전수로</b> 봐야 나오는 숫자(임베딩·점수·연사·그룹·컨셉 배정)는 이 repo가 갤러리당 1회 만든다. 그 숫자를 읽고 셈하고 <b>미리보기 몇 장</b>을 Bedrock에 보여 주는 일은 wes가 한다. "wes는 이미지를 안 본다"가 아니다.</p></div>
+
+<h2 id="contract">데이터 계약 — 누가 어떤 컬럼을 쓰나</h2>
+<div class="tw"><table>
+<tr><th>테이블</th><th>쓰는 쪽</th><th>컬럼</th><th>읽는 쪽</th></tr>
+<tr><td><code>photos</code></td><td><span class="who e">embedder</span></td><td>preview_key · EXIF · status</td><td>photoselect(대상·정렬), wes</td></tr>
+<tr><td rowspan="3"><code>photo_analysis</code></td><td><span class="who e">embedder</span></td><td>embedding · embedding_model</td><td>CATEGORIZE, wes 추천 MMR</td></tr>
+<tr><td><span class="who a">SCORE</span></td><td>subjects · sub_scores · clip_embedding · model_version</td><td>CATEGORIZE, wes</td></tr>
+<tr><td><span class="who a">CATEGORIZE</span></td><td>technical_pct · aesthetic_pct · cluster_id · cluster_rank · embed_group_id · sub_scores(+sharpness_pct·rank_reason)</td><td>naming, wes</td></tr>
+<tr><td><code>ai_concept_assignments</code></td><td><span class="who a">naming</span></td><td>job_id · embed_group_id · parent_name · concept_name · confidence · assigned_by · proposed_parent · clip_parent · needs_review</td><td>wes 폴더 구체화</td></tr>
+<tr><td><code>ai_analysis_jobs</code></td><td><span class="who w">PENDING</span> → <span class="who a">이후</span></td><td>status · result · error</td><td>wes 폴링</td></tr>
+<tr><td><code>concept_folders</code> · <code>detail_folders</code> · <code>photo_category_assignments</code></td><td><span class="who w">wes</span></td><td>—</td><td>wes 추천·비교샷</td></tr>
+<tr><td><code>ai_selection_jobs</code> · <code>ai_recommendations</code> · <code>ai_pair_verdicts</code></td><td><span class="who w">wes</span></td><td>—</td><td>wes</td></tr>
+<tr><td><code>photo_ratings</code></td><td colspan="3"><b>접근 금지</b></td></tr>
+</table></div>
+<div class="callout warn"><p><b>암묵 계약 셋.</b> ① wes가 <code>sub_scores</code>에서 읽는 키 — <code>sharpness</code> · <code>sharpness_pct</code> · <code>highlight_clip</code> · <code>shadow_clip</code> · <code>technical_score</code> · <code>aesthetic_score</code>. 스키마가 강제하지 않으므로 이름을 바꾸면 wes와 함께 바꾼다. ② 용어 뒤집힘 — 이 repo의 <code>parent_name</code>이 wes <code>ConceptFolder</code>, <code>concept_name</code>이 wes <code>DetailFolder</code>. ③ wes <code>isAnalyzed = model_version != null</code> — SCORE→CATEGORIZE 사이 창에서는 백분위가 비어 있으므로 <code>embed_group_id != null</code>을 조건에 더하는 것이 wes 후속 과제.</p></div>
+
+<h3>로컬 모드와 DB 모드</h3>
+<div class="tw"><table>
+<tr><th></th><th>LocalStore (<code>out/v3/&lt;gallery&gt;/</code>)</th><th>DbStore (wes Postgres V45~)</th></tr>
+<tr><td>사진 목록</td><td><code>../dataset</code> 폴더, id = 상대 경로</td><td><code>photos</code> EMBEDDED, id = <code>photos.id</code>, 미리보기 S3 다운로드</td></tr>
+<tr><td>임베딩 E</td><td><b>CLIP이 겸임</b> (concat이 CLIP 단독으로 퇴화)</td><td>DINOv3</td></tr>
+<tr><td>용도</td><td>데이터셋 회귀 · 프롬프트 실험</td><td>E2E · 운영. 로컬 E2E는 wes <code>scripts/local-worker.sh</code>·<code>local-ai.sh</code></td></tr>
+</table></div>
+
+<h2 id="tests">테스트 현황</h2>
+<div class="tw"><table>
+<tr><th>모듈</th><th>파일</th><th>건수</th><th>무엇을 고정하나</th></tr>
+<tr><td>embedder</td><td><code>tests/</code> 6파일</td><td>34 passed</td><td>fetch_targets 조건, PUT→encode 순서, PUT 실패 격리, 데드라인 중단·재호출, advisory lock, admin CAS, quality</td></tr>
+<tr><td>photoselect</td><td><code>tests/test_photoselect.py</code></td><td>24 passed</td><td>concat 공간 성질, 카메라 파티션, 적응 임계 대칭, naming 4단계, SCORE 재개, write_scores/write_groups 컬럼 분리, CATEGORIZE 로컬 실행·CLIP 폴백, torch 미import, mode 매핑</td></tr>
+</table></div>
+<p>LLM·러너는 전부 Fake다. 실제 Bedrock·DB를 치는 테스트는 없다.</p>
+
+<h2 id="gaps">개선을 검토할 때 볼 자리</h2>
+<ul class="gap">
+<li><b>임베더 자기 재호출의 인프라.</b> Lambda 인터페이스 VPC 엔드포인트와 자기 함수 <code>lambda:InvokeFunction</code>이 아직 없다. 없으면 7,000장 갤러리는 앱이 여러 번 불러야 끝난다.</li>
+<li><b>워커의 실행 환경이 미정.</b> 상시 EC2 vs 온디맨드 Fargate <code>--once</code>. CATEGORIZE가 torch에서 풀렸으니 SCORE만 무거운 환경이 필요하다. SCORE를 embedder Lambda에 합쳐 미리보기 한 번에 DINOv3·CLIP·ARNIQA를 다 뽑는 선택지도 열려 있다.</li>
+<li><b>wes <code>isAnalyzed</code> 조건.</b> SCORE→CATEGORIZE 창에서 백분위가 null인 사진을 "분석됨"으로 본다. <code>embedGroupId != null</code> 추가가 후속.</li>
+<li><b><code>MODEL_VERSION</code> 하나가 SCORE 재개 키.</b> 러너·임계값을 바꿔도 안 올리면 재점수되지 않고, 올리면 전 갤러리가 대상. 변경 규칙 미문서화.</li>
+<li><b>로컬 러너 리사이즈 1600 vs 미리보기 1024.</b> DB 모드는 축소만 하니 무해하지만 로컬 실험값을 운영 임계로 옮길 때 스케일이 다르다.</li>
+<li><b>ARNIQA <code>torch.hub</code> <code>:main</code> 참조와 LAION MLP URL 다운로드.</b> Lambda로 갈 때 가중치 번들링·커밋 SHA 고정이 선행 조건.</li>
+<li><b>워커는 잡마다 러너를 다시 올린다.</b> SCORE 안에서 <code>LaionRunner()</code>(890MB)·<code>ArniqaRunner()</code>를 매번 생성. embedder의 <code>lru_cache</code> 패턴이 후보.</li>
+<li><b>연사 0.96 · 그룹 0.2 재측정.</b> CLIP/DINOv2 시절 실측값. <code>categorize</code> 결과의 <code>similarityProfile</code>·<code>groupDistance</code>가 근거.</li>
+</ul>
+
+<h2 id="order">읽는 순서 추천 — 남에게 설명하기 전에</h2>
+<ol>
+<li><code>embedder/embedder/job.py</code> → <code>db.py</code>의 <code>store_embeddings</code> — 배치 패턴의 원형과 #24 순서</li>
+<li><code>photoselect/photoselect/store.py</code>의 <code>Store</code> 프로토콜 — 데이터 경계 전부</li>
+<li><code>worker.py</code> → <code>jobs.py</code> — 잡이 어떻게 집히고 두 잡으로 갈리나</li>
+<li><code>score.py</code> → <code>categorize.py</code> → <code>naming.py</code> — 폴더화 세 단계</li>
+<li>wes <code>docs/category-architecture.md</code> — 배정이 폴더가 되는 쪽</li>
+<li>wes <code>docs/plans/ai-feature-migration-to-wes.md</code> — 추천·비교샷이 wes에 있는 이유와 경계</li>
+</ol>
+</main>
