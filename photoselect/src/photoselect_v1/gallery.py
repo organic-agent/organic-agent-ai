@@ -19,7 +19,7 @@ IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".heic"}
 @dataclass(frozen=True)
 class PhotoRef:
     photo_id: str     # 갤러리 안에서 유일. 로컬은 상대 경로, DB는 photos.id
-    path: str         # 로컬 파일 경로 (DB 모드에서는 임시 다운로드 경로)
+    path: str | None  # 로컬 파일 경로 (DB 모드에서는 임시 다운로드 경로, download=False 면 None)
     #: EXIF 촬영 시각(datetime)·카메라 바디("make model"). 연사 클러스터의 순서·파티션 키 —
     #: 임베더가 채운 photos.taken_at/camera_make/camera_model. 로컬 모드는 None(파일명 순 폴백).
     taken_at: object | None = None
@@ -27,7 +27,7 @@ class PhotoRef:
 
 
 def list_galleries(dataset_root: Path) -> list[tuple[str, int]]:
-    """(갤러리 이름, 장수) 목록. `analyze --list`용."""
+    """(갤러리 이름, 장수) 목록. `score --list`용."""
     counts: dict[str, int] = {}
     for p in sorted(dataset_root.rglob("*")):
         if not p.is_file() or p.suffix.lower() not in IMAGE_EXTS:
@@ -64,12 +64,16 @@ def load_local(dataset_root: Path, gallery: str, limit: int | None = None,
     return refs
 
 
-def load_db(conn, storage, gallery_id: int, work_dir: Path, limit: int | None = None) -> list[PhotoRef]:
+def load_db(conn, storage, gallery_id: int, work_dir: Path, limit: int | None = None,
+            download: bool = True) -> list[PhotoRef]:
     """DB 모드의 사진 목록. 기본 순서는 wes 화면 순서(display_order, id)이고, 연사 클러스터링은
     taken_at·camera로 파티션·재정렬한다(cluster.partition_order — 멀티 카메라 대응).
 
     EMBEDDED만 고른다: 임베더가 아직 안 지난 사진은 preview_key가 없고, DINOv3 벡터도 없어
     클러스터에 넣을 수 없다. 그런 사진은 다음 분석 잡에서 잡힌다.
+
+    download=False 면 미리보기를 내려받지 않는다(path 는 None) — CATEGORIZE 는 벡터와 taken_at·camera만
+    쓰고, 대표 사진은 store.preview_path 가 필요할 때 지연 다운로드한다(#26).
     """
     with conn.cursor() as cur:
         cur.execute(
@@ -84,8 +88,7 @@ def load_db(conn, storage, gallery_id: int, work_dir: Path, limit: int | None = 
     dest_dir = work_dir / str(gallery_id)
     refs: list[PhotoRef] = []
     for photo_id, key, taken_at, make, model in rows:
-        dest = storage.download(key, dest_dir / f"{photo_id}.jpg")
+        path = str(storage.download(key, dest_dir / f"{photo_id}.jpg")) if download else None
         camera = " ".join(s.strip() for s in (make, model) if s and s.strip()) or None
-        refs.append(PhotoRef(photo_id=str(photo_id), path=str(dest),
-                             taken_at=taken_at, camera=camera))
+        refs.append(PhotoRef(photo_id=str(photo_id), path=path, taken_at=taken_at, camera=camera))
     return refs
