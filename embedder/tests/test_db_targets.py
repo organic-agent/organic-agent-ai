@@ -166,6 +166,20 @@ class StoreEmbeddingsTest(unittest.TestCase):
         self.assertEqual(1, photo_rows[0][-2])
         self.assertEqual("galleries/7/a.jpg", photo_rows[0][-1])
 
+    def test_preview_key_is_overwritten_and_exif_is_coalesced(self) -> None:
+        # 벡터는 이번에 올린 미리보기 파일에서 나오므로(#24) preview_key는 이전 값을 지킬 이유가
+        # 없다. EXIF만 추출 실패 시 이전 값을 지키는 COALESCE다.
+        connection = _ManyConnection(rows=[])
+        ref = db.PhotoRef(1, "galleries/7/a.jpg")
+
+        db.store_embeddings(connection, [(ref, "VECTOR", "previews/galleries/7/a.jpg", None)], model_id="m")
+
+        photos_sql, photo_rows = connection.executed[1]
+        self.assertIn("SET preview_key = %s,", photos_sql)
+        self.assertNotIn("COALESCE(%s, preview_key)", photos_sql)
+        self.assertIn("taken_at = COALESCE(%s, taken_at)", photos_sql)
+        self.assertEqual("previews/galleries/7/a.jpg", photo_rows[0][0])
+
     def test_empty_batch_writes_nothing(self) -> None:
         connection = _ManyConnection(rows=[])
 
@@ -192,6 +206,23 @@ class StoreEmbeddingsTest(unittest.TestCase):
         stored = db.store_embeddings(connection, [(old_ref, [0.1, 0.2], "previews/old.jpg", None)], model_id="test-model")
 
         self.assertEqual(0, stored)
+
+
+class GalleryLockTest(unittest.TestCase):
+    def test_uses_session_advisory_lock_with_module_namespace(self) -> None:
+        connection = _Connection(rows=[(True,)])
+
+        self.assertTrue(db.try_lock_gallery(connection, 7))
+
+        sql, params = connection.executed[0]
+        self.assertIn("pg_try_advisory_lock(%s, %s)", sql)
+        self.assertNotIn("xact", sql)   # 세션 수준이어야 배치 commit을 넘어 유지된다
+        self.assertEqual((db.GALLERY_LOCK_NAMESPACE, 7), params)
+
+    def test_held_lock_returns_false(self) -> None:
+        connection = _Connection(rows=[(False,)])
+
+        self.assertFalse(db.try_lock_gallery(connection, 7))
 
 
 class AdminPhotoJobDatabaseContractTest(unittest.TestCase):

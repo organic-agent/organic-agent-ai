@@ -18,32 +18,51 @@ SELECT id, storage_key FROM photos p
 WHERE gallery_id = ? AND status <> 'PENDING'
   AND NOT EXISTS (SELECT 1 FROM photo_analysis a WHERE a.photo_id = p.id AND a.embedding IS NOT NULL)
   → S3 GET → 원본 열기 → EXIF 읽기(촬영 시각 · 카메라 · 셔터/조리개/ISO · 크기)
-           → HEIC 디코드 · EXIF 회전 · 리사이즈 → DINOv3(L2 정규화)
-  → S3 PUT previews/{원본키}.jpg
+           → HEIC 디코드 · EXIF 회전 · 리사이즈 → JPEG 인코딩
+  → S3 PUT previews/{원본키}.jpg                                  ← ① 먼저 올린다
+  → 올린 JPEG 바이트를 다시 열어 DINOv3(L2 정규화)                    ← ② 그 파일로 임베딩
   → INSERT INTO photo_analysis (photo_id, embedding, embedding_model) ... ON CONFLICT DO UPDATE
-    UPDATE photos SET preview_key = ?, taken_at = ?, ... , status = 'EMBEDDED'   (같은 트랜잭션)
+    UPDATE photos SET preview_key = ?, taken_at = ?, ... , status = 'EMBEDDED'   (같은 트랜잭션, 8장 배치마다 commit)
 ```
+
+**순서가 계약이다(#24).** 벡터는 메모리의 중간 이미지가 아니라 **S3에 실제로 올라간 미리보기
+파일**에서 계산한다. 그래서 "미리보기는 없는데 벡터는 있는" 사진이 구조적으로 생길 수 없고,
+`status = 'EMBEDDED'`는 곧 "벡터와 미리보기가 둘 다 있다"는 뜻이다. photoselect가 보는 픽셀과
+벡터가 같은 파일이라는 점도 따라온다. 대가는 1024px JPEG를 한 번 더 디코드하는 장당 수십 ms다.
 
 - **벡터는 `photo_analysis`에, 나머지는 `photos`에.** 벡터는 모델을 바꾸면 다시 적는 파생값이라
   업로드 때 정해지는 정체성(EXIF)과 테이블을 나눴다(V29). 같은 행에 AI 분석 배치가
   태그·점수·클러스터를 채우므로 여기서는 `embedding`·`embedding_model`만 갈아 끼운다.
 - **재실행이 안전하다.** 기본 조건이 "벡터 없음"이라 중간에 죽어도 다시 부르면 남은
   것만 이어서 한다. 한 장이 실패해도 잡을 죽이지 않고 `failed`에 키만 모아 돌려준다.
+  원본을 못 읽었든, 미리보기 PUT이 실패했든, 올린 파일을 못 열었든 전부 같은 `failed`다 —
+  어느 쪽이든 벡터가 없으므로 다음 호출이 자연히 다시 집는다. IAM에 `s3:PutObject`가 없으면
+  사진마다 `failed`로 떨어지고 벡터도 적재되지 않는다. `failed`가 대상 수와 같으면 임베딩이
+  아니라 권한을 봐야 한다.
+- **타임아웃 앞에서 스스로 멈춘다.** Lambda는 다음 배치를 시작하기 전에 남은 시간이
+  "지금까지 가장 오래 걸린 배치 + `STOP_MARGIN_SECONDS`"보다 적으면 배치 경계에서 멈추고
+  commit한다. 결과에 `stopped: true, remaining: N`이 실리고, 이번 실행에서 한 장이라도 처리했으면
+  같은 갤러리로 **자기 자신을 EVENT 재호출**한다(`force`는 넘기지 않는다 — 이미 끝난 사진은
+  건너뛰므로 재호출이 곧 재개). 처리 0장이면 재호출하지 않는다 — 같은 사진이 계속 실패하는
+  갤러리에서 무한히 돌지 않게. 재호출은 best-effort라 실패해도 `reinvoked: false`로만 드러나고,
+  진행분은 이미 commit돼 있어 앱이 다시 부르면 이어서 한다. 하드 킬을 당하면 진행 중이던 배치만
+  롤백된다. 로컬 CLI에는 데드라인이 없다.
+- **같은 갤러리는 한 번에 하나만 돈다.** 갤러리 id로 세션 수준 advisory lock을 잡고, 이미 잡혀
+  있으면 `{"skipped": "already running"}`으로 즉시 끝난다. 버튼 연타와 자기 재호출이 겹쳐도 같은
+  사진을 두 번 처리하지 않는다. 잠금은 연결이 닫히면(타임아웃 포함) 풀린다.
 - **미리보기 파생본도 여기서 만든다.** 임베딩을 하려면 어차피 HEIC를 디코딩하고 EXIF 회전을
   굽고 크기를 줄여야 하는데, 그 결과가 그대로 브라우저가 그릴 수 있는 이미지다. 남은 일은
   JPEG 인코딩과 PUT 하나뿐이라 별도 잡으로 뺄 이유가 없다 — 빼면 같은 이미지를 두 번 받아
   두 번 디코딩하게 된다. 아이폰 원본(HEIC)은 Chrome·Firefox·Edge가 그리지 못하므로
   이 파생본이 미리보기의 유일한 통로다.
-- **파생본 실패는 임베딩을 죽이지 않는다.** IAM에 `s3:PutObject`가 없으면 사진마다 실패하는데,
-  그때도 벡터는 그대로 적재되고 실패한 키만 `previewsFailed`로 나온다. 이 배열이 비어 있지
-  않으면 임베딩이 아니라 권한을 봐야 한다.
 - **촬영 정보(EXIF)도 여기서 읽는다.** 앱 서버는 이미지 바이트를 만지지 않으므로 EXIF를 읽을
   방법이 아예 없고, 이 잡은 이미 원본을 열어 두었다. 추가 비용은 태그를 훑는 것뿐이라 벡터·
   파생본과 같은 UPDATE에 얹는다. 읽는 값은 촬영 시각·카메라 제조사와 모델·셔터·조리개·ISO·
   가로세로·바이트 크기이고, 컬럼은 전부 nullable이다 — 스크린샷처럼 EXIF가 없는 파일도 있다.
   회전·축소 **전의** 원본에서 읽는다. 그 뒤에는 Orientation 태그가 지워지고 크기도 원본이 아니다.
-- **EXIF 추출 실패도 임베딩을 죽이지 않는다.** 파생본 실패와 같은 취급으로, 실패한 키만
-  `metadataFailed`로 나온다. 상세 화면에 정보가 덜 나올 뿐 사진은 보이고 벡터는 적재된다.
+- **EXIF 추출 실패는 임베딩을 죽이지 않는다.** 실패한 키만 `metadataFailed`로 나온다. 상세
+  화면에 정보가 덜 나올 뿐 사진은 보이고 벡터·미리보기는 적재된다. EXIF 컬럼만 `COALESCE`로
+  이전 값을 지킨다(`preview_key`는 이번에 올린 파일이 곧 벡터의 원본이라 그냥 덮어쓴다).
 - **`--force`는 이미 채워진 것까지 다시 계산한다.** 모델이나 전처리를 바꿔 전량 재계산할 때만.
 - **`PENDING`은 건너뛴다.** 업로드 URL만 발급되고 S3에 객체가 없을 수 있는 상태다.
 
@@ -228,3 +247,4 @@ python -m embedder --gallery-id 1
 | `EMBED_MODEL_ID` | `facebook/dinov3-vitb16-pretrain-lvd1689m` | 바꾸면 이미지를 다시 빌드해야 한다(가중치가 구워져 있다). 차원이 다른 모델(ViT-S 384, ViT-L 1024)은 `EMBED_DIM`·`vector(n)`·`EMBEDDING_DIMENSION`도 같이 바꿔야 한다 |
 | `RESIZE_LONG_EDGE` | `1024` | 디코딩 직후 메모리를 누르는 용도. 미리보기 파생본도 이 크기로 나간다 |
 | `PREVIEW_QUALITY` | `82` | 파생본 JPEG 품질. 1024px에서 장당 200KB 안팎 |
+| `STOP_MARGIN_SECONDS` | `60` | 타임아웃 앞에서 멈출 여유. 남은 시간 < (가장 긴 배치 + 이 값)이면 배치 경계에서 멈추고 자기 재호출 |

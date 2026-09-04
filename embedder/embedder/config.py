@@ -68,6 +68,12 @@ class Settings:
     #: 장당 200KB 안팎으로 떨어지는 지점이다.
     preview_quality: int
 
+    #: Lambda 타임아웃 앞에서 멈출 여유(초). 다음 배치를 시작하기 전에 "지금까지 가장 오래 걸린
+    #: 배치 시간 + 이 값"보다 남은 시간이 적으면 배치 경계에서 멈추고 commit한다. 하드 킬은
+    #: 진행 중이던 배치를 롤백시키고 아무 결과도 남기지 않으므로, 그 전에 스스로 멈추는 편이
+    #: 낫다. 로컬 CLI에는 데드라인이 없어 쓰이지 않는다.
+    stop_margin_seconds: int = 60
+
     #: 빌드 시 내려받은 모델 snapshot과 런타임 로드를 같은 immutable commit으로 묶는다.
     model_revision: str = "5931719e67bbdb9737e363e781fb0c67687896bc"
 
@@ -90,6 +96,7 @@ class Settings:
             model_id=os.environ.get("EMBED_MODEL_ID", "facebook/dinov3-vitb16-pretrain-lvd1689m"),
             resize_long_edge=int(os.environ.get("RESIZE_LONG_EDGE", "1024")),
             preview_quality=int(os.environ.get("PREVIEW_QUALITY", "82")),
+            stop_margin_seconds=int(os.environ.get("STOP_MARGIN_SECONDS", "60")),
             model_revision=os.environ.get(
                 "EMBED_MODEL_REVISION",
                 "5931719e67bbdb9737e363e781fb0c67687896bc",

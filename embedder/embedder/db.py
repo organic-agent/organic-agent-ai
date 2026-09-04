@@ -117,7 +117,7 @@ def fetch_targets(connection: psycopg.Connection, gallery_id: int, force: bool) 
 
 def store_embeddings(
     connection: psycopg.Connection,
-    results: Iterable[tuple[PhotoRef, np.ndarray, str | None, PhotoMetadata | None]],
+    results: Iterable[tuple[PhotoRef, np.ndarray, str, PhotoMetadata | None]],
     model_id: str,
 ) -> int:
     """계산된 벡터와 파생본 위치, 촬영 정보를 배치로 적재한다.
@@ -133,9 +133,14 @@ def store_embeddings(
     AI 분석 배치가 태그·점수를 채워 둔 행일 수도 있다 -- 그 컬럼은 건드리지 않고 벡터 둘만
     갈아 끼운다. 분석 배치는 model_version으로 재분석 대상을 판별하므로 여기서 지울 것이 없다.
 
-    COALESCE인 이유: 이번 실행에서 파생본 업로드나 EXIF 추출만 실패하면 그 자리에 None이
-    오는데, 그때 이전 실행이 남긴 멀쩡한 값을 지우면 안 된다. 값이 원래 없던 사진에는
-    NULL이 NULL로 덮이는 것이라 달라지는 것이 없다.
+    **status = 'EMBEDDED'는 벡터와 미리보기가 둘 다 있는 행에만 찍힌다.** 벡터는 S3에 올라간
+    미리보기 JPEG에서 계산하므로(job.py) 여기 도착한 사진은 반드시 preview_key를 갖는다.
+    그래서 preview_key는 COALESCE 없이 덮어쓴다 -- 이번 실행이 올린 파일이 곧 벡터의 원본이라
+    이전 실행의 키를 지킬 이유가 없다.
+
+    EXIF 컬럼만 COALESCE다. 촬영 정보 추출만 실패하면 그 자리에 None이 오는데, 그때 이전
+    실행이 남긴 멀쩡한 값을 지우면 안 된다. 값이 원래 없던 사진에는 NULL이 NULL로 덮이는
+    것이라 달라지는 것이 없다.
 
     대상 선별 뒤 운영자가 사진을 교체할 수 있으므로 id만으로 갱신하면 안 된다. 선별 당시
     storage_key와 활성 사진·갤러리 조건을 함께 CAS해, 구 원본의 늦은 결과는 0행 갱신으로
@@ -174,7 +179,7 @@ def store_embeddings(
         cursor.executemany(
             """
             UPDATE photos
-            SET preview_key = COALESCE(%s, preview_key),
+            SET preview_key = %s,
                 taken_at = COALESCE(%s, taken_at),
                 camera_make = COALESCE(%s, camera_make),
                 camera_model = COALESCE(%s, camera_model),
@@ -199,6 +204,25 @@ def store_embeddings(
         # 결과를 새 사진에 쓰지 않는다. executemany rowcount는 실제 갱신 합계이므로 stale
         # 행은 processed에서 빠지고, 다음 현재 작업이 새 storage_key를 처리한다.
         return max(cursor.rowcount, 0)
+
+
+#: 갤러리 잡 advisory lock의 앞쪽 키. 같은 DB를 쓰는 다른 프로세스(wes·photoselect)와
+#: 키 공간이 겹치지 않게 이 모듈만의 상수를 쓴다. 뒤쪽 키가 gallery_id다.
+GALLERY_LOCK_NAMESPACE = 0x454D42  # 'EMB'
+
+
+def try_lock_gallery(connection: psycopg.Connection, gallery_id: int) -> bool:
+    """같은 갤러리의 임베딩 잡이 이미 돌고 있으면 False.
+
+    세션 수준 advisory lock이라 배치마다 commit해도 유지되고, 연결이 닫히면 풀린다 -- Lambda가
+    타임아웃으로 죽어도 잠금이 남지 않는다. 버튼 연타와 타임아웃 뒤 자기 재호출이 겹칠 때
+    같은 사진을 두 번 처리하지 않게 한다. UPSERT라 두 번 해도 결과는 같지만 시간과 S3 PUT이
+    낭비된다.
+    """
+    with connection.cursor() as cursor:
+        cursor.execute("SELECT pg_try_advisory_lock(%s, %s)", (GALLERY_LOCK_NAMESPACE, gallery_id))
+        row = cursor.fetchone()
+    return bool(row and row[0])
 
 
 def verify_admin_photo_event(connection: psycopg.Connection, event: "AdminPhotoEvent") -> bool:
