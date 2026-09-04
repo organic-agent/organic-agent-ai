@@ -274,9 +274,14 @@ class DbStore:
     # ── assignments ──
     def write_assignments(self, gallery: str, job_id: int | None,
                           rows: list[ConceptAssignment]) -> None:
-        """naming 의 배정을 잡에 매달아 INSERT. 같은 잡의 재실행은 UPSERT 로 덮는다."""
+        """naming 의 배정을 잡에 매달아 INSERT. 같은 잡의 재실행은 UPSERT 로 덮는다.
+
+        잡이 없으면(CLI 확인용 실행) 저장하지 않는다 — ai_concept_assignments 는 job_id 에 매달리고, wes 는 최신 잡의
+        배정을 읽는다. 이름은 로그·결과 payload 로만 남는다."""
         if job_id is None:
-            raise SystemExit("DB 모드의 naming 배정은 잡 단위다 — --job-id (ai_analysis_jobs.id) 가 필요하다")
+            log.warning("gallery %s: 잡이 없어 배정 %d그룹을 저장하지 않는다 (--job-id 가 있어야 ai_concept_assignments 에 남는다)",
+                        gallery, len(rows))
+            return
         params = [
             (
                 int(job_id), int(gallery), int(r.embed_group_id), r.parent_name,
