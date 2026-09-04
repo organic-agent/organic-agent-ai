@@ -65,7 +65,8 @@ categorize/
 ## 로컬 실행
 
 ```bash
-cd categorize && python -m venv .venv && .venv/bin/pip install -r requirements.txt && .venv/bin/pip install -e . --no-deps
+cd categorize && uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python -r requirements.txt --no-deps -e .
+# score/.venv 에 이미 같이 깔려 있으면 그걸 써도 된다 (../score/.venv/bin/python -m categorize)
 .venv/bin/python -m pytest -q
 
 .venv/bin/python -m categorize --local "dataset1/데이터셋1" [--llm]     # score --local 뒤에. 임베더가 없어 CLIP 이 E 를 겸한다(embeddingsSource: clip)

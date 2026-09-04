@@ -192,16 +192,10 @@ photoselect_v1에서 이 분기 자체를 없앴다(파이프라인이 하나뿐
 
 | 문서 | 내용 |
 |---|---|
-| `docs/plan-v2-slim.md` | v1→v2 판단 근거 전체 (부품별 삭제 이유·실측 수치·목표 파이프라인) |
-| `docs/analysis-audit-gallery1.md` | 갤러리 1(822장) 실데이터 감사 — v1 해체의 근거 |
-| `docs/reasons-evolution.md` | 이유 문장 3단 진화 (캡션 → 사실 분해 → 셀렉터의 말) |
-| `docs/paper-digest.md` | 모델 논문 요약 — 어떤 점수가 분해 가능한가 |
-| `docs/plan-v3-folder-compare.md` | v3 설계 정본 + 구현 노트(계획과 달라진 점) |
-| `docs/review-v3-design.md` | v3 설계 리뷰 (커버리지 목표, spread 2장 대표, 품질 하한, 대칭 적응 등) |
-| wes `docs/plans/ai-folder-structure.md` | 폴더화 계획·concat/ARI 실측 |
-| `docs/plan-preference-probe.md` | 다음 계획 — v1 `fit_bt` 수식을 임베딩 위 probe로 재활용 |
-| `docs/tech-stack.md` · `docs/e2e-test-plan.md` | 모델 채택 실측치 · 로컬 E2E 절차 |
-| (삭제됨, git bbaf204) `scripts/spike/` `scripts/arniqa_regressors.py` `scripts/review.py` | 스파이크 하네스 원본 — 결과 수치는 위 문서들과 이 문서에 채록됨 |
+| `review-v3-design.md` | v3 설계 리뷰 (커버리지 목표, spread 2장 대표, 품질 하한, 대칭 적응 등) |
+| `plan-v3-folder-compare.md` | v3 설계 정본 + 구현 노트 — 추천·비교샷은 wes 로 이관(#25) |
+
+나머지 v1·v2 설계·조사 문서(plan-v2-slim, analysis-audit-gallery1, reasons-evolution, paper-digest, research, feature-design, tech-stack, roadmap, e2e-test-plan, schema-proposal, plan-preference-probe)는 #35 정리에서 지웠다 — 필요하면 git 이력(`docs/photoselect/`, 2026-09-04 이전)에서 본다.
 
 ## 6. 다시 필요해지면
 

@@ -63,9 +63,10 @@ score/
 ## 로컬 실행
 
 ```bash
-cd score && python -m venv .venv && .venv/bin/pip install -r requirements.txt   # 맥은 torch 가 MPS 빌드
-# 리눅스는 CUDA 를 피해 먼저: .venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-.venv/bin/pip install -e . --no-deps && .venv/bin/pip install -e ../categorize --no-deps   # 한 venv 에 둘 다 (체인용)
+cd score && uv venv --python 3.12 .venv                       # Python 3.12 — torch 2.4.1 핀은 3.13+ 에 없다
+uv pip install --python .venv/bin/python -r requirements.txt -r ../categorize/requirements.txt   # 맥은 torch 가 MPS 빌드
+# 리눅스는 CUDA 를 피해 먼저: uv pip install --python .venv/bin/python torch torchvision --index-url https://download.pytorch.org/whl/cpu
+uv pip install --python .venv/bin/python --no-deps -e . -e ../categorize   # 한 venv 에 둘 다 (체인용)
 .venv/bin/python -m pytest -q
 
 .venv/bin/python -m score --list                                   # 로컬 데이터셋 갤러리 목록

@@ -1,6 +1,6 @@
 """Bedrock 클라이언트 래퍼 — structured output 한 종류만 쓴다. 텍스트 + (선택) 이미지 블록.
 
-tech-stack.md §5는 `AnthropicBedrockMantle`을 적었지만 **ap-northeast-2에는 Mantle 엔드포인트가 없다**
+루트 CLAUDE.md 는 `AnthropicBedrockMantle`을 적었지만 **ap-northeast-2에는 Mantle 엔드포인트가 없다**
 (`bedrock-mantle.ap-northeast-2.api.aws` DNS 없음, us-east-1은 있음 — 2026-08-25 확인). 그래서 legacy
 `AnthropicBedrock`(bedrock-runtime, InvokeModel)을 쓴다. 이 경로에서도 `output_config` JSON 스키마가
 동작함을 실호출로 확인했다(이미지 블록 포함, Sonnet 4.6, 2026-08-30). 서울 온디맨드에 Sonnet이 없어 `global.`
