@@ -12,7 +12,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from photoselect_v1.foldering.runners.common import fetch_weight, load_image
+from photoselect.runners.common import fetch_weight, load_image
 
 MLP_COMMIT = "fe88a163f4661b4ddabba0751ff645e2e620746e"
 MLP_URL = (

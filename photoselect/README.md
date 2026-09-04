@@ -1,6 +1,6 @@
 # photoselect — AI 클러스터링 폴더화 배치
 
-`photoselect_v1`은 갤러리 하나를 받아 **사진별 점수와 임베딩 그룹을 만들고, 그룹에 (큰 분류, 컨셉)
+`photoselect`는 갤러리 하나를 받아 **사진별 점수와 임베딩 그룹을 만들고, 그룹에 (큰 분류, 컨셉)
 이름을 붙여** `photo_analysis`·`ai_concept_assignments`에 적재한다. 실제 폴더(`concept_folders` ·
 `detail_folders` · `photo_category_assignments`)는 wes가 그 배정을 읽어 만든다
 (`POST /concept-folders/ai`). 설계 정본은 wes `docs/plans/ai-folder-structure.md`, 검토 기록은
@@ -14,8 +14,8 @@
 
 | 잡 | 하는 일 | 단위 | torch |
 |---|---|---|---|
-| **SCORE** (`foldering/score.py`) | CLIP 벡터 → LAION 미학 · zero-shot 피사체 · zero-shot 부모 라벨(`clip_parent`), ARNIQA 기술, 고전 지표 → `photo_analysis` 원점수 + `clip_embedding` | 사진 — 같은 `MODEL_VERSION` + CLIP 저장된 사진은 건너뛴다 | 필요 (~0.8s/장 CPU) |
-| **CATEGORIZE** (`foldering/categorize.py`) | 백분위 · 연사 클러스터 · 임베딩 그룹 → `*_pct`·`cluster_*`·`embed_group_id`, 이어서 naming(Bedrock 이름 · 소그룹 최근접 · 저장된 `clip_parent` 다수결 검증) → `ai_concept_assignments` | 갤러리 — 항상 전체 재계산(수 초) | **없음** (numpy · scipy · Bedrock) |
+| **SCORE** (`score.py`) | CLIP 벡터 → LAION 미학 · zero-shot 피사체 · zero-shot 부모 라벨(`clip_parent`), ARNIQA 기술, 고전 지표 → `photo_analysis` 원점수 + `clip_embedding` | 사진 — 같은 `MODEL_VERSION` + CLIP 저장된 사진은 건너뛴다 | 필요 (~0.8s/장 CPU) |
+| **CATEGORIZE** (`categorize.py`) | 백분위 · 연사 클러스터 · 임베딩 그룹 → `*_pct`·`cluster_*`·`embed_group_id`, 이어서 naming(Bedrock 이름 · 소그룹 최근접 · 저장된 `clip_parent` 다수결 검증) → `ai_concept_assignments` | 갤러리 — 항상 전체 재계산(수 초) | **없음** (numpy · scipy · Bedrock) |
 
 wes `ai_analysis_jobs.mode`는 그대로다. 워커가 **FULL = SCORE → CATEGORIZE**, **NAMING = CATEGORIZE**로
 매핑한다(`worker.MODE_STEPS`). 잡(job_id 있음)은 naming 산출물까지가 계약이라 워커를 `--llm` 없이 띄우면
@@ -23,7 +23,7 @@ wes `ai_analysis_jobs.mode`는 그대로다. 워커가 **FULL = SCORE → CATEGO
 임계값·프롬프트)가 다르다. CATEGORIZE는 torch가 없어 가벼운 Lambda나 wes로 옮길 수 있다.
 
 ```
-[SCORE — foldering/score.py]                                   사진마다
+[SCORE — score.py]                                   사진마다
   preview.jpg ─┬─▶ LaionRunner.embed        → CLIP 768d (저장: photo_analysis.clip_embedding)
                │      ├─▶ score_from_embedding → aesthetic_score
                │      ├─▶ SubjectsTagger.tag   → subjects (bride|groom|couple|group|unknown)
@@ -32,7 +32,7 @@ wes `ai_analysis_jobs.mode`는 그대로다. 워커가 **FULL = SCORE → CATEGO
                └─▶ classical.measure          → sharpness · highlight_clip · shadow_clip
   → store.write_scores  (subjects · sub_scores · clip_embedding · model_version 만)
 
-[CATEGORIZE — foldering/categorize.py]                         갤러리 한 번
+[CATEGORIZE — categorize.py]                         갤러리 한 번
   technical/aesthetic_score → 갤러리 백분위 → technical_pct · aesthetic_pct · sharpness_pct
   E = DINOv3(임베더) ──▶ 카메라 파티션 ∧ 창 ≤ 8 ∧ cos ≥ 0.96 → cluster_id · cluster_rank
   X = concat(E ⊕ CLIP) ──▶ 평균연결 계층 클러스터, 거리 0.2 (적응) → embed_group_id
@@ -49,7 +49,7 @@ wes `ai_analysis_jobs.mode`는 그대로다. 워커가 **FULL = SCORE → CATEGO
 
 ```
 photoselect/
-├── src/photoselect_v1/      서비스에서 도는 코드 전부
+├── photoselect/             서비스에서 도는 코드 전부 — embedder 와 같은 평탄 구조(#31)
 │   ├── __main__.py          CLI: score | categorize | analyze(=둘) | naming(=categorize) | worker
 │   ├── worker.py            ai_analysis_jobs 폴링 + run_analysis_job — wes mode → 잡 순서 매핑
 │   ├── jobs.py              잡 전이 claim / claim_next / finish / fail
@@ -59,16 +59,15 @@ photoselect/
 │   ├── storage.py           S3 미리보기 다운로드
 │   ├── llm.py               BedrockClient.complete_json (JSON 스키마 강제, 이미지 블록)
 │   ├── subjects.py          CLIP zero-shot — SubjectsTagger(피사체) · ParentTagger(부모 라벨) · majority
-│   └── foldering/
-│       ├── score.py         SCORE (torch)
-│       ├── categorize.py    CATEGORIZE (torch 없음) — 백분위·연사·그룹 → naming
-│       ├── naming.py        Bedrock 이름 · 최근접 · 검증
-│       ├── cluster.py       연사 union-find
-│       ├── concept.py       임베딩 그룹 (적응 임계)
-│       ├── classical.py     Laplacian 선명도 · 노출 클립
-│       └── runners/         ArniqaRunner · LaionRunner (torch — score 만 쓴다)
+│   ├── score.py             SCORE (torch)
+│   ├── categorize.py        CATEGORIZE (torch 없음) — 백분위·연사·그룹 → naming
+│   ├── naming.py            Bedrock 이름 · 최근접 · 검증
+│   ├── cluster.py           연사 union-find
+│   ├── concept.py           임베딩 그룹 (적응 임계)
+│   ├── classical.py         Laplacian 선명도 · 노출 클립
+│   └── runners/             ArniqaRunner · LaionRunner (torch — score 만 쓴다)
 ├── scripts/                 개발 도구 (vlm_tag_gallery.py 등). 배포되지 않는다
-├── tests/                   pytest 24건 — 합성 데이터, 가짜 LLM·러너. categorize 가 torch 를 import 하지 않음을 고정
+├── tests/test_photoselect.py  pytest 24건 — 합성 데이터, 가짜 LLM·러너. categorize 가 torch 를 import 하지 않음을 고정
 ├── docs/                    설계 문서
 └── out/  weights/           로컬 산출물 · 가중치 캐시 (gitignore)
 ```
@@ -81,21 +80,21 @@ wes는 "AI 분석" 버튼이 눌리면 `ai_analysis_jobs`에 PENDING 행만 넣�
 
 ```bash
 PY=photoselect/scripts/spike/.venv/bin/python          # torch·open_clip이 있는 venv
-$PY -m pip install -e photoselect --no-deps              # 최초 1회 (src 레이아웃)
+$PY -m pip install -e photoselect --no-deps              # 최초 1회 (어디서든 -m photoselect 가 잡히게)
 
-$PY -m photoselect_v1 score --list                       # 로컬 데이터셋 갤러리 목록
-$PY -m photoselect_v1 score      --gallery "dataset1/데이터셋1" [--limit 50] [--force]   # 사진별 점수
-$PY -m photoselect_v1 categorize --gallery "dataset1/데이터셋1" [--llm]                  # 그룹 (+ naming)
-$PY -m photoselect_v1 analyze    --gallery "dataset1/데이터셋1" [--llm]                  # = 둘 다
+$PY -m photoselect score --list                       # 로컬 데이터셋 갤러리 목록
+$PY -m photoselect score      --gallery "dataset1/데이터셋1" [--limit 50] [--force]   # 사진별 점수
+$PY -m photoselect categorize --gallery "dataset1/데이터셋1" [--llm]                  # 그룹 (+ naming)
+$PY -m photoselect analyze    --gallery "dataset1/데이터셋1" [--llm]                  # = 둘 다
 (cd photoselect && $PY -m pytest -q)
 
 # DB 모드 — wes 공유 Postgres. 갤러리는 photos.gallery_id 숫자
 export DB_HOST=localhost DB_PORT=5432 DB_NAME=wes DB_USER=wes DB_PASSWORD=wes DB_SSLMODE=disable
 export S3_BUCKET=<미리보기 버킷>
-$PY -m photoselect_v1 analyze    --db --gallery 12 --llm [--job-id J]   # wes FULL 과 같은 순서
-$PY -m photoselect_v1 categorize --db --gallery 12 --job-id J --llm     # wes NAMING 과 같음
-$PY -m photoselect_v1 score      --db --gallery 12 [--force]            # 점수만 (잡 계약 밖, 증분 확인용)
-$PY -m photoselect_v1 worker --llm [--poll 2] [--once]
+$PY -m photoselect analyze    --db --gallery 12 --llm [--job-id J]   # wes FULL 과 같은 순서
+$PY -m photoselect categorize --db --gallery 12 --job-id J --llm     # wes NAMING 과 같음
+$PY -m photoselect score      --db --gallery 12 [--force]            # 점수만 (잡 계약 밖, 증분 확인용)
+$PY -m photoselect worker --llm [--poll 2] [--once]
 ../organic-agent-server/wes/scripts/local-worker.sh --llm   # DB·버킷·editable 설치까지 알아서
 ```
 

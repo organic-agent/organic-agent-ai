@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from photoselect_v1.config import PARENT_PROMPTS, PARENTS
+from photoselect.config import PARENT_PROMPTS, PARENTS
 
 SUBJECTS = ("bride", "groom", "couple", "group")
 

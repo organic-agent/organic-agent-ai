@@ -1,4 +1,4 @@
-"""photoselect_v1 단위 테스트 — 합성 데이터로 SCORE 재개·CATEGORIZE(임베딩 그룹)·naming(가짜 LLM)·
+"""photoselect 단위 테스트 — 합성 데이터로 SCORE 재개·CATEGORIZE(임베딩 그룹)·naming(가짜 LLM)·
 LocalStore 왕복을 돈다. 모델 없음(torch 없이 돈다). 추천·비교샷 테스트는 wes로 갔다(#25)."""
 
 from __future__ import annotations
@@ -12,12 +12,12 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from photoselect_v1.foldering.categorize import assign_ranks, concat_space, percentile
-from photoselect_v1.config import PARENTS, Settings, Knobs, MODEL_VERSION
-from photoselect_v1.foldering import categorize, cluster, concept, naming, score
-from photoselect_v1.gallery import PhotoRef
-from photoselect_v1.store import ConceptAssignment, LocalStore, PhotoAnalysis
-from photoselect_v1.subjects import majority
+from photoselect.categorize import assign_ranks, concat_space, percentile
+from photoselect.config import PARENTS, Settings, Knobs, MODEL_VERSION
+from photoselect import categorize, cluster, concept, naming, score
+from photoselect.gallery import PhotoRef
+from photoselect.store import ConceptAssignment, LocalStore, PhotoAnalysis
+from photoselect.subjects import majority
 
 
 def _unit(v):
@@ -317,13 +317,13 @@ class _FakeArniqa:
 def fake_runners(monkeypatch):
     """score.run 이 함수 안에서 import 하는 torch 러너·classical 을 가짜로 바꾼다."""
     laion = _FakeLaion()
-    runners = types.ModuleType("photoselect_v1.foldering.runners")
+    runners = types.ModuleType("photoselect.runners")
     runners.LaionRunner = lambda: laion
     runners.ArniqaRunner = lambda: _FakeArniqa()
-    classical = types.ModuleType("photoselect_v1.foldering.classical")
+    classical = types.ModuleType("photoselect.classical")
     classical.measure = lambda path: {"sharpness": 100.0, "highlight_clip": 0.0, "shadow_clip": 0.0, "mean_luma": 120.0}
-    monkeypatch.setitem(sys.modules, "photoselect_v1.foldering.runners", runners)
-    monkeypatch.setitem(sys.modules, "photoselect_v1.foldering.classical", classical)
+    monkeypatch.setitem(sys.modules, "photoselect.runners", runners)
+    monkeypatch.setitem(sys.modules, "photoselect.classical", classical)
     return laion
 
 
@@ -410,13 +410,13 @@ def test_categorize_falls_back_to_clip_when_no_embedder_vectors(tmp_path):
 
 
 def test_categorize_and_naming_do_not_import_torch():
-    code = ("import sys; import photoselect_v1.foldering.categorize, photoselect_v1.foldering.naming; "
+    code = ("import sys; import photoselect.categorize, photoselect.naming; "
             "assert 'torch' not in sys.modules, 'torch imported'")
     subprocess.run([sys.executable, "-c", code], check=True)
 
 
 def test_worker_maps_wes_modes_to_steps():
-    from photoselect_v1 import worker
+    from photoselect import worker
     assert worker.MODE_STEPS == {"FULL": ("score", "categorize"), "NAMING": ("categorize",)}
 
 

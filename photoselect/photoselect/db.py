@@ -9,7 +9,7 @@ from __future__ import annotations
 import psycopg
 from pgvector.psycopg import register_vector
 
-from photoselect_v1.config import Settings
+from photoselect.config import Settings
 
 
 def connect(settings: Settings) -> psycopg.Connection:

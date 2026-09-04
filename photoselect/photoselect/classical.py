@@ -15,7 +15,7 @@ from __future__ import annotations
 import numpy as np
 from scipy.ndimage import laplace
 
-from photoselect_v1.foldering.runners.common import load_image
+from photoselect.runners.common import load_image
 
 #: 선명도 계산 해상도. 리사이즈가 달라지면 값 스케일이 달라지므로 고정한다.
 LONG_EDGE = 1024

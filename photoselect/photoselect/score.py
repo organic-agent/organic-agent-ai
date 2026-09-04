@@ -20,9 +20,9 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from photoselect_v1.config import MODEL_VERSION, Settings
-from photoselect_v1.gallery import PhotoRef
-from photoselect_v1.store import PhotoAnalysis, Store
+from photoselect.config import MODEL_VERSION, Settings
+from photoselect.gallery import PhotoRef
+from photoselect.store import PhotoAnalysis, Store
 
 log = logging.getLogger(__name__)
 
@@ -70,9 +70,9 @@ def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, fo
         return result.to_dict()
 
     t0 = time.monotonic()
-    from photoselect_v1.foldering import classical
-    from photoselect_v1.foldering.runners import ArniqaRunner, LaionRunner
-    from photoselect_v1.subjects import ParentTagger, SubjectsTagger
+    from photoselect import classical
+    from photoselect.runners import ArniqaRunner, LaionRunner
+    from photoselect.subjects import ParentTagger, SubjectsTagger
     laion, arniqa = LaionRunner(), ArniqaRunner()
     tagger = SubjectsTagger(laion) if k.subjects_zero_shot else None
     parent_tagger = ParentTagger(laion)

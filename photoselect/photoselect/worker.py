@@ -1,7 +1,7 @@
 """잡 워커 — `ai_analysis_jobs`의 PENDING을 집어 폴더화 배치를 돌린다.
 
 wes는 "AI 분석" 버튼이 눌리면 PENDING 행만 만든다. 이 모듈이 그 폴링이다. 로컬에서는
-`python -m photoselect_v1 worker --llm`을 띄워 두면 웹의 "AI 분석" 버튼이 끝까지 간다.
+`python -m photoselect worker --llm`을 띄워 두면 웹의 "AI 분석" 버튼이 끝까지 간다.
 운영 워커도 같은 코드다.
 
     run_analysis_job    잡 하나. wes mode → 두 잡 매핑(#26):
@@ -18,8 +18,8 @@ from __future__ import annotations
 import logging
 import time
 
-from photoselect_v1 import jobs
-from photoselect_v1.config import Settings
+from photoselect import jobs
+from photoselect.config import Settings
 
 log = logging.getLogger(__name__)
 
@@ -35,9 +35,9 @@ def run_analysis_job(st, job_id: int | None, gallery_id: int, mode: str, setting
     llm 없이는 시작하지 않는다 — 30분 점수 계산 뒤에 실패하는 것보다 여기서 죽는 게 낫다.
     job_id 없는 CLI 실행은 llm 없이 돌 수 있다(naming 은 skipped 로 표시).
     """
-    from photoselect_v1 import gallery
-    from photoselect_v1.foldering import categorize, score
-    from photoselect_v1.storage import PreviewStorage
+    from photoselect import gallery
+    from photoselect import categorize, score
+    from photoselect.storage import PreviewStorage
 
     conn = st.conn
     try:
@@ -68,7 +68,7 @@ def run_analysis_job(st, job_id: int | None, gallery_id: int, mode: str, setting
 
 
 def _one_analysis(settings: Settings, llm=None) -> bool:
-    from photoselect_v1 import store
+    from photoselect import store
 
     st = store.DbStore(settings)
     try:
