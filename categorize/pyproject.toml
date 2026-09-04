@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "categorize"
+version = "0.3.0"
+description = "wes AI — 갤러리 단위 그룹화·이름 Lambda (백분위 · 연사 · 임베딩 그룹 · Bedrock naming). torch 없음"
+requires-python = ">=3.12"
+dynamic = ["dependencies"]
+
+[tool.setuptools.packages.find]
+include = ["categorize*"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

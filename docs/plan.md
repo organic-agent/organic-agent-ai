@@ -110,8 +110,9 @@ caching. 상세 규칙은 `.claude/rules/bedrock.md`.
 
 ## 5. P3 상세 설계 (확정분, 요약)
 
-> 2026-08-19 이후 P3 상세는 `photoselect/docs/plan.md`(4단계 셀렉 퍼널: 품질→미학→세밀
-> 비교→개인화 큐레이션)가 구체화·대체한다. 아래는 그 이전 확정분 요약.
+> 2026-08-19 이후 P3 상세는 photoselect 설계 문서(4단계 셀렉 퍼널)가 구체화했고, 그 결과는 지금
+> `score/`·`categorize/` 코드와 `docs/photoselect/review-v3-design.md`·`pipeline-history.md`에 남아 있다.
+> 옛 설계 문서는 #35 정리에서 지웠다. 아래는 그 이전 확정분 요약.
 
 - **실행 조건** (wes 검증): 갤러리 OPEN · 마감 전 · 전 사진 EMBEDDED · 목표 장수 존재 ·
   현재 선택 < 목표 · 활성/완료 잡 없음 · 미제출 상태

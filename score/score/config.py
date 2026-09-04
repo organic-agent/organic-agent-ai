@@ -1,0 +1,120 @@
+"""설정 — 환경변수(Settings) + SCORE 손잡이(Knobs) 한 파일.
+
+score = 사진별 점수 Lambda. 갤러리 전수에 CLIP ViT-L/14 · ARNIQA · LAION 미학을 돌려 `photo_analysis`의
+원점수·피사체·`clip_embedding`을 적재한다. 그룹·이름은 `categorize` 모듈의 일이다(#35).
+
+embedder 와 같은 방식: `Settings.from_env()` 하나로 읽고 코드 어디서도 `os.environ` 을 직접 만지지 않는다.
+"""
+
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+# 모듈 루트 = `score/`. 로컬 산출물(out/)·가중치 캐시(weights/)·데이터셋(../../dataset) 기본 경로의 기준점.
+MODULE_ROOT = Path(__file__).resolve().parents[1]
+
+#: `photo_analysis.model_version`. **categorize 모듈의 같은 상수와 값이 같아야 한다** — categorize 는
+#: 이 값과 같은 행만 "점수 있음"으로 읽는다. 값은 v3 시절 그대로 둔다: 이미 적재된 행과 재개(스킵) 판정이
+#: 이 문자열로 묶여 있어, 바꾸면 전 갤러리가 재점수 대상이 된다.
+MODEL_VERSION = "photoselect-v3-a-0.1"
+
+#: 큰 분류(부모) 고정 목록. categorize 의 naming 이 같은 목록을 Bedrock 스키마 enum 으로 쓴다 — 두 모듈이 같아야 한다.
+#: 서비스 대상은 결혼식 전 앨범·청첩장용 **스튜디오 컨셉 촬영**뿐이다 — 본식·피로연은 다루지 않으므로
+#: 촬영 종류 분기 없이 목록 하나다. '기타'는 목록에 항상 있다.
+PARENTS: list[str] = ["실내 스튜디오", "하우스·인테리어", "한옥·전통", "야외 정원·건물",
+                      "야외 자연", "도심·거리", "기타"]
+
+#: 부모 검증(CLIP zero-shot)용 영어 프롬프트. '기타'는 없다 — zero-shot 후보에서 뺀다.
+#: 검증 전용이다(판정 아님, 822장 실측 일치 79%): categorize 의 naming 이 VLM 부모와 다르면 needs_review 근거.
+PARENT_PROMPTS: dict[str, list[str]] = {
+    "실내 스튜디오": ["an indoor photography studio with a seamless backdrop and studio lighting",
+                    "a studio portrait against a plain paper background"],
+    "하우스·인테리어": ["an indoor set with furniture, a sofa and house interior decoration",
+                     "a cozy room interior with props and furniture"],
+    "한옥·전통": ["a traditional Korean hanok house with wooden pillars and tiled roof",
+               "people wearing traditional Korean hanbok clothing"],
+    "야외 정원·건물": ["outdoors in a landscaped garden next to buildings or architecture",
+                   "a garden path, archway or stairs by a building"],
+    "야외 자연": ["outdoors in open nature such as a beach, forest, field or lawn",
+              "a natural landscape with sea, trees or grass and no buildings"],
+    "도심·거리": ["a city street or downtown area with roads, shops and traffic",
+              "an urban night street with city lights"],
+}
+
+
+@dataclass(frozen=True)
+class Knobs:
+    """SCORE 의 손잡이."""
+
+    #: CLIP zero-shot 피사체(신부/신랑/커플/단체). 확신 라벨 36/36 검증됨.
+    subjects_zero_shot: bool = True
+    #: 이 장수마다 DB 에 쓰고 commit 한다 — 데드라인에 멈추거나 죽어도 그때까지의 점수는 남는다.
+    write_batch: int = 32
+
+
+@dataclass(frozen=True)
+class Settings:
+    """환경(DB·S3·경로·체인) + 손잡이."""
+
+    #: 로컬 모드의 출력 루트. 갤러리마다 하위 폴더가 생긴다.
+    out_root: Path
+    #: 로컬 모드의 데이터셋 루트 (../dataset).
+    dataset_root: Path
+
+    # ── DB 모드. 환경변수 이름은 embedder·wes scripts/local-ai.sh 와 같다. ──
+    db_host: str | None = None
+    db_port: int = 5432
+    db_name: str | None = None
+    db_user: str | None = None
+    db_password: str | None = None
+    #: RDS 는 평문 접속을 거부하므로 기본 require. 로컬 docker pg 는 DB_SSLMODE=disable.
+    db_sslmode: str = "require"
+    db_sslrootcert: str | None = None
+    #: 미리보기 JPEG 가 있는 버킷. DB 모드가 여기서 내려받는다.
+    s3_bucket: str | None = None
+    #: DB 모드에서 미리보기를 내려받는 자리. 갤러리마다 하위 폴더. Lambda 는 /tmp 만 쓸 수 있다.
+    work_dir: Path = Path("/tmp/score")
+
+    #: Lambda 타임아웃 앞에서 멈출 여유(초). "지금까지 가장 오래 걸린 쓰기 배치 + 이 값"보다 남은 시간이
+    #: 적으면 배치 경계에서 멈추고 commit 한다(embedder 와 같은 규칙). 로컬 CLI 에는 데드라인이 없다.
+    stop_margin_seconds: int = 60
+
+    # ── 체인: 잡(job_id)이 끝나면 categorize 를 깨운다. 둘 중 하나. ──
+    #: Lambda 함수 이름 — EVENT 호출. 운영.
+    categorize_function_name: str | None = None
+    #: 로컬 대용 — 서브프로세스로 띄울 명령 (쉘 분리 없이 공백으로 나눈다). 예:
+    #:   CATEGORIZE_COMMAND="/path/.venv/bin/python -m categorize"
+    #: 여기에 `--gallery-id N --job-id M` 이 붙는다.
+    categorize_command: str | None = None
+
+    knobs: Knobs = field(default_factory=Knobs)
+
+    @property
+    def db_enabled(self) -> bool:
+        return bool(self.db_host and self.db_name and self.db_user)
+
+    @property
+    def chain_configured(self) -> bool:
+        return bool(self.categorize_function_name or self.categorize_command)
+
+    @classmethod
+    def from_env(cls) -> "Settings":
+        here = MODULE_ROOT
+        return cls(
+            out_root=Path(os.environ.get("SCORE_OUT", here / "out")),
+            dataset_root=Path(os.environ.get("SCORE_DATASET", here.parent.parent / "dataset")),
+            db_host=os.environ.get("DB_HOST"),
+            db_port=int(os.environ.get("DB_PORT", "5432")),
+            db_name=os.environ.get("DB_NAME"),
+            db_user=os.environ.get("DB_USER"),
+            db_password=os.environ.get("DB_PASSWORD"),
+            db_sslmode=os.environ.get("DB_SSLMODE", "require"),
+            db_sslrootcert=os.environ.get("DB_SSLROOTCERT"),
+            s3_bucket=os.environ.get("S3_BUCKET"),
+            work_dir=Path(os.environ.get("SCORE_WORK", "/tmp/score")),
+            stop_margin_seconds=int(os.environ.get("STOP_MARGIN_SECONDS", "60")),
+            categorize_function_name=os.environ.get("CATEGORIZE_FUNCTION_NAME") or None,
+            categorize_command=os.environ.get("CATEGORIZE_COMMAND") or None,
+        )
