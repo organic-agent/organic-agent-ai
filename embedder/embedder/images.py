@@ -54,6 +54,23 @@ def to_jpeg(image: Image.Image, quality: int) -> bytes:
     return buffer.getvalue()
 
 
+def open_preview(data: bytes) -> Image.Image:
+    """S3에 올린 미리보기 JPEG 바이트를 모델 입력으로 연다.
+
+    임베딩은 메모리의 [prepare] 결과가 아니라 **S3에 실제로 올라간 파일**에서 계산한다.
+    그래야 "미리보기 없는 벡터"가 구조적으로 생기지 않고, photoselect가 읽는 픽셀과 벡터가
+    같은 파일에서 나온다. 미리보기는 이미 EXIF 회전이 구워지고 RGB·긴 변 1024라
+    [prepare]를 다시 거치지 않는다 -- 여기서 하는 일은 JPEG 디코드뿐이다(1024px, 장당 수십 ms).
+
+    `load()`를 지금 부른다. Pillow는 지연 디코딩이라 그냥 두면 모델 프로세서가 부를 때
+    풀리는데, 그러면 디코드 실패가 배치 전체의 encode 안에서 터진다. 여기서 풀면 실패가
+    그 한 장의 `failed`로 떨어진다.
+    """
+    image = Image.open(io.BytesIO(data))
+    image.load()
+    return image.convert("RGB")
+
+
 def preview_key_for(storage_key: str) -> str:
     """원본 키에서 파생본 키를 만든다.
 
