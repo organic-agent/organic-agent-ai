@@ -1,7 +1,0 @@
-# Dockerfile에서 CPU 전용 인덱스로 설치하는 ML 런타임까지 직접 의존성 OSV 감사에
-# 포함한다. core 의존성은 별도 PyPI 해석 감사로 전이 의존성까지 검사한다.
--r requirements.txt
-# OSV의 PyPI 버전 식별자는 CPU wheel의 local suffix(+cpu)를 쓰지 않으므로 upstream
-# 버전으로 정규화한다. Dockerfile은 같은 버전의 CPU wheel만 설치한다.
-torch==2.13.0
-torchvision==0.28.0

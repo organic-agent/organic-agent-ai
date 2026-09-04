@@ -31,9 +31,6 @@ PROMPTS: dict[str, list[str]] = {
               "the bride and groom with family and friends"],
 }
 
-LABELS_KO = {"bride": "신부 단독", "groom": "신랑 단독", "couple": "두 분", "group": "단체", "unknown": ""}
-
-
 class _ZeroShot:
     """라벨별 프롬프트 평균 벡터를 만들어 두고, 이미지 벡터와의 코사인 순위를 돌려준다."""
 
