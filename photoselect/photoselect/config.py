@@ -1,7 +1,7 @@
 """설정 — 환경변수(Settings) + 파이프라인 손잡이(Knobs·LlmKnobs) 한 파일.
 
 photoselect-v1 = AI 클러스터링 폴더화 배치:
-    foldering  FULL(사진별 분석 + 임베딩 그룹) → NAMING(VLM 이름·배정). 추천·비교샷은 wes(#25).
+    score(SCORE: 사진별 점수) → categorize(CATEGORIZE: 그룹 + naming). 추천·비교샷은 wes(#25).
 
 embedder 와 같은 방식: `Settings.from_env()` 하나로 읽고 코드 어디서도 `os.environ` 을 직접
 만지지 않는다. 값의 근거는 wes docs/plans/ai-folder-structure.md · docs/plan-v3-folder-compare.md 실측.
@@ -13,9 +13,9 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# 모듈 루트 = `photoselect/` (src/photoselect_v1/config.py 기준 두 단계 위). 로컬 산출물(out/)·
+# 모듈 루트 = `photoselect/` (src/photoselect/config.py 기준 두 단계 위). 로컬 산출물(out/)·
 # 가중치 캐시(weights/)·데이터셋(../../dataset) 기본 경로의 기준점. 환경변수가 있으면 그쪽이 우선.
-MODULE_ROOT = Path(__file__).resolve().parents[2]
+MODULE_ROOT = Path(__file__).resolve().parents[1]
 
 #: `photo_analysis.model_version`. 값은 v3 시절 그대로 둔다 — 이미 적재된 행과 재개(스킵) 판정이
 #: 이 문자열로 묶여 있어, 바꾸면 전 갤러리가 재분석 대상이 된다.
@@ -50,7 +50,7 @@ PARENT_PROMPTS: dict[str, list[str]] = {
 class Knobs:
     """분석(FULL) + 이름·배정(naming)의 손잡이. 값의 근거는 실측 문서."""
 
-    # ── 분석 (foldering.analyze) ──
+    # ── 그룹화 (categorize) ──
     #: 연사 클러스터 임계(코사인)·순서 창.
     burst_threshold: float = 0.96
     burst_window: int = 8
@@ -64,7 +64,7 @@ class Knobs:
     #: CLIP zero-shot 피사체(신부/신랑/커플/단체). 확신 라벨 36/36 검증됨.
     subjects_zero_shot: bool = True
 
-    # ── naming (foldering.naming) ──
+    # ── naming ──
     #: VLM 대상 선정 — 상수 K 대신 커버리지 목표. 크기 내림차순으로 사진 누적 커버리지가
     #: 이 값에 닿을 때까지 그룹을 고른다. 갤러리 분포에 자동 적응한다.
     naming_coverage: float = 0.85

@@ -16,7 +16,7 @@ from __future__ import annotations
 import torch
 import torchvision.transforms.functional as TF
 
-from photoselect_v1.foldering.runners.common import load_image
+from photoselect.runners.common import load_image
 
 HUB_REPO = "miccunifi/ARNIQA:main"  # TODO 채택 시 커밋 SHA로 고정
 REGRESSOR_DATASET = "spaq"

@@ -202,7 +202,7 @@ class DbStore:
     )
 
     def __init__(self, settings, connection=None) -> None:
-        from photoselect_v1 import db as db_mod
+        from photoselect import db as db_mod
         self.conn = connection or db_mod.connect(settings)
         self._settings = settings
         self._storage = None
@@ -220,7 +220,7 @@ class DbStore:
         if row is None or row[0] is None:
             return None
         if self._storage is None:
-            from photoselect_v1.storage import PreviewStorage
+            from photoselect.storage import PreviewStorage
             self._storage = PreviewStorage(self._settings.s3_bucket)
         try:
             return str(self._storage.download(row[0], dest))

@@ -26,11 +26,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from photoselect_v1.config import PARENTS, Settings
-from photoselect_v1.foldering.categorize import concat_space
-from photoselect_v1.llm import LlmClient, jpeg_bytes
-from photoselect_v1.store import ConceptAssignment, Store
-from photoselect_v1.subjects import majority
+from photoselect.config import PARENTS, Settings
+from photoselect.categorize import concat_space
+from photoselect.llm import LlmClient, jpeg_bytes
+from photoselect.store import ConceptAssignment, Store
+from photoselect.subjects import majority
 
 log = logging.getLogger(__name__)
 

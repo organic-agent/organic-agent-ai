@@ -1,13 +1,13 @@
 """로컬 CLI. 워커와 같은 run()을 부른다. 이 패키지는 폴더화 배치 하나다 — 잡은 둘(#26).
 
-    python -m photoselect_v1 score      --db --gallery 12 [--force] [--limit N]   # 사진별 점수 (torch)
-    python -m photoselect_v1 categorize --db --gallery 12 [--job-id J] [--llm]   # 그룹 + naming (torch 없음)
-    python -m photoselect_v1 analyze    --db --gallery 12 [--llm]                # = score → categorize (wes FULL)
-    python -m photoselect_v1 naming     --db --gallery 12 --job-id J             # = categorize (wes NAMING)
-    python -m photoselect_v1 worker --llm                                        # 웹 버튼(잡) 폴링 처리
+    python -m photoselect score      --db --gallery 12 [--force] [--limit N]   # 사진별 점수 (torch)
+    python -m photoselect categorize --db --gallery 12 [--job-id J] [--llm]   # 그룹 + naming (torch 없음)
+    python -m photoselect analyze    --db --gallery 12 [--llm]                # = score → categorize (wes FULL)
+    python -m photoselect naming     --db --gallery 12 --job-id J             # = categorize (wes NAMING)
+    python -m photoselect worker --llm                                        # 웹 버튼(잡) 폴링 처리
 
-    python -m photoselect_v1 score --list                                        # 로컬 데이터셋 갤러리 목록
-    python -m photoselect_v1 score --gallery "dataset1/…" [--limit 50] [--force]
+    python -m photoselect score --list                                        # 로컬 데이터셋 갤러리 목록
+    python -m photoselect score --gallery "dataset1/…" [--limit 50] [--force]
 
 DB 모드(--db): 갤러리는 photos.gallery_id 숫자. 접속은 DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD/
 DB_SSLMODE, 미리보기는 S3_BUCKET (wes scripts/local-worker.sh 참조). score 는 torch 가 있는 venv.
@@ -21,8 +21,8 @@ import json
 import logging
 import sys
 
-from photoselect_v1 import gallery as gal, jobs, llm as llm_mod, store as store_mod, worker
-from photoselect_v1.config import Settings
+from photoselect import gallery as gal, jobs, llm as llm_mod, store as store_mod, worker
+from photoselect.config import Settings
 
 
 def _common(p, *, llm_help: str) -> None:
@@ -36,7 +36,7 @@ def _common(p, *, llm_help: str) -> None:
 
 
 def main(argv: list[str] | None = None) -> None:
-    ap = argparse.ArgumentParser(prog="photoselect_v1")
+    ap = argparse.ArgumentParser(prog="photoselect")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     sc = sub.add_parser("score", help="SCORE — 사진별 점수·CLIP 벡터·피사체 (torch)")
@@ -84,8 +84,8 @@ def main(argv: list[str] | None = None) -> None:
         if args.job_id is not None and not jobs.claim(st.conn, jobs.ANALYSIS, args.job_id):
             sys.exit(f"잡 {args.job_id} 은 PENDING 이 아니다 (없거나 다른 워커가 집었다)")
         if mode is None:   # score 단독 — 잡 계약 밖. 워커 배선 없이 점수만 적재한다
-            from photoselect_v1.foldering import score
-            from photoselect_v1.storage import PreviewStorage
+            from photoselect import score
+            from photoselect.storage import PreviewStorage
             refs = gal.load_db(st.conn, PreviewStorage(settings.s3_bucket), int(args.gallery),
                                settings.work_dir, limit=args.limit)
             result = score.run(st, args.gallery, refs, settings, force=args.force)
@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None) -> None:
         return
 
     # 로컬 데이터셋 모드
-    from photoselect_v1.foldering import categorize, score
+    from photoselect import categorize, score
     st = store_mod.LocalStore(settings.out_root, dataset_root=settings.dataset_root)
     refs = gal.load_local(settings.dataset_root, args.gallery, limit=args.limit, jpg_only=not args.all_formats)
     result: dict = {"gallery": args.gallery, "pipeline": "v3", "mode": args.cmd}

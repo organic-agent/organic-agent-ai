@@ -24,10 +24,10 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from photoselect_v1.config import MODEL_VERSION, Settings
-from photoselect_v1.foldering import cluster, concept
-from photoselect_v1.gallery import PhotoRef
-from photoselect_v1.store import PhotoAnalysis, Store
+from photoselect.config import MODEL_VERSION, Settings
+from photoselect import cluster, concept
+from photoselect.gallery import PhotoRef
+from photoselect.store import PhotoAnalysis, Store
 
 log = logging.getLogger(__name__)
 
@@ -165,7 +165,7 @@ def group(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings) 
 def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, llm,
         job_id: int | None = None) -> dict:
     """그룹화 뒤 naming 까지. llm 이 None 이면 그룹화만 하고 naming 은 skipped."""
-    from photoselect_v1.foldering import naming
+    from photoselect import naming
 
     started = time.monotonic()
     _, result = group(store, gallery, refs, settings)

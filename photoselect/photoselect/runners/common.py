@@ -20,7 +20,7 @@ try:  # 아이폰 HEIC. 없으면 그 사진들만 실패한다.
 except ImportError:  # pragma: no cover
     pass
 
-from photoselect_v1.config import MODULE_ROOT
+from photoselect.config import MODULE_ROOT
 
 WEIGHTS_DIR = MODULE_ROOT / "weights"
 PREVIEW_LONG_EDGE = 1600

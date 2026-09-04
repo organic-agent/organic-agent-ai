@@ -1,12 +1,13 @@
-# Photoselect 파이프라인 역사 — v1 → v2 → v3 → photoselect_v1
+# Photoselect 파이프라인 역사 — v1 → v2 → v3 → photoselect_v1 → photoselect
 
 작성 2026-09-02. **옛 버전 코드(`src/photoselect/` — v1·v2·v3와 그 배관, 관련 스파이크 스크립트)를
 삭제하면서** 각 버전이 무엇이었고, 무엇을 실측으로 배웠고, 왜 다음 버전으로 넘어갔는지를 남긴다.
 삭제된 코드 전체는 git에 있다 — **복구 지점: `bbaf204`** (`[photoselect] feat: v3 비교샷 AI 판정…(#16)`,
 삭제 직전 마지막 main 커밋). `git show bbaf204:photoselect/src/photoselect/v1/...` 로 언제든 읽을 수 있다.
 
-살아남은 코드는 `src/photoselect_v1/` 하나다 — v3의 확정 기능 3개(폴더화·폴더별 추천·비교샷)만
-기능별 구조로 재구성한 것. 코드 해설은 별도 아티팩트(photoselect_v1 코드 해설) 참조.
+살아남은 코드는 `src/photoselect_v1/` 하나였다 — v3의 확정 기능 3개(폴더화·폴더별 추천·비교샷)만
+기능별 구조로 재구성한 것. 그 뒤 추천·비교샷은 wes로 이관(#25), 폴더화는 SCORE·CATEGORIZE 두 잡으로
+분리(#26), 경로는 `photoselect/photoselect/` 평탄 구조로 정리됐다(#31). 코드 해설은 별도 아티팩트(photoselect_v1 코드 해설) 참조.
 
 ## 0. 연대기 한 눈에
 
