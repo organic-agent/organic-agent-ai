@@ -9,6 +9,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 > 제품 우선순위·아키텍처·설계는 `docs/plan.md`가 단일 소스다. **현재 구성**(모듈·잡·계약)은
 > `docs/embedder-photoselect-architecture.md`에 있다. 이 문서는 요약과 작업 규칙만 담는다.
 
+## 저장소 구조 — 최상위 디렉토리 = 실행 단위
+
+| 디렉토리 | 무엇 | 배포 |
+|---|---|---|
+| `embedder/` | 미리보기 PUT → DINOv3 임베딩 | Lambda 컨테이너 |
+| `score/` | 사진별 점수 (CLIP · ARNIQA · 미학 · zero-shot), 끝나면 categorize 호출 | Lambda 컨테이너 |
+| `categorize/` | 백분위 · 연사 · 임베딩 그룹 · Bedrock naming (torch 없음) | Lambda 컨테이너 |
+| `notionchat/` | 노션 챗봇 서비스 | Vercel |
+| `docs/` | 계획(`plan.md`) · 아키텍처 · 설계 이력(`photoselect/`) · 학습 노트(`study/`) | — |
+
+실행 단위가 아닌 것은 최상위에 두지 않는다. 배치 모듈 셋은 같은 모양이다 — 패키지 바로 아래 `handler.py`(Lambda) /
+`__main__.py`(CLI) → `job.run()`, 모듈마다 자기 `requirements.txt` · `Dockerfile` · `deploy.sh` · `tests/`.
+
 ## 제품 우선순위 (인터뷰 3건 기반 — 근거는 docs/plan.md §1)
 
 결제 주체는 작가/스튜디오이고, 결제 근거는 **작가 업무 시간 절감**이다. 이 축으로 정렬:
