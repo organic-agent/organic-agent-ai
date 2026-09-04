@@ -1,18 +1,15 @@
-"""로컬 CLI. Lambda(handler.py)·EC2 워커와 같은 run()을 부른다. 파이프라인 선택은 없다 —
-이 패키지가 곧 확정 파이프라인 하나다 (기능: foldering / recommend / compare).
+"""로컬 CLI. 워커와 같은 run()을 부른다. 이 패키지는 폴더화 배치 하나다 (foldering).
 
     python -m photoselect_v1 analyze --db --gallery 12 [--llm]        # 폴더화 FULL (--llm 이면 naming까지)
     python -m photoselect_v1 naming  --db --gallery 12 --job-id J     # naming만 다시
-    python -m photoselect_v1 draft   --db --selection-id 3 [--llm]    # 폴더별 추천 + 이유
-    python -m photoselect_v1 compare --db --selection-id S --a A --b B  # 비교샷 (동기, torch 미사용)
     python -m photoselect_v1 worker --llm                             # 웹 버튼(잡) 폴링 처리
 
     python -m photoselect_v1 analyze --list                           # 로컬 데이터셋 갤러리 목록
     python -m photoselect_v1 analyze --gallery "dataset1/…" [--limit 50] [--force]
 
-DB 모드(--db): 갤러리는 photos.gallery_id 숫자, 추천·비교샷은 --selection-id(photo_selections.id) 필수.
-접속은 DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD/DB_SSLMODE, 미리보기는 S3_BUCKET
-(wes scripts/local-ai.sh 참조). 실행 환경: torch 가 있는 venv — compare 만은 torch 없이 돈다.
+DB 모드(--db): 갤러리는 photos.gallery_id 숫자. 접속은 DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD/
+DB_SSLMODE, 미리보기는 S3_BUCKET (wes scripts/local-worker.sh 참조). 실행 환경: torch 가 있는 venv.
+폴더별 추천·비교샷은 wes 로 이관됐다(#25).
 """
 
 from __future__ import annotations
@@ -46,30 +43,8 @@ def main(argv: list[str] | None = None) -> None:
     nm.add_argument("--db", action="store_true", help="wes DB를 읽고 쓴다 (ai_concept_assignments 는 --job-id 필수)")
     nm.add_argument("--job-id", type=int, help="ai_analysis_jobs.id (mode=NAMING) — 상태 전이와 배정의 FK")
 
-    d = sub.add_parser("draft", help="폴더별 추천 한 라운드")
-    d.add_argument("--gallery", help="로컬은 필수. --db 면 --selection-id 로 찾을 수 있어 생략 가능")
-    d.add_argument("--db", action="store_true", help="wes DB를 읽고 쓴다 (--selection-id 필수)")
-    d.add_argument("--job-id", type=int, help="ai_selection_jobs.id — 있으면 상태·round 를 여기서 기록")
-    d.add_argument("--k", type=int)
-    d.add_argument("--selection-id", help="evidence-<id>.json 을 읽는다 (없으면 evidence.json)")
-    d.add_argument("--round", type=int, help="라운드 번호 강제 (기본: 마지막+1)")
-    d.add_argument("--target", type=int, help="셀렉 목표 장수 (기본 config.target_count)")
-    d.add_argument("--llm", action="store_true",
-                   help="Bedrock으로 이유 문장 (AWS 자격 필요. 사진도 보낸다 — 크로스 리전 프로필이라 국외로 나간다)")
-
-    cp = sub.add_parser("compare", help="비교샷 — 두 사진 중 AI 판정 + 이유 (동기, torch 미사용)")
-    cp.add_argument("--gallery", help="로컬 모드 갤러리 이름. --db 면 셀렉에서 찾으므로 생략 가능")
-    cp.add_argument("--db", action="store_true", help="wes DB를 읽고 쓴다 (--selection-id 필수)")
-    cp.add_argument("--selection-id", help="photo_selections.id — 캐시·담김 판단의 단위")
-    cp.add_argument("--a", required=True, help="사진 a (로컬은 파일 상대경로, --db 는 photos.id)")
-    cp.add_argument("--b", required=True, help="사진 b")
-    cp.add_argument("--no-llm", action="store_true", help="템플릿 판정만 (Bedrock 없이)")
-
-    x = sub.add_parser("reset", help="추천·evidence 초기화 (분석 결과는 유지) — 처음부터 다시")
-    x.add_argument("--gallery", required=True)
-
-    w = sub.add_parser("worker", help="잡 폴링 워커 — PENDING 잡을 집어 폴더화·추천 실행 (--db 고정)")
-    w.add_argument("--llm", action="store_true", help="naming·이유 문장을 Bedrock 으로 (폴더화 잡은 필수)")
+    w = sub.add_parser("worker", help="잡 폴링 워커 — PENDING 분석 잡을 집어 폴더화 실행 (--db 고정)")
+    w.add_argument("--llm", action="store_true", help="naming 을 Bedrock 으로 (폴더화 잡은 필수)")
     w.add_argument("--poll", type=float, default=2.0, help="빈 큐일 때 대기 초 (기본 2)")
     w.add_argument("--once", action="store_true", help="쌓인 잡만 처리하고 종료")
 
@@ -114,53 +89,9 @@ def main(argv: list[str] | None = None) -> None:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 
-    if args.cmd == "draft":
-        from photoselect_v1.recommend import draft
-
-        llm = llm_mod.bedrock_client(settings) if args.llm else None
-        if args.db:
-            _run_db_draft(args, settings, llm)
-            return
-        if not args.gallery:
-            sys.exit("--gallery 가 필요하다")
-        result = draft.run(st, args.gallery, settings, selection_id=args.selection_id,
-                           round_no=args.round, top_k=args.k, target=args.target, llm=llm)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return
-
-    if args.cmd == "compare":
-        from photoselect_v1.compare import verdict
-
-        llm = None if args.no_llm else llm_mod.compare_client(settings)
-        if args.db:
-            if not args.selection_id:
-                sys.exit("--db 비교샷은 --selection-id (photo_selections.id) 가 필요하다")
-            dbst = store_mod.DbStore(settings, selection_id=args.selection_id)
-            gallery = args.gallery or dbst.gallery_of_selection(args.selection_id)
-            result = verdict.run(dbst, gallery, settings, args.a, args.b,
-                                 selection_id=args.selection_id, llm=llm)
-        else:
-            if not args.gallery:
-                sys.exit("--gallery 가 필요하다")
-            result = verdict.run(st, args.gallery, settings, args.a, args.b, llm=llm)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
-        return
-
     if args.cmd == "worker":
         llm = llm_mod.bedrock_client(settings) if args.llm else None
         worker.loop(settings, llm=llm, poll_seconds=args.poll, once=args.once)
-        return
-
-    if args.cmd == "reset":
-        d = st._dir(args.gallery)
-        for name in ("recommendations.jsonl", "evidence.json"):
-            f = d / name
-            if f.exists():
-                f.unlink()
-                print(f"삭제: {f}")
-        for f in d.glob("review-r*.html"):
-            f.unlink()
-        print("→ 분석 결과는 유지. draft부터 다시 (브라우저의 '전부 지우기'도 눌러야 localStorage가 비워진다)")
         return
 
 
@@ -172,19 +103,6 @@ def _run_db_analyze(args, settings: Settings) -> None:
     llm = llm_mod.bedrock_client(settings) if args.llm else None
     result = worker.run_analysis_job(st, args.job_id, int(args.gallery), "FULL", settings,
                                      llm=llm, force=args.force, limit=args.limit)
-    print(json.dumps(result, ensure_ascii=False, indent=2))
-
-
-def _run_db_draft(args, settings: Settings, llm) -> None:
-    """DB 모드 추천. 워커와 같은 함수 — 갤러리는 셀렉에서 찾고, 라운드 번호는 잡 행에도 적는다."""
-    if not args.selection_id:
-        sys.exit("--db 추천은 --selection-id (photo_selections.id) 가 필요하다")
-    st = store_mod.DbStore(settings, selection_id=args.selection_id)
-    if args.job_id is not None and not jobs.claim(st.conn, jobs.SELECTION, args.job_id):
-        sys.exit(f"잡 {args.job_id} 은 PENDING 이 아니다 (없거나 다른 워커가 집었다)")
-    result = worker.run_selection_job(st, args.job_id, args.selection_id, settings, llm=llm,
-                                      gallery=args.gallery, round_no=args.round,
-                                      top_k=args.k, target=args.target)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

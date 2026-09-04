@@ -6,12 +6,11 @@ tech-stack.md §5는 `AnthropicBedrockMantle`을 적었지만 **ap-northeast-2�
 동작함을 실호출로 확인했다(이미지 블록 포함, Sonnet 4.6, 2026-08-30). 서울 온디맨드에 Sonnet이 없어 `global.`
 크로스 리전 프로필을 쓴다(`aws bedrock list-inference-profiles --region ap-northeast-2` 로 확인).
 
-이미지도 보낸다 — 이유 문장이 사진을 직접 보고 말하게 하기 위해서다(reasons.py). 원본이 아니라
-embedder 미리보기를 다시 줄인 JPEG(긴 변 768 안팎)이고, 크로스 리전 프로필이므로 **국외로 나간다**.
-`LlmKnobs.reasons_vision=False` 로 끄면 텍스트만 간다.
+이미지도 보낸다 — naming이 그룹 대표 사진을 보고 이름을 짓는다. 원본이 아니라 embedder 미리보기를
+다시 줄인 JPEG(긴 변 768 안팎)이고, 크로스 리전 프로필이므로 **국외로 나간다**.
 
 `LlmClient`는 프로토콜이다. 실제 구현은 `BedrockClient`, 테스트는 tests 의 Fake.
-호출부(reasons·feedback)는 이 프로토콜만 본다.
+호출부(foldering.naming)는 이 프로토콜만 본다. 추천 이유·비교샷 호출은 wes로 갔다(#25).
 """
 
 from __future__ import annotations
@@ -66,17 +65,11 @@ def to_content(user: str | list[Part]) -> str | list[dict]:
 class BedrockClient:
     """anthropic SDK 1.x · `output_config.format`으로 JSON 스키마를 강제한다. aws_region 필수(1.x)."""
 
-    def __init__(self, aws_region: str, model_id: str,
-                 timeout: float | None = None, max_retries: int | None = None) -> None:
-        """timeout·max_retries 는 동기 경로(compare)용 — 배치는 SDK 기본값(재시도 포함)을 쓴다."""
+    def __init__(self, aws_region: str, model_id: str) -> None:
+        """배치(naming)용 — SDK 기본 재시도를 쓴다."""
         from anthropic import AnthropicBedrock
 
-        kwargs: dict = {"aws_region": aws_region}
-        if timeout is not None:
-            kwargs["timeout"] = timeout
-        if max_retries is not None:
-            kwargs["max_retries"] = max_retries
-        self._client = AnthropicBedrock(**kwargs)
+        self._client = AnthropicBedrock(aws_region=aws_region)
         self.model_id = model_id
 
     def complete_json(self, system: str, user: str | list[Part], schema: dict, max_tokens: int) -> dict:
@@ -98,11 +91,5 @@ class BedrockClient:
 
 
 def bedrock_client(settings) -> BedrockClient:
-    """배치(naming·이유 문장)용 — SDK 기본 재시도를 쓴다."""
+    """naming용 Bedrock 클라이언트."""
     return BedrockClient(settings.llm.aws_region, settings.llm.model_id)
-
-
-def compare_client(settings) -> BedrockClient:
-    """동기(compare) 전용 — 타임아웃 안에 못 오면 템플릿 폴백, 재시도 없음."""
-    return BedrockClient(settings.llm.aws_region, settings.llm.model_id,
-                         timeout=settings.llm.compare_timeout_s, max_retries=0)
