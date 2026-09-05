@@ -47,7 +47,7 @@ echo
 aws ecr get-login-password --region "$REGION" \
   | docker login --username AWS --password-stdin "${REPO%%/*}"
 
-METADATA=$(mktemp -t embedder-build)
+METADATA=$(mktemp -t embedder-build.XXXXXX)
 trap 'rm -f "$METADATA"' EXIT
 
 # 가중치를 굽는 단계가 Hugging Face 토큰을 요구한다(DINOv3는 게이트 모델). HF_TOKEN 이

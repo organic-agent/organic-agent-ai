@@ -47,7 +47,7 @@ echo
 aws ecr get-login-password --region "$REGION" \
   | docker login --username AWS --password-stdin "${REPO%%/*}"
 
-METADATA=$(mktemp -t categorize-build)
+METADATA=$(mktemp -t categorize-build.XXXXXX)
 trap 'rm -f "$METADATA"' EXIT
 
 # 세 플래그가 전부 필요하다. 이유는 README 의 "빌드와 배포" 참고.
