@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 최종 결정(사진 선택·제출·보정 확정)은 언제나 사람이 한다.
 
 > 제품 우선순위·아키텍처·설계는 `docs/plan.md`가 단일 소스다. **현재 구성**(모듈·잡·계약)은
-> `docs/embedder-photoselect-architecture.md`에 있다. 이 문서는 요약과 작업 규칙만 담는다.
+> `docs/embedder-photoselect-architecture.md`에, 세 모듈의 **구성·의존성 지도**(내부 import 그래프 · 컬럼 소유권 ·
+> 패키지 핀 · AWS 경로)는 `docs/batch-modules-dependency-map.html`에 있다. 이 문서는 요약과 작업 규칙만 담는다.
 
 ## 저장소 구조 — 최상위 디렉토리 = 실행 단위
 
