@@ -73,8 +73,10 @@ try_lock_gallery   pg_try_advisory_lock(gallery) — 잡혀 있으면 {"skipped"
 fetch_targets      photos WHERE status<>'PENDING' AND deleted_at IS NULL AND NOT EXISTS(embedding)   ← force 면 조건 제거
    │
    ▼ batch_size(8)씩 — 배치 시작 전: 남은 시간 < (가장 긴 배치 + STOP_MARGIN 60s) 이면 멈추고 stopped=true
-   S3 GET 원본 ─▶ open_original ─┬─▶ metadata.extract   (회전·축소 전 원본, best-effort)
-                                └─▶ images.prepare ─▶ to_jpeg ─▶ ① S3 PUT previews/{원본키}.jpg
+   S3 GET 원본 (스레드 풀 download_workers=4 가 두 배치 앞서 미리 받음)
+     ─▶ open_original ─┬─▶ metadata.extract   (회전·축소 전 원본, best-effort)
+                       └─▶ images.prepare(바이트) ─▶ to_jpeg ─▶ ① S3 PUT previews/{원본키}.jpg
+                           (JPEG 축소 디코드 1/2·1/4 → 1024 → 회전·RGB)
                                                                  ② open_preview(올린 바이트) ─▶ DinoEmbedder.encode
    │                                                             PUT 실패 = 그 사진 failed (encode 안 감)
    ▼ store_embeddings  (한 트랜잭션, 배치 단위 commit)
@@ -92,6 +94,10 @@ handler: stopped 이고 processed>0 이면 같은 payload(force=false)로 자기
 - **실패는 두 종류뿐이다.** 원본을 못 읽었든 PUT이 실패했든 벡터가 없으면 `failed` — 다음 호출이
   자연히 다시 집는다. EXIF만 실패하면 `metadataFailed` — 사진은 멀쩡히 보인다. `failed`가 대상 수와
   같으면 임베딩이 아니라 IAM(`s3:PutObject`)을 봐야 한다.
+- **병목은 원본 GET이다.** 2026-09-05 로컬 E2E(`local-e2e-2026-09-05.md`)에서 embedder 장당 1.7s 중 CPU
+  몫은 0.1s 안팎이었고 나머지가 5~13MB 원본을 한 장씩 받는 대기였다. 그래서 GET은 풀이 미리 받고,
+  디코드는 축소 디코드로 원본을 통째로 풀지 않는다. 데드라인 판단의 "가장 긴 배치"는 GET 대기가 겹쳐진
+  뒤의 시간이라 이전보다 짧게 잡힌다.
 - **타임아웃 앞에서 스스로 멈춘다.** 하드 킬은 진행 중인 배치를 롤백시키므로, 배치 경계에서 commit하고
   자기 재호출로 잇는다. 처리 0장이면 재호출하지 않는다(같은 사진이 계속 실패하는 갤러리에서 무한 루프
   방지). 재호출은 Lambda 인터페이스 VPC 엔드포인트와 자기 함수 `lambda:InvokeFunction`이 있어야

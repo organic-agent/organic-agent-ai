@@ -1,4 +1,4 @@
-"""S3에서 원본 바이트를 가져온다.
+"""S3에서 원본 바이트를 가져오고 파생본을 올린다. 여러 스레드에서 동시에 불러도 된다.
 
 Lambda는 DB 서브넷에 붙어 있고 NAT가 없어서, 이 호출은 전부 S3 게이트웨이 VPC 엔드포인트를
 통해 나간다(인프라 레포의 `modules/network`). 엔드포인트가 없으면 여기서 타임아웃으로 멈춘다 --
@@ -12,13 +12,18 @@ from botocore.config import Config
 
 
 class PhotoStorage:
-    def __init__(self, bucket: str) -> None:
+    def __init__(self, bucket: str, max_concurrency: int = 1) -> None:
         self.bucket = bucket
         self._client = boto3.client(
             "s3",
             # 기본 재시도는 짧다. 갤러리 하나를 순차로 도는 잡이라 한두 번 더 기다리는 편이
             # 통째로 다시 도는 것보다 싸다.
-            config=Config(retries={"max_attempts": 5, "mode": "standard"}),
+            config=Config(
+                retries={"max_attempts": 5, "mode": "standard"},
+                # 클라이언트는 스레드 안전하다. 풀이 동시 GET 수보다 작으면 boto가 연결을 버리고
+                # 다시 맺으며 경고를 찍는다 -- job의 다운로드 스레드 수 + PUT 하나 몫을 확보한다.
+                max_pool_connections=max(10, max_concurrency + 2),
+            ),
         )
 
     def read(self, key: str) -> bytes:

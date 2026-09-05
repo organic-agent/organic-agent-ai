@@ -74,6 +74,12 @@ class Settings:
     #: 낫다. 로컬 CLI에는 데드라인이 없어 쓰이지 않는다.
     stop_margin_seconds: int = 60
 
+    #: 원본 GET을 미리 걸어 두는 스레드 수. 한 배치를 CPU가 다듬는 동안 다음 배치의 원본을 이만큼
+    #: 동시에 내려받는다. 5~13MB 원본을 한 장씩 순차로 받으면 네트워크를 기다리는 동안 CPU가 놀고,
+    #: CPU가 일하는 동안 회선이 논다 -- 2026-09-05 로컬 E2E에서 장당 1.7초의 대부분이 이 대기였다.
+    #: 미리 받아 두는 창은 두 배치 앞(job.PREFETCH_BATCHES)이라 메모리의 원본은 세 배치(24장, ~300MB)를 넘지 않는다.
+    download_workers: int = 4
+
     #: 빌드 시 내려받은 모델 snapshot과 런타임 로드를 같은 immutable commit으로 묶는다.
     model_revision: str = "5931719e67bbdb9737e363e781fb0c67687896bc"
 
@@ -97,6 +103,7 @@ class Settings:
             resize_long_edge=int(os.environ.get("RESIZE_LONG_EDGE", "1024")),
             preview_quality=int(os.environ.get("PREVIEW_QUALITY", "82")),
             stop_margin_seconds=int(os.environ.get("STOP_MARGIN_SECONDS", "60")),
+            download_workers=int(os.environ.get("EMBED_DOWNLOAD_WORKERS", "4")),
             model_revision=os.environ.get(
                 "EMBED_MODEL_REVISION",
                 "5931719e67bbdb9737e363e781fb0c67687896bc",

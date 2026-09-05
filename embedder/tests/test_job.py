@@ -6,6 +6,7 @@ S3·모델·DB는 전부 가짜다. job.py가 부르는 모듈 속성을 setUp�
 from __future__ import annotations
 
 import sys
+import threading
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -59,17 +60,24 @@ class _Db:
 
 
 class _Storage:
-    """키에 'bad'가 들어간 사진은 PUT이 실패한다."""
+    """키에 'bad'가 들어간 사진은 PUT이, 'missing'이 들어간 사진은 GET이 실패한다."""
 
     instances: list["_Storage"] = []
 
-    def __init__(self, bucket: str) -> None:
+    def __init__(self, bucket: str, max_concurrency: int = 1) -> None:
+        self.max_concurrency = max_concurrency
         self.reads: list[str] = []
+        self.read_threads: set[str] = set()
         self.writes: list[tuple[str, bytes, str]] = []
+        self._lock = threading.Lock()
         _Storage.instances.append(self)
 
     def read(self, key: str) -> bytes:
-        self.reads.append(key)
+        with self._lock:
+            self.reads.append(key)
+            self.read_threads.add(threading.current_thread().name)
+        if "missing" in key:
+            raise RuntimeError("NoSuchKey")
         return f"original:{key}".encode()
 
     def write(self, key: str, data: bytes, content_type: str) -> None:
@@ -102,9 +110,9 @@ class _Images:
         self.calls.append("open_original")
         return f"orig({data.decode()})"
 
-    def prepare(self, image, long_edge: int):
+    def prepare(self, data: bytes, long_edge: int):
         self.calls.append("prepare")
-        return f"prep({image})"
+        return f"prep({data.decode()})"
 
     def preview_key_for(self, storage_key: str) -> str:
         return f"previews/{storage_key.rsplit('.', 1)[0]}.jpg"
@@ -128,10 +136,10 @@ class _Metadata:
         return f"meta({original})"
 
 
-def _settings(batch_size: int = 2, stop_margin: int = 60):
+def _settings(batch_size: int = 2, stop_margin: int = 60, download_workers: int = 2):
     return SimpleNamespace(
         s3_bucket="bucket", batch_size=batch_size, resize_long_edge=1024, preview_quality=82,
-        model_id="test-model", stop_margin_seconds=stop_margin,
+        model_id="test-model", stop_margin_seconds=stop_margin, download_workers=download_workers,
     )
 
 
@@ -193,6 +201,45 @@ class GalleryJobTest(unittest.TestCase):
         self.assertEqual([1], [row[0].photo_id for row in fake_db.stored[0]])
         # 데드라인과 무관하게 전부 시도했으므로 remaining은 0이다 (실패는 다음 호출이 다시 집는다).
         self.assertEqual(0, result["remaining"])
+
+    def test_get_failure_marks_only_that_photo_failed(self) -> None:
+        fake_db = self._install_db([_Ref(1, "galleries/7/missing.jpg"), _Ref(2, "galleries/7/ok.jpg")])
+
+        result = job.run(7, settings=_settings(batch_size=2))
+
+        self.assertEqual(["galleries/7/missing.jpg"], result["failed"])
+        self.assertEqual(1, result["processed"])
+        self.assertEqual([2], [row[0].photo_id for row in fake_db.stored[0]])
+        # GET에 실패한 사진은 open_original 이전에 접혔다 -- 이미지 호출은 성공한 한 장 몫뿐이다.
+        self.assertEqual(["open_original", "prepare", "to_jpeg", "open_preview"], self.images.calls)
+
+    def test_originals_are_fetched_concurrently_on_worker_threads(self) -> None:
+        """GET이 직렬이면 두 스레드가 만나는 barrier가 시간 초과로 깨져 두 장 다 failed가 된다."""
+        targets = [_Ref(i, f"galleries/7/{i}.jpg") for i in range(1, 5)]
+        fake_db = self._install_db(targets)
+        barrier = threading.Barrier(2, timeout=3)
+        original_read = _Storage.read
+
+        def read_in_pairs(storage, key):
+            barrier.wait()
+            return original_read(storage, key)
+
+        _Storage.read = read_in_pairs
+        try:
+            result = job.run(7, settings=_settings(batch_size=2, download_workers=2))
+        finally:
+            _Storage.read = original_read
+
+        self.assertEqual([], result["failed"])
+        self.assertEqual(4, result["processed"])
+        storage = _Storage.instances[0]
+        self.assertEqual(2, storage.max_concurrency)
+        self.assertEqual({t.storage_key for t in targets}, set(storage.reads))
+        # 메인 스레드가 아니라 풀 스레드가 받았다.
+        self.assertTrue(all(name.startswith("s3-get") for name in storage.read_threads), storage.read_threads)
+        # 순서·짝은 그대로다: 벡터는 대상 순서대로 적재된다.
+        self.assertEqual([1, 2], [row[0].photo_id for row in fake_db.stored[0]])
+        self.assertEqual([3, 4], [row[0].photo_id for row in fake_db.stored[1]])
 
     def test_metadata_failure_does_not_drop_the_photo(self) -> None:
         fake_db = self._install_db([_Ref(1, "galleries/7/noexif.jpg")])
