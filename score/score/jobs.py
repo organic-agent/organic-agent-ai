@@ -70,6 +70,39 @@ def fail(conn: psycopg.Connection, job_id: int, error: str) -> None:
     conn.commit()
 
 
+# ── 샤딩(#54): result.scoreShards = {total, done, startedAt, results: {"<index>": 샤드 결과}} ──
+def shards_begin(conn: psycopg.Connection, job_id: int, total: int, started_at: str | None) -> None:
+    """조정자가 샤드 수를 적는다. 얕은 || 라 scoreShards 전체를 새로 쓴다(이전 실행의 카운터가 남지 않게)."""
+    record(conn, job_id, {"scoreShards": {"total": total, "done": 0, "startedAt": started_at, "results": {}}})
+
+
+def record_shard(conn: psycopg.Connection, job_id: int, index: int, partial: dict) -> None:
+    """샤드 하나의 결과를 result.scoreShards.results.<index> 에 — 다른 샤드의 결과를 덮지 않게 jsonb_set."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"UPDATE {ANALYSIS} SET result = jsonb_set(COALESCE(result, '{{}}'::jsonb), %s::text[], %s::jsonb, true), "
+            f"updated_at = now(), version = version + 1 WHERE id = %s",
+            (["scoreShards", "results", str(index)], json.dumps(partial, ensure_ascii=False), job_id),
+        )
+    conn.commit()
+
+
+def shard_done(conn: psycopg.Connection, job_id: int) -> tuple[int, int]:
+    """done 을 원자적으로 +1 하고 (done, total) 을 돌려준다. UPDATE 한 문장이라 동시에 끝난 샤드끼리 겹치지 않는다 —
+    done == total 을 본 딱 한 샤드가 categorize 를 연다."""
+    with conn.cursor() as cur:
+        cur.execute(
+            f"UPDATE {ANALYSIS} SET result = jsonb_set(result, '{{scoreShards,done}}', "
+            f"to_jsonb(COALESCE((result #>> '{{scoreShards,done}}')::int, 0) + 1), true), "
+            f"updated_at = now(), version = version + 1 WHERE id = %s "
+            f"RETURNING (result #>> '{{scoreShards,done}}')::int, (result #>> '{{scoreShards,total}}')::int",
+            (job_id,),
+        )
+        row = cur.fetchone()
+    conn.commit()
+    return (int(row[0]), int(row[1])) if row and row[1] is not None else (1, 1)
+
+
 def info(conn: psycopg.Connection, job_id: int) -> tuple[int, str] | None:
     """(gallery_id, mode). mode 는 wes 의 'FULL' | 'NAMING'."""
     with conn.cursor() as cur:

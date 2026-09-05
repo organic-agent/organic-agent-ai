@@ -30,6 +30,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--job-id", type=int, help="ai_analysis_jobs.id — 있으면 RUNNING 기록 + 끝나면 categorize 체인")
     ap.add_argument("--force", action="store_true", help="이미 점수가 있는 사진도 다시")
     ap.add_argument("--limit", type=int, help="앞에서 N장만 (빠른 확인용)")
+    ap.add_argument("--shards", type=int, default=1, help="갤러리를 N 샤드로 나눠 이 프로세스에서 순서대로 (Lambda 는 동시에)")
     ap.add_argument("--local", metavar="GALLERY", help="로컬 데이터셋 갤러리 이름 (DB 없이 out/ 에 쓴다)")
     ap.add_argument("--list", action="store_true", help="로컬 데이터셋 갤러리 이름과 장수 목록")
     ap.add_argument("--all-formats", action="store_true", help="HEIC 포함 (기본은 JPG만, 로컬)")
@@ -64,8 +65,18 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.gallery_id is None:
         sys.exit("--gallery-id 또는 --local 이 필요하다 (--list 로 로컬 목록)")
-    result = job.run(gallery_id=args.gallery_id, force=args.force, settings=settings,
-                     job_id=args.job_id, limit=args.limit)
+    if args.shards > 1:
+        started_at = job.now_iso() if args.force else None
+        results = [job.run(gallery_id=args.gallery_id, force=args.force, settings=settings, job_id=args.job_id,
+                           limit=args.limit, shard=job.Shard(i, args.shards), run_started_at=started_at)
+                   for i in range(args.shards)]
+        result = {"gallery": str(args.gallery_id), "mode": "score", "shards": results,
+                  "processed": sum(r.get("processed", 0) for r in results),
+                  "stopped": any(r.get("stopped") for r in results),
+                  "skipped": job.ALREADY_RUNNING if all(job.was_skipped(r) for r in results) else 0}
+    else:
+        result = job.run(gallery_id=args.gallery_id, force=args.force, settings=settings,
+                         job_id=args.job_id, limit=args.limit)
     # 처리 0장이라도 전부 이미 점수가 있는 재실행이면 끝난 것이다 — categorize 를 이어 부른다. 건너뛴 사진 수로
     # 판단하면 안 된다(job.was_skipped 참고).
     if args.job_id is not None and not job.was_skipped(result) and not result.get("stopped"):

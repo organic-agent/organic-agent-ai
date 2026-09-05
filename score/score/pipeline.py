@@ -20,6 +20,7 @@ from __future__ import annotations
 import logging
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Callable
 
 import numpy as np
@@ -89,15 +90,32 @@ def _load_runners():
     return classical, ArniqaRunner, LaionRunner, ParentTagger, SubjectsTagger
 
 
+def _as_dt(value) -> datetime | None:
+    """DB 는 timestamptz(datetime), 로컬은 ISO 문자열. tz 없는 값은 UTC 로 본다."""
+    if value is None:
+        return None
+    dt = datetime.fromisoformat(value) if isinstance(value, str) else value
+    return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+
+
 def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, force: bool = False,
-        remaining_seconds: Callable[[], float] | None = None) -> dict:
+        remaining_seconds: Callable[[], float] | None = None, since: datetime | None = None) -> dict:
+    """`since` 가 있으면 그 시각 이후에 쓴 점수만 "있음"으로 친다 — force 실행의 시작 시각을 재호출·샤드에 넘겨,
+    force 를 잃어도 이번 실행 전 점수는 다시 계산한다(#54). force 는 since 없는 로컬 전체 재계산."""
     started = time.monotonic()
     k = settings.knobs
     result = ScoreResult(gallery=gallery, targets=len(refs))
     stage: dict[str, float] = {}
 
-    previous = {} if force else {
-        r.photo_id: r for r in store.read_analysis(gallery) if r.model_version == MODEL_VERSION}
+    def fresh(r: PhotoAnalysis) -> bool:
+        if r.model_version != MODEL_VERSION:
+            return False
+        if since is None:
+            return True
+        at = _as_dt(r.analyzed_at)
+        return at is not None and at >= since
+
+    previous = {} if force else {r.photo_id: r for r in store.read_analysis(gallery) if fresh(r)}
     prev_clip_ids, _ = store.read_clip_embeddings(gallery)
     prev_clip = set() if force else set(prev_clip_ids)
     todo = [r for r in refs if r.photo_id not in previous or r.photo_id not in prev_clip]

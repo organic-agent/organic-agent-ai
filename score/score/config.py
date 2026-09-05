@@ -81,6 +81,11 @@ class Settings:
     #: DB 모드에서 미리보기를 내려받는 자리. 갤러리마다 하위 폴더. Lambda 는 /tmp 만 쓸 수 있다.
     work_dir: Path = Path("/tmp/score")
 
+    #: 갤러리 샤딩(#54). 사진 수 / shard_photos 를 올림한 만큼(최대 max_shards) 같은 함수를 동시에 띄운다.
+    #: 1 이면 지금처럼 한 실행. 250 이면 822장 → 4 샤드(각 ~206장 ≈ 5분).
+    shard_photos: int = 250
+    max_shards: int = 8
+
     #: Lambda 타임아웃 앞에서 멈출 여유(초). "지금까지 가장 오래 걸린 쓰기 배치 + 이 값"보다 남은 시간이
     #: 적으면 배치 경계에서 멈추고 commit 한다(embedder 와 같은 규칙). 로컬 CLI 에는 데드라인이 없다.
     stop_margin_seconds: int = 60
@@ -119,6 +124,8 @@ class Settings:
             s3_bucket=os.environ.get("S3_BUCKET"),
             work_dir=Path(os.environ.get("SCORE_WORK", "/tmp/score")),
             stop_margin_seconds=int(os.environ.get("STOP_MARGIN_SECONDS", "60")),
+            shard_photos=int(os.environ.get("SHARD_PHOTOS", "250")),
+            max_shards=int(os.environ.get("MAX_SHARDS", "8")),
             categorize_function_name=os.environ.get("CATEGORIZE_FUNCTION_NAME") or None,
             categorize_command=os.environ.get("CATEGORIZE_COMMAND") or None,
             knobs=Knobs(

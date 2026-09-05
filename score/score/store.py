@@ -10,6 +10,7 @@ categorize 의 컬럼, embedding·embedding_model 은 embedder 의 컬럼이라 
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 import logging
 import math
 from dataclasses import asdict, dataclass, field
@@ -34,6 +35,8 @@ class PhotoAnalysis:
     cluster_rank: int = 0
     embed_group_id: int = -1
     model_version: str = ""
+    #: 마지막으로 점수를 쓴 시각(DB timestamptz | 로컬 ISO 문자열). force 재계산의 "이번 실행 전 점수" 판정(#54).
+    analyzed_at: object | None = None
 
 
 class Store(Protocol):
@@ -80,12 +83,14 @@ class LocalStore:
                      clip_embeddings: tuple[list[str], np.ndarray]) -> None:
         """SCORE 의 필드만 덮는다 — 기존 행의 백분위·클러스터·그룹은 그대로, 없던 사진은 새 행."""
         by_id = {r.photo_id: r for r in self.read_analysis(gallery)}
+        stamp = datetime.now(timezone.utc).isoformat()
         for r in rows:
+            r.analyzed_at = stamp
             cur = by_id.get(r.photo_id)
             if cur is None:
                 by_id[r.photo_id] = r
                 continue
-            for f in ("subjects", "sub_scores", "model_version"):
+            for f in ("subjects", "sub_scores", "model_version", "analyzed_at"):
                 setattr(cur, f, getattr(r, f))
         with (self._dir(gallery) / "analysis.jsonl").open("w", encoding="utf-8") as f:
             for r in by_id.values():
@@ -124,15 +129,15 @@ class DbStore:
         self.conn = connection or db_mod.connect(settings)
 
     def read_analysis(self, gallery: str) -> list[PhotoAnalysis]:
-        """재개 판정에 필요한 것만 — photo_id 와 model_version."""
+        """재개 판정에 필요한 것만 — photo_id · model_version · analyzed_at."""
         with self.conn.cursor() as cur:
             cur.execute(
-                "SELECT a.photo_id, a.model_version FROM photo_analysis a JOIN photos p ON p.id = a.photo_id "
+                "SELECT a.photo_id, a.model_version, a.analyzed_at FROM photo_analysis a JOIN photos p ON p.id = a.photo_id "
                 "WHERE p.gallery_id = %s AND p.deleted_at IS NULL AND a.model_version IS NOT NULL",
                 (int(gallery),),
             )
             rows = cur.fetchall()
-        return [PhotoAnalysis(photo_id=str(r[0]), model_version=str(r[1])) for r in rows]
+        return [PhotoAnalysis(photo_id=str(r[0]), model_version=str(r[1]), analyzed_at=r[2]) for r in rows]
 
     def read_clip_embeddings(self, gallery: str) -> tuple[list[str], np.ndarray]:
         """재개 판정용 — 어느 사진에 CLIP 벡터가 있는가. 벡터 값은 categorize 가 읽는다."""

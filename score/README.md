@@ -33,6 +33,8 @@ categorize 의 컬럼이라 UPSERT 의 SET 절에 없다 — 이 경계가 곧 �
 | 단위 · 재개 | 사진. 같은 `MODEL_VERSION` 이고 CLIP 이 저장된 사진은 건너뛴다. `write_batch`(32)장마다 commit |
 | 속도 손잡이 | 한 장은 한 번만 디코드해 세 러너에 넘긴다. CLIP 은 `CLIP_BATCH`(8)장씩 한 forward, ARNIQA 입력 긴 변은 `ARNIQA_LONG_EDGE`(1024 — 1600 대비 연산 1/2.4, 순위 상관 0.93) (#51) |
 | 데드라인 | 15분 앞에서 배치 경계에서 멈추고(`STOP_MARGIN_SECONDS`) 처리분이 있으면 **자기 재호출** |
+| 샤딩 (#54) | wes 호출은 **조정자** — 사진 수 / `SHARD_PHOTOS`(250) 만큼(최대 `MAX_SHARDS` 8) 자기 함수를 `shard:{index,total}` 로 동시에 띄우고 끝난다. 샤드는 `index % total` 인 사진만, 잠금은 (갤러리, 샤드). `result.scoreShards.done` 카운터가 total 에 닿은 마지막 샤드가 categorize 를 연다. 로컬은 `--shards N` 순차 |
+| force | `runStartedAt`(시작 시각) 을 샤드·재호출에 넘겨 그 이후 점수만 "있음" — 재호출이 force 를 잃어도 옛 점수가 남지 않는다 |
 | 잠금 | 갤러리 advisory lock (`pg_try_advisory_lock(0x53434F, gallery_id)`) — 연타·재호출 겹침 방지 |
 | 잡 | `ai_analysis_jobs` 를 RUNNING 으로 열고 `result.score` 를 기록. **DONE 은 categorize 가 찍는다** |
 | 체인 | 끝나면 categorize 를 깨운다 — `CATEGORIZE_FUNCTION_NAME`(Lambda EVENT) 또는 `CATEGORIZE_COMMAND`(로컬 서브프로세스). 잡인데 둘 다 없으면 시작 전에 FAILED |
@@ -57,7 +59,7 @@ score/
 │   ├── store.py        LocalStore(out/v3/) · DbStore — write_scores 하나
 │   ├── gallery.py      PhotoRef — 로컬 폴더 / DB(EMBEDDED + preview_key)
 │   ├── storage.py      S3 미리보기 다운로드    ├── db.py  접속    ├── jobs.py  start · record · fail · claim_next
-├── tests/test_score.py   pytest 21 — 재개 · 컬럼 경계 · 배치/데드라인 · CLIP 배치/실패 격리 · chain · handler · categorize 와의 상수 일치
+├── tests/test_score.py   pytest 27 — 재개 · 컬럼 경계 · 배치/데드라인 · CLIP 배치/실패 격리 · 샤딩(분배·조정자·마지막 체인·since) · chain · handler · categorize 와의 상수 일치
 ├── Dockerfile · deploy.sh   컨테이너 Lambda (가중치 빌드 시 번들) · ECR 푸시 + update-function-code
 └── requirements.txt · pyproject.toml
 ```

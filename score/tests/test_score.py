@@ -216,6 +216,74 @@ def test_classical_measure_same_for_path_and_decoded_image(tmp_path):
     assert classical.measure(str(path)) == classical.measure(images.load_image(str(path)))
 
 
+# ── 샤딩(#54) ─────────────────────────────────────────────────────────────────
+def test_shard_select_partitions_in_fixed_order_and_validates():
+    refs = list(range(10))
+    parts = [job.Shard(i, 4).select(refs) for i in range(4)]
+    assert parts == [[0, 4, 8], [1, 5, 9], [2, 6], [3, 7]]
+    assert sorted(sum(parts, [])) == refs                       # 빠짐·겹침 없음
+    assert job.Shard(0, 1).select(refs) == refs
+    with pytest.raises(ValueError):
+        job.Shard(4, 4)
+    assert job.Shard.from_payload({"index": "2", "total": "4"}) == job.Shard(2, 4)
+    assert job.Shard.from_payload(None) is None
+
+
+def test_plan_shards_by_photo_count_with_cap():
+    s = Settings(out_root=Path("o"), dataset_root=Path("d"), shard_photos=250, max_shards=8)
+    assert [job.plan_shards(n, s) for n in (0, 1, 250, 251, 822, 5000)] == [1, 1, 1, 2, 4, 8]
+    assert job.plan_shards(822, Settings(out_root=Path("o"), dataset_root=Path("d"), shard_photos=0)) == 1
+
+
+def test_handler_coordinator_fans_out_shards_and_does_not_chain(fake_handler):
+    fake_handler["make_run"](coordinator=True, shards=3, targets=700)
+
+    result = handler.handler({"galleryId": 7, "jobId": 3, "force": True}, _Context())
+
+    payloads = fake_handler["invoked"]
+    assert [p["shard"] for p in payloads] == [{"index": i, "total": 3} for i in range(3)]
+    assert all(p["galleryId"] == 7 and p["jobId"] == 3 and p["force"] is True and p["runStartedAt"] for p in payloads)
+    assert len({p["runStartedAt"] for p in payloads}) == 1     # 샤드 셋이 같은 시작 시각
+    assert result["fannedOut"] is True and fake_handler["chained"] == [] and fake_handler["reinvoked"] == []
+
+
+def test_handler_shard_run_chains_only_when_last(fake_handler):
+    fake_handler["make_run"](processed=5, stopped=False, remaining=0, lastShard=False)
+    handler.handler({"galleryId": 7, "jobId": 3, "shard": {"index": 0, "total": 2}, "runStartedAt": "2026-09-06T00:00:00+00:00"},
+                    _Context())
+    run = fake_handler["run"][0]
+    assert run["shard"] == job.Shard(0, 2) and run["fan_out"] is None and run["run_started_at"] == "2026-09-06T00:00:00+00:00"
+    assert fake_handler["chained"] == []
+
+    fake_handler["make_run"](processed=5, stopped=False, remaining=0, lastShard=True)
+    result = handler.handler({"galleryId": 7, "jobId": 3, "shard": {"index": 1, "total": 2}}, _Context())
+    assert fake_handler["chained"] == [(7, 3)] and result["chained"] is True
+
+
+def test_reinvoke_payload_keeps_shard_and_run_started_at_but_not_force():
+    p = handler._payload(7, 3, force=False, shard=job.Shard(1, 4), run_started_at="2026-09-06T00:00:00+00:00")
+    assert p == {"galleryId": 7, "jobId": 3, "force": False, "shard": {"index": 1, "total": 4},
+                 "runStartedAt": "2026-09-06T00:00:00+00:00"}
+    assert handler._payload(7, None, force=False, shard=None, run_started_at=None) == {"galleryId": 7, "force": False}
+
+
+def test_since_rescoring_skips_only_rows_written_after_run_start(tmp_path, fake_runners):
+    """force 실행의 시작 시각(since) 이후에 쓴 점수만 '있음' — 재호출이 force 를 잃어도 옛 점수는 다시 계산한다."""
+    from datetime import datetime, timedelta, timezone
+
+    store, refs, scored, settings = _world(tmp_path, n=8)   # 앞 4장은 옛 점수 (_world 가 지금 막 썼다)
+    since = datetime.now(timezone.utc)                        # 이 시각 이후 점수만 "있음"
+
+    first = pipeline.run(store, "g", refs, settings, since=since)      # 옛 점수 4장도 대상
+    assert first["processed"] == 8 and first["skipped"] == 0
+
+    again = pipeline.run(store, "g", refs, settings, since=since)      # 방금 쓴 8장은 since 이후 → 전부 건너뜀
+    assert again["skipped"] == 8 and again["processed"] == 0
+
+    later = pipeline.run(store, "g", refs, settings, since=datetime.now(timezone.utc) + timedelta(seconds=5))
+    assert later["processed"] == 8                                      # 미래 시각 기준이면 다시 전부
+
+
 # ── categorize 와의 계약 ───────────────────────────────────────────────────────
 def _literal(path: Path, name: str):
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -265,16 +333,21 @@ class _Context:
 
 @pytest.fixture
 def fake_handler(monkeypatch):
-    calls = {"run": [], "reinvoked": [], "chained": [], "failed": []}
+    calls = {"run": [], "reinvoked": [], "chained": [], "failed": [], "invoked": []}
 
     def make_run(**result):
-        def run(gallery_id, force, settings, job_id, remaining_seconds):
+        def run(gallery_id, force, settings, job_id, remaining_seconds, shard=None, run_started_at=None, fan_out=None):
             calls["run"].append({"gallery_id": gallery_id, "force": force, "job_id": job_id,
-                                 "remaining": remaining_seconds() if remaining_seconds else None})
+                                 "remaining": remaining_seconds() if remaining_seconds else None,
+                                 "shard": shard, "run_started_at": run_started_at, "fan_out": fan_out})
+            if result.get("coordinator"):
+                result["fannedOut"] = fan_out(result["shards"], run_started_at)
             return {"gallery": str(gallery_id), **result}
         monkeypatch.setattr(handler.job, "run", run)
 
-    monkeypatch.setattr(handler, "reinvoke", lambda ctx, g, j: calls["reinvoked"].append((g, j)) or True)
+    monkeypatch.setattr(handler, "reinvoke",
+                        lambda ctx, g, j, shard=None, run_started_at=None: calls["reinvoked"].append((g, j)) or True)
+    monkeypatch.setattr(handler, "_invoke_self", lambda ctx, g, payload: calls["invoked"].append(payload) or True)
     monkeypatch.setattr(handler.chain, "invoke_categorize", lambda s, g, j: calls["chained"].append((g, j)) or True)
     monkeypatch.setattr(handler, "_fail_job", lambda j, e: calls["failed"].append(j))
     calls["make_run"] = make_run
@@ -286,7 +359,9 @@ def test_handler_passes_job_and_deadline_then_chains(fake_handler):
 
     result = handler.handler({"galleryId": "7", "jobId": "3", "force": True}, _Context(123_000))
 
-    assert fake_handler["run"] == [{"gallery_id": 7, "force": True, "job_id": 3, "remaining": 123.0}]
+    run = fake_handler["run"][0]
+    assert (run["gallery_id"], run["force"], run["job_id"], run["remaining"], run["shard"]) == (7, True, 3, 123.0, None)
+    assert run["run_started_at"] and run["fan_out"] is not None     # force → 시작 시각, wes 호출 → 조정자 가능
     assert fake_handler["chained"] == [(7, 3)] and result["chained"] is True
     assert fake_handler["reinvoked"] == []
 
