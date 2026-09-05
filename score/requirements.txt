@@ -4,6 +4,8 @@ torch==2.4.1
 torchvision==0.19.1
 open_clip_torch==2.26.1
 numpy==1.26.4
+# classical 선명도(Laplacian) — categorize 와 같은 핀
+scipy==1.14.1
 pillow==10.4.0
 pillow-heif==0.18.0
 # ARNIQA torch.hub 의존
