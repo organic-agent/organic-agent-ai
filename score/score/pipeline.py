@@ -61,8 +61,28 @@ class ScoreResult:
         }
 
 
+def _compute_env() -> str:
+    """torch 스레드 · CPU 수 — Lambda 에서 실제로 몇 코어를 쓰는지 로그로 남긴다(#51)."""
+    import os
+
+    try:
+        import torch
+
+        return f"torch_threads={torch.get_num_threads()} interop={torch.get_num_interop_threads()} cpu_count={os.cpu_count()}"
+    except Exception:  # noqa: BLE001 — 테스트의 가짜 러너 환경
+        return f"cpu_count={os.cpu_count()}"
+
+
 def _load_runners():
-    """torch 러너는 여기서만 import 한다 — 재개 판정만 하고 끝나는 호출은 모델을 올리지 않는다."""
+    """torch 러너는 여기서만 import 한다 — 재개 판정만 하고 끝나는 호출은 모델을 올리지 않는다.
+    `TORCH_NUM_THREADS` 가 있으면 torch 스레드 수를 그 값으로 — Lambda 의 cpu_count 와 실제 vCPU 가 다를 때 실험용(#51)."""
+    import os
+
+    threads = os.environ.get("TORCH_NUM_THREADS")
+    if threads:
+        import torch
+
+        torch.set_num_threads(int(threads))
     from score import classical
     from score.runners import ArniqaRunner, LaionRunner
     from score.subjects import ParentTagger, SubjectsTagger
@@ -94,6 +114,9 @@ def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, fo
     parent_tagger = ParentTagger(laion)
     result.subjects_used = tagger is not None
     stage["load"] = time.monotonic() - t0
+    log.info("[score] 러너 로드 %.1fs · %s", stage["load"], _compute_env())
+    #: 장별 누적 시간 — 어디서 시간이 가는지 Lambda 로그로 본다(#51). decode+clip 은 묶음 단위라 묶음 시간을 장수로 나눈다.
+    t_stage = {"decode": 0.0, "clip": 0.0, "arniqa": 0.0, "classical": 0.0, "tag": 0.0, "write": 0.0}
 
     def flush(rows: list[PhotoAnalysis], clips: dict[str, np.ndarray]) -> None:
         ids = [r.photo_id for r in rows]
@@ -104,11 +127,14 @@ def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, fo
         """(ref, 이미지, CLIP 벡터, 오류) — 디코드는 한 번, CLIP 은 묶어서. 실패한 장은 오류를 들고 나온다."""
         loaded: list[tuple[PhotoRef, object]] = []
         out: dict[str, tuple] = {}
+        t = time.monotonic()
         for ref in chunk:
             try:
                 loaded.append((ref, load_image(ref.path)))
             except Exception as exc:  # noqa: BLE001
                 out[ref.photo_id] = (ref, None, None, exc)
+        t_stage["decode"] += time.monotonic() - t
+        t = time.monotonic()
         if loaded:
             try:
                 embs = laion.embed_batch([img for _, img in loaded])
@@ -121,6 +147,7 @@ def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, fo
                         out[ref.photo_id] = (ref, img, laion.embed(img), None)
                     except Exception as exc1:  # noqa: BLE001
                         out[ref.photo_id] = (ref, img, None, exc1)
+        t_stage["clip"] += time.monotonic() - t
         return [out[ref.photo_id] for ref in chunk]
 
     rows: list[PhotoAnalysis] = []
@@ -141,29 +168,38 @@ def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, fo
             try:
                 if err is not None:
                     raise err
+                t = time.monotonic()
                 aes = laion.score_from_embedding(clip_emb)
                 tech = arniqa.score(img)["technical_score"]
+                t_stage["arniqa"] += time.monotonic() - t
+                t = time.monotonic()
                 cl = classical.measure(img)
+                t_stage["classical"] += time.monotonic() - t
                 sub = {"technical_score": tech, "aesthetic_score": aes, **cl}
                 subjects = UNKNOWN
+                t = time.monotonic()
                 if tagger is not None:
                     subjects, margin = tagger.tag(clip_emb)
                     sub["subjects_margin"] = margin
                 sub["clip_parent"] = parent_tagger.tag(clip_emb)
+                t_stage["tag"] += time.monotonic() - t
                 rows.append(PhotoAnalysis(photo_id=ref.photo_id, subjects=subjects,
                                           sub_scores=sub, model_version=MODEL_VERSION))
                 clips[ref.photo_id] = clip_emb
                 result.processed += 1
                 t_photo += time.monotonic() - t0 + t_shared
                 if i % 20 == 0 or i == len(todo):
-                    log.info("  %d/%d  (%.2fs/장)", i, len(todo), t_photo / i)
+                    log.info("  %d/%d  (%.2fs/장)  %s", i, len(todo), t_photo / i,
+                             " ".join(f"{k}={v / i:.2f}" for k, v in t_stage.items()))
             except Exception as exc:  # noqa: BLE001 — 한 장 실패가 잡을 죽이면 안 된다
                 log.exception("사진 실패 %s: %s", ref.photo_id, exc)
                 result.failed.append(ref.photo_id)
             done = i
 
             if len(rows) >= k.write_batch or i == len(todo):
+                t = time.monotonic()
                 flush(rows, clips)
+                t_stage["write"] += time.monotonic() - t
                 rows, clips = [], {}
                 longest_batch = max(longest_batch, time.monotonic() - batch_started)
                 batch_started = time.monotonic()
@@ -180,6 +216,7 @@ def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, fo
 
     result.remaining = len(todo) - done
     stage["photos"] = t_photo
+    stage.update(t_stage)
     result.per_stage_seconds = stage
     result.elapsed_seconds = time.monotonic() - started
     return result.to_dict()
