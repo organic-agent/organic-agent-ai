@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from score import chain, handler, pipeline
+from score import chain, handler, job, pipeline
 from score.config import MODEL_VERSION, MODULE_ROOT, PARENTS, Knobs, Settings
 from score.gallery import PhotoRef
 from score.store import LocalStore, PhotoAnalysis
@@ -250,3 +250,29 @@ def test_handler_fails_job_when_chain_fails(fake_handler, monkeypatch):
 
 def test_reinvoke_without_function_name_returns_false():
     assert handler.reinvoke(SimpleNamespace(), 7, 3) is False
+
+
+def test_was_skipped_distinguishes_lock_skip_from_all_photos_skipped():
+    # 잠금 건너뜀은 문자열, 정상 실행은 "건너뛴 사진 수"(int)다. 전부 건너뛴 재실행(processed 0, skipped N)은
+    # 끝난 실행이라 체인이 열려야 한다 — 진위 검사로 오판하던 회귀를 막는다.
+    assert job.was_skipped({"skipped": job.ALREADY_RUNNING, "processed": 0})
+    assert not job.was_skipped({"skipped": 822, "processed": 0, "stopped": False})
+    assert not job.was_skipped({"skipped": 0, "processed": 822})
+    assert not job.was_skipped({})
+
+
+def test_handler_chains_when_all_photos_already_scored(fake_handler):
+    # 재실행: 822장 전부 이미 점수가 있어 processed 0, skipped 822. 끝난 실행이므로 categorize 를 이어 불러야 한다.
+    fake_handler["make_run"](processed=0, skipped=822, stopped=False, remaining=0)
+
+    result = handler.handler({"galleryId": 7, "jobId": 3}, _Context())
+
+    assert fake_handler["chained"] == [(7, 3)] and result["chained"] is True
+
+
+def test_handler_returns_early_on_lock_skip(fake_handler):
+    fake_handler["make_run"](processed=0, skipped=job.ALREADY_RUNNING, stopped=False, remaining=0)
+
+    result = handler.handler({"galleryId": 7, "jobId": 3}, _Context())
+
+    assert fake_handler["chained"] == [] and "chained" not in result

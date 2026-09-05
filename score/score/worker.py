@@ -44,7 +44,7 @@ def _one(settings: Settings) -> bool:
     try:
         if mode.upper() == "FULL":
             result = job.run(gallery_id, settings=settings, job_id=job_id)
-            if result.get("skipped") or result.get("stopped"):
+            if job.was_skipped(result) or result.get("stopped"):
                 log.warning("[worker] job=%s 점수가 끝나지 않았다: %s", job_id, result)
                 return True
         chained = chain.invoke_categorize(settings, gallery_id, job_id)
