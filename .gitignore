@@ -7,3 +7,6 @@ __pycache__/
 .vercel
 .env*
 !.env.example
+
+# 계획·아키텍처·설계 이력·학습 노트 — 로컬 전용, 저장소에 올리지 않는다 (#45)
+docs/
