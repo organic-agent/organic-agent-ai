@@ -43,7 +43,9 @@ def handler(event: dict, context) -> dict:
         remaining_seconds=_remaining_seconds(context),
     )
 
-    if result.get("skipped"):
+    # 잠금 건너뜀만 여기서 끝낸다. "이미 점수가 있어 건너뛴 사진 수"(int)로 판단하면 전부 건너뛴 재실행에서
+    # 체인이 열리지 않아 잡이 RUNNING 에 영원히 남는다(job.was_skipped 참고).
+    if job.was_skipped(result):
         return result
     if result.get("stopped"):
         if result.get("processed", 0) > 0:

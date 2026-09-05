@@ -23,6 +23,16 @@ log = logging.getLogger(__name__)
 
 ALREADY_RUNNING = "already running"
 
+
+def was_skipped(result: dict) -> bool:
+    """실행 자체를 건너뛰었나(다른 실행이 갤러리 잠금을 쥐고 있었다).
+
+    결과의 `skipped` 는 두 뜻으로 쓰인다 — 잠금 건너뜀이면 [ALREADY_RUNNING] 문자열, 정상 실행이면 "이미 점수가 있어
+    건너뛴 사진 수"(int). 후자는 전부 건너뛴 재실행에서 822 같은 참값이 되므로, 진위로 검사하면 "실행을 건너뛰었다"로
+    오판해 categorize 체인이 열리지 않고 잡이 RUNNING 에 영원히 남는다. 반드시 이 함수로 판별한다.
+    """
+    return result.get("skipped") == ALREADY_RUNNING
+
 #: 갤러리 advisory lock 의 앞쪽 키. embedder(0x454D42 'EMB')·다른 프로세스와 키 공간이 겹치지 않게 이 모듈만의 상수.
 GALLERY_LOCK_NAMESPACE = 0x53434F  # 'SCO'
 
