@@ -24,6 +24,8 @@ class PhotoRef:
     #: 임베더가 채운 photos.taken_at/camera_make/camera_model. 로컬 모드는 None(파일명 순 폴백).
     taken_at: object | None = None
     camera: str | None = None
+    #: DB 모드의 미리보기 S3 키 — download=False 로 목록만 읽은 뒤 `download_previews` 로 자기 몫만 내려받는다(#54).
+    preview_key: str | None = None
 
 
 def list_galleries(dataset_root: Path) -> list[tuple[str, int]]:
@@ -90,5 +92,18 @@ def load_db(conn, storage, gallery_id: int, work_dir: Path, limit: int | None = 
     for photo_id, key, taken_at, make, model in rows:
         path = str(storage.download(key, dest_dir / f"{photo_id}.jpg")) if download else None
         camera = " ".join(s.strip() for s in (make, model) if s and s.strip()) or None
-        refs.append(PhotoRef(photo_id=str(photo_id), path=path, taken_at=taken_at, camera=camera))
+        refs.append(PhotoRef(photo_id=str(photo_id), path=path, taken_at=taken_at, camera=camera, preview_key=key))
     return refs
+
+
+def download_previews(storage, refs: list[PhotoRef], dest_dir: Path) -> list[PhotoRef]:
+    """path 가 없는 ref 의 미리보기를 내려받아 path 를 채운 새 목록. 샤드가 자기 몫만 받을 때 쓴다(#54)."""
+    from dataclasses import replace
+
+    out = []
+    for ref in refs:
+        if ref.path is None and ref.preview_key:
+            out.append(replace(ref, path=str(storage.download(ref.preview_key, dest_dir / f"{ref.photo_id}.jpg"))))
+        else:
+            out.append(ref)
+    return out
