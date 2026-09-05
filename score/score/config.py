@@ -52,6 +52,10 @@ class Knobs:
     subjects_zero_shot: bool = True
     #: 이 장수마다 DB 에 쓰고 commit 한다 — 데드라인에 멈추거나 죽어도 그때까지의 점수는 남는다.
     write_batch: int = 32
+    #: CLIP 이미지 인코딩을 이 장수씩 한 forward 로 묶는다(#51). write_batch 의 약수가 자연스럽다.
+    clip_batch: int = 8
+    #: ARNIQA 입력 긴 변(#51). 1600 → 1024 로 연산 ~2.4배 절감. 바꾸면 technical_score 스케일이 바뀐다.
+    arniqa_long_edge: int = 1024
 
 
 @dataclass(frozen=True)
@@ -117,4 +121,8 @@ class Settings:
             stop_margin_seconds=int(os.environ.get("STOP_MARGIN_SECONDS", "60")),
             categorize_function_name=os.environ.get("CATEGORIZE_FUNCTION_NAME") or None,
             categorize_command=os.environ.get("CATEGORIZE_COMMAND") or None,
+            knobs=Knobs(
+                clip_batch=int(os.environ.get("CLIP_BATCH", Knobs.clip_batch)),
+                arniqa_long_edge=int(os.environ.get("ARNIQA_LONG_EDGE", Knobs.arniqa_long_edge)),
+            ),
         )

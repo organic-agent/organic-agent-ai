@@ -31,6 +31,7 @@ categorize 의 컬럼이라 UPSERT 의 SET 절에 없다 — 이 경계가 곧 �
 |---|---|
 | 진입점 | `handler.py`(Lambda EVENT `{"galleryId", "jobId"?, "force"?}`) / `__main__.py`(CLI) → `job.run()` |
 | 단위 · 재개 | 사진. 같은 `MODEL_VERSION` 이고 CLIP 이 저장된 사진은 건너뛴다. `write_batch`(32)장마다 commit |
+| 속도 손잡이 | 한 장은 한 번만 디코드해 세 러너에 넘긴다. CLIP 은 `CLIP_BATCH`(8)장씩 한 forward, ARNIQA 입력 긴 변은 `ARNIQA_LONG_EDGE`(1024 — 1600 대비 연산 1/2.4, 순위 상관 0.93) (#51) |
 | 데드라인 | 15분 앞에서 배치 경계에서 멈추고(`STOP_MARGIN_SECONDS`) 처리분이 있으면 **자기 재호출** |
 | 잠금 | 갤러리 advisory lock (`pg_try_advisory_lock(0x53434F, gallery_id)`) — 연타·재호출 겹침 방지 |
 | 잡 | `ai_analysis_jobs` 를 RUNNING 으로 열고 `result.score` 를 기록. **DONE 은 categorize 가 찍는다** |
@@ -45,7 +46,8 @@ score/
 │   ├── handler.py      Lambda: 데드라인 → 자기 재호출 / 끝나면 chain / 체인 실패면 잡 FAILED
 │   ├── __main__.py     CLI: --gallery-id N [--job-id J] [--force] | --local "갤러리" | --list | worker
 │   ├── job.py          갤러리 잡: lock → 잡 RUNNING → EMBEDDED 사진 + 미리보기 다운로드 → pipeline → result 기록
-│   ├── pipeline.py     SCORE 본체 (위 그림). 배치 쓰기 · 데드라인 정지
+│   ├── pipeline.py     SCORE 본체 (위 그림). 디코드 1회 · CLIP 배치 · 배치 쓰기 · 데드라인 정지
+│   ├── images.py       이미지 로드 (torch 없음) — load_image · fit_long_edge · as_image
 │   ├── chain.py        categorize 호출 — Lambda EVENT | 서브프로세스
 │   ├── worker.py       로컬 폴링 워커 (운영 없음 — wes 에 invoker 가 생기면 삭제)
 │   ├── subjects.py     CLIP zero-shot — SubjectsTagger · ParentTagger
@@ -55,7 +57,7 @@ score/
 │   ├── store.py        LocalStore(out/v3/) · DbStore — write_scores 하나
 │   ├── gallery.py      PhotoRef — 로컬 폴더 / DB(EMBEDDED + preview_key)
 │   ├── storage.py      S3 미리보기 다운로드    ├── db.py  접속    ├── jobs.py  start · record · fail · claim_next
-├── tests/test_score.py   pytest 13 — 재개 · 컬럼 경계 · 배치/데드라인 · chain · handler · categorize 와의 상수 일치
+├── tests/test_score.py   pytest 21 — 재개 · 컬럼 경계 · 배치/데드라인 · CLIP 배치/실패 격리 · chain · handler · categorize 와의 상수 일치
 ├── Dockerfile · deploy.sh   컨테이너 Lambda (가중치 빌드 시 번들) · ECR 푸시 + update-function-code
 └── requirements.txt · pyproject.toml
 ```

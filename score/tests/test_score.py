@@ -31,10 +31,15 @@ class _FakeLaion:
         self.rng = np.random.default_rng(seed)
         self.dim = dim
         self.embed_calls = 0
+        self.batch_sizes = []
 
-    def embed(self, path):
+    def embed(self, source):
         self.embed_calls += 1
         return _unit(self.rng.normal(size=self.dim))
+
+    def embed_batch(self, sources):
+        self.batch_sizes.append(len(sources))
+        return np.stack([self.embed(s) for s in sources])
 
     def embed_texts(self, prompts):
         return np.stack([_unit(self.rng.normal(size=self.dim)) for _ in prompts])
@@ -44,7 +49,12 @@ class _FakeLaion:
 
 
 class _FakeArniqa:
-    def score(self, path):
+    def __init__(self, long_edge=None):
+        self.long_edge = long_edge
+        self.seen = []
+
+    def score(self, source):
+        self.seen.append(source)
         return {"technical_score": 0.6}
 
 
@@ -54,9 +64,15 @@ def fake_runners(monkeypatch):
     laion = _FakeLaion()
     runners = types.ModuleType("score.runners")
     runners.LaionRunner = lambda: laion
-    runners.ArniqaRunner = lambda: _FakeArniqa()
+    laion.arniqa = _FakeArniqa()
+
+    def make_arniqa(**kw):
+        laion.arniqa.long_edge = kw.get("long_edge")
+        return laion.arniqa
+
+    runners.ArniqaRunner = make_arniqa
     classical = types.ModuleType("score.classical")
-    classical.measure = lambda path: {"sharpness": 100.0, "highlight_clip": 0.0, "shadow_clip": 0.0, "mean_luma": 120.0}
+    classical.measure = lambda source: {"sharpness": 100.0, "highlight_clip": 0.0, "shadow_clip": 0.0, "mean_luma": 120.0}
     monkeypatch.setitem(sys.modules, "score.runners", runners)
     monkeypatch.setitem(sys.modules, "score.classical", classical)
     return laion
@@ -136,6 +152,68 @@ def test_no_deadline_without_callback(tmp_path, fake_runners):
     store, refs, _, settings = _world(tmp_path)
     result = pipeline.run(store, "g", refs, settings, force=True)
     assert result["stopped"] is False and result["processed"] == len(refs)
+
+
+def test_clip_runs_in_batches_and_runners_share_one_decoded_image(tmp_path, fake_runners):
+    store, refs, _, settings = _world(tmp_path, n=12)
+    settings = Settings(out_root=settings.out_root, dataset_root=settings.dataset_root,
+                        knobs=Knobs(write_batch=4, clip_batch=5, arniqa_long_edge=640))
+
+    result = pipeline.run(store, "g", refs, settings, force=True)
+
+    assert result["processed"] == 12 and fake_runners.batch_sizes == [5, 5, 2]
+    # ARNIQA 는 경로가 아니라 이미 디코드된 PIL 이미지를 받고, 손잡이의 해상도를 넘겨받는다
+    assert all(isinstance(x, Image.Image) for x in fake_runners.arniqa.seen)
+    assert fake_runners.arniqa.long_edge == 640
+
+
+def test_broken_photo_fails_alone_inside_a_batch(tmp_path, fake_runners):
+    store, refs, scored, settings = _world(tmp_path, n=8)
+    broken = refs[-1]                                # 아직 점수가 없는 쪽에서 하나를 깨뜨린다
+    Path(broken.path).write_bytes(b"not a jpeg")
+
+    result = pipeline.run(store, "g", refs, settings, force=True)
+
+    assert result["failed"] == [broken.photo_id] and result["processed"] == 7
+    assert fake_runners.batch_sizes == [7]          # 깨진 장은 디코드에서 빠지고 나머지 7장이 한 묶음
+    ids, _ = store.read_clip_embeddings("g")
+    assert broken.photo_id not in ids and len(ids) == 7
+
+
+def test_batch_failure_falls_back_to_single_embeds(tmp_path, fake_runners):
+    store, refs, _, settings = _world(tmp_path, n=6)
+
+    def boom(sources):
+        fake_runners.batch_sizes.append(len(sources))
+        raise RuntimeError("batch oom")
+
+    fake_runners.embed_batch = boom
+    result = pipeline.run(store, "g", refs, settings, force=True)
+
+    assert result["processed"] == 6 and result["failed"] == []
+    assert fake_runners.embed_calls == 6
+
+
+def test_images_fit_long_edge_never_upscales_and_accepts_paths_or_images(tmp_path):
+    from score import images
+
+    big = Image.new("RGB", (3200, 1600))
+    small = Image.new("RGB", (300, 200))
+    assert images.fit_long_edge(big, 1600).size == (1600, 800)
+    assert images.fit_long_edge(small, 1600) is small
+    path = tmp_path / "a.jpg"
+    Image.new("RGB", (2000, 1000)).save(path)
+    assert images.as_image(str(path), 1000).size == (1000, 500)
+    assert images.as_image(images.load_image(str(path)), 800).size == (800, 400)
+
+
+def test_classical_measure_same_for_path_and_decoded_image(tmp_path):
+    from score import classical, images
+
+    rng = np.random.default_rng(0)
+    path = tmp_path / "n.jpg"
+    Image.fromarray(rng.integers(0, 255, (400, 600, 3), dtype=np.uint8)).save(path, quality=95)
+    assert classical.measure(str(path)) == classical.measure(images.load_image(str(path)))
 
 
 # ── categorize 와의 계약 ───────────────────────────────────────────────────────
