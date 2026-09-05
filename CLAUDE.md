@@ -17,7 +17,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `score/` | 사진별 점수 (CLIP · ARNIQA · 미학 · zero-shot), 끝나면 categorize 호출 | Lambda 컨테이너 |
 | `categorize/` | 백분위 · 연사 · 임베딩 그룹 · Bedrock naming (torch 없음) | Lambda 컨테이너 |
 | `notionchat/` | 노션 챗봇 서비스 | Vercel |
-| `docs/` | 계획(`plan.md`) · 아키텍처 · 설계 이력(`photoselect/`) · 학습 노트(`study/`) | — |
+| `docs/` | 계획(`plan.md`) · 아키텍처 · 설계 이력(`photoselect/`) · 학습 노트(`study/`) — **로컬 전용, `.gitignore`(#45)** | — |
 
 실행 단위가 아닌 것은 최상위에 두지 않는다. 배치 모듈 셋은 같은 모양이다 — 패키지 바로 아래 `handler.py`(Lambda) /
 `__main__.py`(CLI) → `job.run()`, 모듈마다 자기 `requirements.txt` · `Dockerfile` · `deploy.sh` · `tests/`.
