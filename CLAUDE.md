@@ -96,7 +96,7 @@ cd score && uv venv --python 3.12 .venv && uv pip install --python .venv/bin/pyt
   -r requirements.txt -r ../categorize/requirements.txt --no-deps -e . -e ../categorize   # 한 venv 에 둘 다
 .venv/bin/python -m score --gallery-id 12 [--job-id J] [--force]   # CATEGORIZE_COMMAND=".venv/bin/python -m categorize"
 .venv/bin/python -m score worker                                   # 로컬 폴링 워커 (wes 에 invoker 가 생기기 전 대용)
-.venv/bin/python -m pytest -q                                      # 13
+.venv/bin/python -m pytest -q                                      # 21
 
 # categorize — 그룹 · 이름 (numpy · scipy · Bedrock, torch 없음)
 cd categorize && ../score/.venv/bin/python -m categorize --gallery-id 12 --job-id J   # wes NAMING 잡과 같음 (Bedrock). score/.venv 공용
