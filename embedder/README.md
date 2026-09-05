@@ -17,8 +17,8 @@ __main__.py   로컬 CLI    python -m embedder --gallery-id 1
 SELECT id, storage_key FROM photos p
 WHERE gallery_id = ? AND status <> 'PENDING'
   AND NOT EXISTS (SELECT 1 FROM photo_analysis a WHERE a.photo_id = p.id AND a.embedding IS NOT NULL)
-  → S3 GET → 원본 열기 → EXIF 읽기(촬영 시각 · 카메라 · 셔터/조리개/ISO · 크기)
-           → HEIC 디코드 · EXIF 회전 · 리사이즈 → JPEG 인코딩
+  → S3 GET(스레드 풀이 두 배치 앞서 미리 받는다) → 원본 열기 → EXIF 읽기(촬영 시각 · 카메라 · 셔터/조리개/ISO · 크기)
+           → 축소 디코드(JPEG 1/2·1/4) · 리사이즈 · EXIF 회전 → JPEG 인코딩
   → S3 PUT previews/{원본키}.jpg                                  ← ① 먼저 올린다
   → 올린 JPEG 바이트를 다시 열어 DINOv3(L2 정규화)                    ← ② 그 파일로 임베딩
   → INSERT INTO photo_analysis (photo_id, embedding, embedding_model) ... ON CONFLICT DO UPDATE
@@ -29,6 +29,12 @@ WHERE gallery_id = ? AND status <> 'PENDING'
 파일**에서 계산한다. 그래서 "미리보기는 없는데 벡터는 있는" 사진이 구조적으로 생길 수 없고,
 `status = 'EMBEDDED'`는 곧 "벡터와 미리보기가 둘 다 있다"는 뜻이다. photoselect가 보는 픽셀과
 벡터가 같은 파일이라는 점도 따라온다. 대가는 1024px JPEG를 한 번 더 디코드하는 장당 수십 ms다.
+
+**속도는 원본 GET이 정한다.** 5~13MB 원본을 한 장씩 받고 다듬기를 번갈아 하면 네트워크와 CPU가 서로를
+기다린다 -- 2026-09-05 로컬 E2E(822장)에서 장당 1.7초의 대부분이 이 대기였다(`docs/local-e2e-2026-09-05.md`).
+그래서 GET은 `EMBED_DOWNLOAD_WORKERS`(기본 4) 스레드가 두 배치 앞서 미리 받아 두고, 디코드는 JPEG 축소
+디코드(`images.prepare`, 긴 변 1536px 이상을 남기는 1/2·1/4)로 원본을 통째로 풀지 않는다. 처리·PUT·commit 순서는
+그대로 메인 스레드가 한 장씩 밟는다.
 
 - **벡터는 `photo_analysis`에, 나머지는 `photos`에.** 벡터는 모델을 바꾸면 다시 적는 파생값이라
   업로드 때 정해지는 정체성(EXIF)과 테이블을 나눴다(V29). 같은 행에 AI 분석 배치가

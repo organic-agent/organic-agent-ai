@@ -15,6 +15,10 @@ photoselect가 읽는 픽셀과 벡터가 같은 파일이라는 점도 따라�
 로컬에서 실제 S3·RDS를 상대로 같은 코드를 검증할 수 있어야 해서 이렇게 갈라 두었다.
 나중에 Fargate로 옮겨도 바뀌는 것은 진입점뿐이다.
 
+원본 GET은 스레드 풀이 두 배치 앞서 미리 받아 둔다(`download_workers`). 5~13MB 원본을 한 장씩
+받고 다듬기를 번갈아 하면 네트워크와 CPU가 서로를 기다린다 -- 2026-09-05 로컬 E2E의 장당 1.7초는
+대부분 이 대기였다. 처리·PUT·commit 순서는 그대로 메인 스레드가 한 장씩 밟는다.
+
 끊김에 대한 태도: 배치(8장)마다 commit하므로 어디서 죽어도 그때까지는 남는다. Lambda에서는 남은
 시간(`remaining_seconds`)을 보고 하드 킬 전에 배치 경계에서 스스로 멈춘다 -- 결과에 `stopped`와
 `remaining`이 실리고, 재호출은 handler의 몫이다.
@@ -24,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -37,6 +42,10 @@ log = logging.getLogger(__name__)
 
 #: 다른 실행이 같은 갤러리를 잡고 있을 때 결과의 skipped 값.
 ALREADY_RUNNING = "already running"
+
+#: 지금 처리하는 배치보다 몇 배치 앞까지 원본 GET을 미리 걸어 두는가. 2면 메모리에 원본이 최대
+#: 세 배치(24장, 13MB 원본이면 ~300MB) 올라간다. Lambda 3GB에서 모델과 함께 두어도 남는다.
+PREFETCH_BATCHES = 2
 
 
 @dataclass
@@ -94,7 +103,7 @@ def run(
     settings = settings or Settings.from_env()
     result = RunResult(gallery_id=gallery_id)
 
-    storage = PhotoStorage(settings.s3_bucket)
+    storage = PhotoStorage(settings.s3_bucket, max_concurrency=settings.download_workers)
 
     with db.connect(settings) as connection:
         # 모델을 올리기 전에 잠금부터 본다. 겹친 실행이 수 초짜리 모델 로드를 치르고 나서야
@@ -115,77 +124,99 @@ def run(
         # 원본 크기(HEIC·4천만 화소)에 따라 크게 흔들려서 평균보다 최댓값이 안전하다.
         longest_batch = 0.0
 
-        for batch in _chunked(targets, settings.batch_size):
-            if remaining_seconds is not None:
-                budget = longest_batch + settings.stop_margin_seconds
-                left = remaining_seconds()
-                if left < budget:
-                    result.stopped = True
-                    log.warning(
-                        "갤러리 %s: 남은 시간 %.0fs < 배치 예산 %.0fs -- 배치 경계에서 멈춤 (남은 사진 %s장)",
-                        gallery_id, left, budget, result.remaining,
+        batches = _chunked(targets, settings.batch_size)
+        # 원본 GET을 미리 걸어 둔다. 배치 index를 처리하기 시작할 때 index+1·index+2의 GET이
+        # 이미 풀에 들어가 있다. 처리 순서·PUT·commit은 여전히 이 스레드가 한 장씩 한다.
+        pool = ThreadPoolExecutor(
+            max_workers=settings.download_workers, thread_name_prefix="s3-get",
+        )
+        prefetched: dict[int, list[Future]] = {}
+        try:
+            for index, batch in enumerate(batches):
+                if remaining_seconds is not None:
+                    budget = longest_batch + settings.stop_margin_seconds
+                    left = remaining_seconds()
+                    if left < budget:
+                        result.stopped = True
+                        log.warning(
+                            "갤러리 %s: 남은 시간 %.0fs < 배치 예산 %.0fs -- 배치 경계에서 멈춤 (남은 사진 %s장)",
+                            gallery_id, left, budget, result.remaining,
+                        )
+                        break
+
+                for ahead in range(index, min(index + PREFETCH_BATCHES + 1, len(batches))):
+                    if ahead not in prefetched:
+                        prefetched[ahead] = [
+                            pool.submit(storage.read, ref.storage_key) for ref in batches[ahead]
+                        ]
+                downloads = prefetched.pop(index)
+
+                batch_started = time.monotonic()
+                loaded_refs = []
+                loaded_images = []
+                loaded_keys = []
+                loaded_metadata = []
+
+                for ref, download in zip(batch, downloads):
+                    result.attempted += 1
+                    try:
+                        # GET 실패는 여기서 터진다 -- 아래 except가 그 사진 하나를 failed로 접는다.
+                        data = download.result()
+                        original = images.open_original(data)
+                        # prepare는 바이트를 다시 연다. 축소 디코드가 이미지 객체의 크기를 바꾸므로
+                        # metadata가 볼 original과 같은 객체를 쓰면 안 된다.
+                        prepared = images.prepare(data, settings.resize_long_edge)
+                        # EXIF는 회전·축소 전 원본에서. 실패해도 이 사진을 버리지 않는다(best-effort).
+                        photo_metadata = _read_metadata(ref, original, len(data), result)
+
+                        # ② 미리보기를 먼저 올린다. 여기서 실패하면 아래 encode에 들어가지 않는다 --
+                        # 벡터만 남는 사진을 만들지 않기 위해서다. IAM에 s3:PutObject가 없으면
+                        # 사진마다 여기서 실패하고, 그 사진들은 failed로 드러난다.
+                        key = images.preview_key_for(ref.storage_key)
+                        jpeg = images.to_jpeg(prepared, settings.preview_quality)
+                        storage.write(key, jpeg, "image/jpeg")
+
+                        # ③ 모델 입력은 S3에 올린 바로 그 바이트다. prepared를 그대로 쓰면 JPEG 압축
+                        # 전 픽셀을 임베딩하게 되어 photoselect가 보는 파일과 어긋난다.
+                        model_input = images.open_preview(jpeg)
+
+                        # 네 리스트를 여기서 함께 늘린다. 위 어느 줄에서 실패해도 이 사진은 어느
+                        # 리스트에도 들어가지 않아, 아래에서 벡터와 짝이 어긋날 일이 없다.
+                        loaded_refs.append(ref)
+                        loaded_images.append(model_input)
+                        loaded_keys.append(key)
+                        loaded_metadata.append(photo_metadata)
+                    except Exception:
+                        # 한 장이 잡 전체를 죽이지 않게 한다. 실패한 사진은 photo_analysis에 벡터가
+                        # 없는 채로 남으므로, 다시 호출하면 fetch_targets가 자연히 다시 집어 온다.
+                        log.exception("사진을 처리하지 못했습니다: %s", ref.storage_key)
+                        result.failed.append(ref.storage_key)
+
+                if loaded_images:
+                    vectors = embedder.encode(loaded_images)
+
+                    stored = db.store_embeddings(
+                        connection,
+                        zip(loaded_refs, vectors, loaded_keys, loaded_metadata),
+                        model_id=settings.model_id,
                     )
-                    break
 
-            batch_started = time.monotonic()
-            loaded_refs = []
-            loaded_images = []
-            loaded_keys = []
-            loaded_metadata = []
+                    # ④ 배치 단위로 커밋한다. 중간에 죽어도 그때까지의 벡터·미리보기는 남고,
+                    # 다시 부르면 fetch_targets가 나머지만 집어 온다.
+                    connection.commit()
+                    result.processed += stored
 
-            for ref in batch:
-                result.attempted += 1
-                try:
-                    data = storage.read(ref.storage_key)
-                    original = images.open_original(data)
-                    prepared = images.prepare(original, settings.resize_long_edge)
-                    # EXIF는 회전·축소 전 원본에서. 실패해도 이 사진을 버리지 않는다(best-effort).
-                    photo_metadata = _read_metadata(ref, original, len(data), result)
-
-                    # ② 미리보기를 먼저 올린다. 여기서 실패하면 아래 encode에 들어가지 않는다 --
-                    # 벡터만 남는 사진을 만들지 않기 위해서다. IAM에 s3:PutObject가 없으면
-                    # 사진마다 여기서 실패하고, 그 사진들은 failed로 드러난다.
-                    key = images.preview_key_for(ref.storage_key)
-                    jpeg = images.to_jpeg(prepared, settings.preview_quality)
-                    storage.write(key, jpeg, "image/jpeg")
-
-                    # ③ 모델 입력은 S3에 올린 바로 그 바이트다. prepared를 그대로 쓰면 JPEG 압축
-                    # 전 픽셀을 임베딩하게 되어 photoselect가 보는 파일과 어긋난다.
-                    model_input = images.open_preview(jpeg)
-
-                    # 네 리스트를 여기서 함께 늘린다. 위 어느 줄에서 실패해도 이 사진은 어느
-                    # 리스트에도 들어가지 않아, 아래에서 벡터와 짝이 어긋날 일이 없다.
-                    loaded_refs.append(ref)
-                    loaded_images.append(model_input)
-                    loaded_keys.append(key)
-                    loaded_metadata.append(photo_metadata)
-                except Exception:
-                    # 한 장이 잡 전체를 죽이지 않게 한다. 실패한 사진은 photo_analysis에 벡터가
-                    # 없는 채로 남으므로, 다시 호출하면 fetch_targets가 자연히 다시 집어 온다.
-                    log.exception("사진을 처리하지 못했습니다: %s", ref.storage_key)
-                    result.failed.append(ref.storage_key)
-
-            if loaded_images:
-                vectors = embedder.encode(loaded_images)
-
-                stored = db.store_embeddings(
-                    connection,
-                    zip(loaded_refs, vectors, loaded_keys, loaded_metadata),
-                    model_id=settings.model_id,
-                )
-
-                # ④ 배치 단위로 커밋한다. 중간에 죽어도 그때까지의 벡터·미리보기는 남고,
-                # 다시 부르면 fetch_targets가 나머지만 집어 온다.
-                connection.commit()
-                result.processed += stored
-
-            batch_seconds = time.monotonic() - batch_started
-            longest_batch = max(longest_batch, batch_seconds)
-            if loaded_images:
-                log.info(
-                    "진행 %s/%s (장당 %.2fs)",
-                    result.processed, result.targets, batch_seconds / len(loaded_images),
-                )
+                batch_seconds = time.monotonic() - batch_started
+                longest_batch = max(longest_batch, batch_seconds)
+                if loaded_images:
+                    log.info(
+                        "진행 %s/%s (장당 %.2fs)",
+                        result.processed, result.targets, batch_seconds / len(loaded_images),
+                    )
+        finally:
+            # 데드라인으로 멈췄으면 아직 시작하지 않은 GET은 취소한다. 진행 중인 GET은 끝까지
+            # 받지만 결과는 버려진다 -- 기다리지 않는다(wait=False). 남은 사진은 다음 호출이 집는다.
+            pool.shutdown(wait=False, cancel_futures=True)
 
     result.elapsed_seconds = time.monotonic() - started
     log.info("완료: %s", result.to_dict())
@@ -215,6 +246,5 @@ def _read_metadata(
         return None
 
 
-def _chunked(items: list, size: int):
-    for start in range(0, len(items), size):
-        yield items[start:start + size]
+def _chunked(items: list, size: int) -> list[list]:
+    return [items[start:start + size] for start in range(0, len(items), size)]

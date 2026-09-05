@@ -24,20 +24,57 @@ def open_original(data: bytes) -> Image.Image:
     return Image.open(io.BytesIO(data))
 
 
-def prepare(image: Image.Image, long_edge: int) -> Image.Image:
-    """모델(과 미리보기)에 넣을 수 있게 다듬는다. 원본은 건드리지 않고 새 이미지를 돌려준다."""
+#: 축소 디코드가 남겨 둘 여유. 디코더가 목표 긴 변의 이 배수 이상으로 풀고, 나머지는 LANCZOS가
+#: 줄인다. 1.5면 긴 변 1536px 이상을 남기는 가장 큰 축소(1/2·1/4·1/8)를 고른다. Pillow thumbnail의
+#: 기본값 2.0은 8MP(3504px)에서 1/2(1752px)를 거부해 축소가 안 걸린다. 1.5로 내렸을 때 전체 디코드
+#: 결과와의 픽셀 차이는 평균 0.4/255, 99퍼센타일 2/255였다(2026-09-05, 3504x2336 · 4608x3072).
+DRAFT_GAP = 1.5
+
+
+def prepare(data: bytes, long_edge: int) -> Image.Image:
+    """모델(과 미리보기)에 넣을 수 있게 다듬는다. 원본 바이트에서 새로 연다.
+
+    [open_original]이 돌려준 이미지를 받지 않고 바이트를 다시 여는 이유는 [request_reduced_decode]
+    때문이다. 축소 디코드는 이미지 객체의 크기를 바꾸므로, 같은 객체를 `metadata.extract`와
+    나눠 쓰면 촬영 정보의 가로·세로가 축소된 값으로 나간다. 헤더만 다시 읽는 비용은 무시할 만하다.
+
+    순서가 비용을 정한다. 회전·RGB 변환은 픽셀 전체를 복사하므로 **축소 뒤**에 한다.
+    앞에 두면 원본을 통째로 풀고 두 번 복사한 다음에야 1024로 줄이는 셈이다. M 시리즈 맥에서
+    8~14MP JPEG 기준 68~94ms → 39~70ms(2026-09-05). Lambda의 느린 vCPU에서 배수는 같고 절대값은 커진다.
+    """
+    image = Image.open(io.BytesIO(data))
+
+    # JPEG는 디코더가 1/2·1/4·1/8 크기로 바로 풀 수 있다(DCT 계수 일부만 씀). 비용이 픽셀 수에
+    # 비례해 줄어든다. HEIC·PNG는 이 호출이 아무것도 하지 않고 지나간다.
+    request_reduced_decode(image, long_edge)
+
+    # 비율을 유지한 채 줄인다. 제자리 연산이라 반환값이 없다. thumbnail도 draft를 부르지만
+    # 정사각 (long_edge, long_edge) 기준이라 3:2 사진에서는 짧은 변이 걸려 축소가 안 걸린다 --
+    # 그래서 위에서 비율을 맞춰 직접 요청했다.
+    image.thumbnail((long_edge, long_edge), Image.Resampling.LANCZOS)
 
     # EXIF 회전을 픽셀에 굽는다. 세로로 찍은 사진은 파일 안에서는 가로로 누워 있고 방향만
     # 메타데이터에 적혀 있다. 반영하지 않으면 같은 장면을 90도 돌려서 임베딩하는 셈이라
-    # 유사도가 실제보다 낮게 나온다.
+    # 유사도가 실제보다 낮게 나온다. Orientation 태그는 thumbnail을 지나도 info에 남아 있다.
     prepared = ImageOps.exif_transpose(image)
 
     # 팔레트 이미지나 알파 채널이 섞여 들어오면 모델 프로세서가 채널 수에서 깨진다.
-    prepared = prepared.convert("RGB")
+    return prepared.convert("RGB")
 
-    # 비율을 유지한 채 줄인다. 제자리 연산이라 반환값이 없다.
-    prepared.thumbnail((long_edge, long_edge), Image.Resampling.LANCZOS)
-    return prepared
+
+def request_reduced_decode(image: Image.Image, long_edge: int, gap: float = DRAFT_GAP) -> None:
+    """아직 픽셀을 풀지 않은 이미지에 "긴 변이 long_edge*gap 이상이면 된다"고 알린다.
+
+    Pillow `draft`는 요청 크기보다 작아지지 않는 가장 큰 축소 배율을 고른다. 1024·gap 1.5면
+    (1536, ·)을 요청하므로 3504x2336은 1/2(1752), 6000x4000도 1/2(3000), 8192x5464는 1/4(2048)로
+    푼다. 이미 충분히 작은 이미지나 JPEG가 아닌 포맷에는 아무 일도 없다.
+    """
+    width, height = image.size
+    longest = max(width, height)
+    if longest <= long_edge * gap:
+        return
+    scale = longest / (long_edge * gap)
+    image.draft(None, (int(width / scale), int(height / scale)))
 
 
 def to_jpeg(image: Image.Image, quality: int) -> bytes:

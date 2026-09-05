@@ -25,7 +25,7 @@ def run(event: AdminPhotoEvent, settings: Settings) -> dict:
         storage = PhotoStorage(settings.s3_bucket)
         data = storage.read(event.storage_key)
         original = images.open_original(data)
-        prepared = images.prepare(original, settings.resize_long_edge)
+        prepared = images.prepare(data, settings.resize_long_edge)
 
         if event.job_type == "DERIVATIVE":
             preview_key = images.preview_key_for(event.storage_key)
