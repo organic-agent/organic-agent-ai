@@ -1,9 +1,4 @@
-"""러너 공통 — 이미지 로드와 가중치 캐시.
-
-미리보기 파생본을 흉내내기 위해 긴 변 기준으로 리사이즈해서 넣는다. 서비스에서는 embedder가
-만든 preview JPEG을 읽으므로 이 값은 embedder의 `resize_long_edge`와 같아야 한다 —
-해상도가 바뀌면 점수가 바뀐다(study/00 step2).
-"""
+"""러너 공통 — 가중치 캐시. 이미지 로드는 `score.images`(torch 없음)로 옮겼다(#51); 이름은 여기서도 재수출한다."""
 
 from __future__ import annotations
 
@@ -11,29 +6,10 @@ import hashlib
 import urllib.request
 from pathlib import Path
 
-from PIL import Image, ImageOps
-
-try:  # 아이폰 HEIC. 없으면 그 사진들만 실패한다.
-    from pillow_heif import register_heif_opener
-
-    register_heif_opener()
-except ImportError:  # pragma: no cover
-    pass
-
 from score.config import MODULE_ROOT
+from score.images import PREVIEW_LONG_EDGE, as_image, fit_long_edge, load_image  # noqa: F401 — 호환 재수출
 
 WEIGHTS_DIR = MODULE_ROOT / "weights"
-PREVIEW_LONG_EDGE = 1600
-
-
-def load_image(path: str, long_edge: int = PREVIEW_LONG_EDGE) -> Image.Image:
-    img = Image.open(path)
-    img = ImageOps.exif_transpose(img).convert("RGB")
-    w, h = img.size
-    scale = long_edge / max(w, h)
-    if scale < 1:
-        img = img.resize((round(w * scale), round(h * scale)), Image.LANCZOS)
-    return img
 
 
 def fetch_weight(url: str, filename: str, sha256: str | None = None) -> Path:

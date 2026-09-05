@@ -15,14 +15,17 @@ from __future__ import annotations
 import numpy as np
 from scipy.ndimage import laplace
 
-from score.runners.common import load_image
+from PIL import Image
+
+from score.images import as_image
 
 #: 선명도 계산 해상도. 리사이즈가 달라지면 값 스케일이 달라지므로 고정한다.
 LONG_EDGE = 1024
 
 
-def measure(path: str) -> dict[str, float]:
-    img = load_image(path, long_edge=LONG_EDGE)
+def measure(source: str | Image.Image) -> dict[str, float]:
+    """경로 또는 이미 디코드한 PIL 이미지(1600px 미리보기) — 여기서 LONG_EDGE 로 줄인다."""
+    img = as_image(source, LONG_EDGE)
     gray = np.asarray(img.convert("L"), dtype=np.float32)
     lap = laplace(gray)
     n = gray.size

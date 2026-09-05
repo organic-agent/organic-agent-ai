@@ -12,7 +12,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 
-from score.runners.common import fetch_weight, load_image
+from PIL import Image
+
+from score.images import as_image
+from score.runners.common import fetch_weight
 
 MLP_COMMIT = "fe88a163f4661b4ddabba0751ff645e2e620746e"
 MLP_URL = (
@@ -55,12 +58,19 @@ class LaionRunner:
         self._mlp.eval()
 
     @torch.no_grad()
-    def embed(self, path: str) -> np.ndarray:
+    def embed(self, source: str | Image.Image) -> np.ndarray:
         """L2 정규화된 CLIP 임베딩. 코사인 = 내적."""
-        img = self._preprocess(load_image(path)).unsqueeze(0)
-        feat = self._clip.encode_image(img)
+        return self.embed_batch([source])[0]
+
+    @torch.no_grad()
+    def embed_batch(self, sources: list[str | Image.Image]) -> np.ndarray:
+        """(n, 768) L2 정규화 임베딩 — 여러 장을 한 번의 forward 로(#51). 순서 유지. 빈 목록이면 (0, 768)."""
+        if not sources:
+            return np.zeros((0, EMBED_DIM), dtype=np.float32)
+        x = torch.stack([self._preprocess(as_image(s)) for s in sources])
+        feat = self._clip.encode_image(x)
         feat = feat / feat.norm(dim=-1, keepdim=True)
-        return feat.squeeze(0).float().numpy()
+        return feat.float().numpy()
 
     @torch.no_grad()
     def embed_texts(self, prompts: list[str]) -> np.ndarray:

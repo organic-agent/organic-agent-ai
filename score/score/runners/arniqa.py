@@ -1,7 +1,7 @@
 """A-2 기술 품질 — ARNIQA (WACV 2024, Apache-2.0). 무참조(no-reference) 화질 평가.
 
 torch.hub 고정 ref(커밋 SHA)에서 로드한다. 가중치는 Dockerfile 이 빌드 시 hub 캐시에 굽는다(#35).
-repo 데모와 같이 전체 이미지와 half-scale 두 입력을 준다.
+repo 데모와 같이 전체 이미지(`long_edge` 로 줄인 것)와 half-scale 두 입력을 준다.
 
 `REGRESSOR_DATASET`: 회귀기를 학습한 데이터셋. **spaq**(실사 스마트폰 사진 왜곡)으로 확정 —
 2026-08-25 류지혜(2) 60장 비교(`scripts/arniqa_regressors.py`):
@@ -16,18 +16,25 @@ from __future__ import annotations
 import torch
 import torchvision.transforms.functional as TF
 
-from score.runners.common import load_image
+from PIL import Image
+
+from score.images import as_image
 
 #: 커밋 SHA 고정 — Dockerfile 이 빌드 시 같은 ref 로 hub 캐시(TORCH_HOME)를 채운다. NAT 없는 Lambda 는 런타임에 받을 수 없다.
 HUB_REPO = "miccunifi/ARNIQA:66d16eb0ff1e1655872d32c0c233614a3922aaad"
 REGRESSOR_DATASET = "spaq"
+
+#: 입력 긴 변. 1600(미리보기 그대로)은 ResNet-50 에 224px 대비 34배 픽셀 + half-scale 한 번 더라 장당 연산의
+#: 대부분이었다(#51). 1024 로 낮추면 연산 ~2.4배 감소. 순위 상관·흐림 반응은 #51 리포트.
+DEFAULT_LONG_EDGE = 1024
 
 _MEAN = [0.485, 0.456, 0.406]
 _STD = [0.229, 0.224, 0.225]
 
 
 class ArniqaRunner:
-    def __init__(self, regressor_dataset: str = REGRESSOR_DATASET) -> None:
+    def __init__(self, regressor_dataset: str = REGRESSOR_DATASET, long_edge: int = DEFAULT_LONG_EDGE) -> None:
+        self.long_edge = long_edge
         self._model = torch.hub.load(
             repo_or_dir=HUB_REPO, source="github", model="ARNIQA",
             regressor_dataset=regressor_dataset,
@@ -36,8 +43,8 @@ class ArniqaRunner:
         self._model.eval()
 
     @torch.no_grad()
-    def score(self, path: str) -> dict[str, float]:
-        img = load_image(path)
+    def score(self, source: str | Image.Image) -> dict[str, float]:
+        img = as_image(source, self.long_edge)
         x = TF.normalize(TF.to_tensor(img), _MEAN, _STD).unsqueeze(0)
         x_ds = torch.nn.functional.interpolate(x, scale_factor=0.5, mode="bilinear", align_corners=False)
         s = self._model(x, x_ds, return_embedding=False, scale_score=True)
