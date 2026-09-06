@@ -85,7 +85,9 @@ class Settings:
     #: 1 이면 지금처럼 한 실행. 150 이면 822장 → 6 샤드(각 ~137장 ≈ 3.5분). 250(4 샤드)에서 150 으로 낮춘 이유(#58):
     #: 벽시계는 가장 긴 샤드가 정하는데 Lambda 호스트 편차로 한 샤드가 1.7배 느린 일이 있었다 — 샤드가 짧을수록 그 피해 폭이 준다.
     shard_photos: int = 150
-    max_shards: int = 8
+    #: 샤드 상한 32(#62)의 근거는 RDS 커넥션 — 샤드는 세션 advisory lock 으로 커넥션 1개를 끝까지 붙들고, db.t4g.micro(79)에서
+    #: 평상시 24 + 32 = 56 이 여유 20 의 한계다. 인프라 예약 동시성(score_reserved_concurrent_executions)도 같은 값이어야 한다.
+    max_shards: int = 32
 
     #: Lambda 타임아웃 앞에서 멈출 여유(초). "지금까지 가장 오래 걸린 쓰기 배치 + 이 값"보다 남은 시간이
     #: 적으면 배치 경계에서 멈추고 commit 한다(embedder 와 같은 규칙). 로컬 CLI 에는 데드라인이 없다.
@@ -126,7 +128,7 @@ class Settings:
             work_dir=Path(os.environ.get("SCORE_WORK", "/tmp/score")),
             stop_margin_seconds=int(os.environ.get("STOP_MARGIN_SECONDS", "60")),
             shard_photos=int(os.environ.get("SHARD_PHOTOS", "150")),
-            max_shards=int(os.environ.get("MAX_SHARDS", "8")),
+            max_shards=int(os.environ.get("MAX_SHARDS", "32")),
             categorize_function_name=os.environ.get("CATEGORIZE_FUNCTION_NAME") or None,
             categorize_command=os.environ.get("CATEGORIZE_COMMAND") or None,
             knobs=Knobs(
