@@ -59,7 +59,7 @@ WHERE gallery_id = ? AND status <> 'PENDING'
 - **갤러리를 샤드로 나눠 동시에 돈다(#56).** 장당 0.72s 는 원본 GET·디코드·DINOv3 의 합이라 같은 연산량으로는
   더 못 줄인다 — 병렬은 Lambda 호출을 나누는 것뿐이다. wes 가 부른 실행(`shard` 없음)은 **조정자**가 되어 잠금 →
   대상 조회까지만 하고, 대상이 `SHARD_PHOTOS`(150, #59)를 넘으면 모델을 올리지 않은 채 자기 함수를
-  N = ceil(대상 / 150)(최대 `MAX_SHARDS` 8)번 `{"shard": {"index": i, "total": N}, "force", "runStartedAt"}` 으로
+  N = ceil(대상 / 150)(최대 `MAX_SHARDS` 32, #63)번 `{"shard": {"index": i, "total": N}, "force", "runStartedAt"}` 으로
   EVENT 하고 `coordinator: true` 로 끝난다. 샤드는 같은 `ORDER BY p.id` 목록에서 위치 % N == index 인 사진만 맡는다.
   score 와 달리 카운터·체인은 없다 — embedder 는 잡을 모르고 wes 가 `photo_analysis` 를 세어 EMBED 단계를 닫으므로
   샤드는 각자 끝나면 그만이다. **전제: Lambda 예약 동시성 ≥ `MAX_SHARDS`**(인프라 `embedder_reserved_concurrent_executions`) —
@@ -266,4 +266,4 @@ python -m embedder --gallery-id 1
 | `PREVIEW_QUALITY` | `82` | 파생본 JPEG 품질. 1024px에서 장당 200KB 안팎 |
 | `STOP_MARGIN_SECONDS` | `60` | 타임아웃 앞에서 멈출 여유. 남은 시간 < (가장 긴 배치 + 이 값)이면 배치 경계에서 멈추고 자기 재호출 |
 | `SHARD_PHOTOS` | `150` | 샤드 하나가 맡는 사진 수(#56 · #59 — 짧은 샤드가 느린 호스트 편차를 줄인다). 조정자가 대상 / 이 값 만큼 샤드를 띄운다. `0` 이면 샤딩 없음 |
-| `MAX_SHARDS` | `8` | 샤드 수 상한. Lambda 예약 동시성이 이 값 이상이어야 한다 |
+| `MAX_SHARDS` | `32` | 샤드 수 상한(#63). Lambda 예약 동시성이 이 값 이상이어야 하고, 상한은 RDS 커넥션(샤드당 1개)이 정한다 |

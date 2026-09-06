@@ -87,7 +87,9 @@ class Settings:
     #: 샤드가 정하는데 Lambda 호스트 편차로 한 샤드가 1.7배 느린 일이 있었다 — 샤드가 짧을수록 그 피해 폭이 준다(콜드 스타트 +2회).
     #: 0 이면 샤딩하지 않는다. Lambda 예약 동시성이 max_shards 이상이어야 샤드가 스로틀되지 않는다.
     shard_photos: int = 150
-    max_shards: int = 8
+    #: 샤드 상한 32(#63)의 근거는 RDS 커넥션 — 샤드는 세션 advisory lock 으로 커넥션 1개를 끝까지 붙들고, db.t4g.micro(79)에서
+    #: 평상시 24 + 32 = 56 이 여유 20 의 한계다. 인프라 예약 동시성(embedder_reserved_concurrent_executions)도 같은 값이어야 한다.
+    max_shards: int = 32
 
     @staticmethod
     def from_env() -> "Settings":
@@ -115,7 +117,7 @@ class Settings:
                 "5931719e67bbdb9737e363e781fb0c67687896bc",
             ),
             shard_photos=int(os.environ.get("SHARD_PHOTOS", "150")),
-            max_shards=int(os.environ.get("MAX_SHARDS", "8")),
+            max_shards=int(os.environ.get("MAX_SHARDS", "32")),
         )
 
 
