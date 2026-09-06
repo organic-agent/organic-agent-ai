@@ -7,7 +7,7 @@ Lambda로 배포되지만 **로컬에서도 같은 코드가 그대로 돈다** 
 
 ```
 handler.py    Lambda      event {"galleryId": 1, "force": false}
-__main__.py   로컬 CLI    python -m embedder --gallery-id 1
+__main__.py   로컬 CLI    python -m embedder --gallery-id 1              # --force, --shards N(샤드 N개를 한 프로세스에서 순차, #56)
      └─────── 둘 다 job.run() 하나를 부른다
 ```
 
@@ -48,14 +48,25 @@ WHERE gallery_id = ? AND status <> 'PENDING'
 - **타임아웃 앞에서 스스로 멈춘다.** Lambda는 다음 배치를 시작하기 전에 남은 시간이
   "지금까지 가장 오래 걸린 배치 + `STOP_MARGIN_SECONDS`"보다 적으면 배치 경계에서 멈추고
   commit한다. 결과에 `stopped: true, remaining: N`이 실리고, 이번 실행에서 한 장이라도 처리했으면
-  같은 갤러리로 **자기 자신을 EVENT 재호출**한다(`force`는 넘기지 않는다 — 이미 끝난 사진은
+  같은 갤러리·샤드로 **자기 자신을 EVENT 재호출**한다(`force`는 넘기지 않고 `runStartedAt` 만 넘긴다 — 이미 끝난 사진은
   건너뛰므로 재호출이 곧 재개). 처리 0장이면 재호출하지 않는다 — 같은 사진이 계속 실패하는
   갤러리에서 무한히 돌지 않게. 재호출은 best-effort라 실패해도 `reinvoked: false`로만 드러나고,
   진행분은 이미 commit돼 있어 앱이 다시 부르면 이어서 한다. 하드 킬을 당하면 진행 중이던 배치만
   롤백된다. 로컬 CLI에는 데드라인이 없다.
-- **같은 갤러리는 한 번에 하나만 돈다.** 갤러리 id로 세션 수준 advisory lock을 잡고, 이미 잡혀
+- **같은 갤러리(·샤드)는 한 번에 하나만 돈다.** (갤러리 × 64 + 샤드) 키로 세션 수준 advisory lock을 잡고, 이미 잡혀
   있으면 `{"skipped": "already running"}`으로 즉시 끝난다. 버튼 연타와 자기 재호출이 겹쳐도 같은
   사진을 두 번 처리하지 않는다. 잠금은 연결이 닫히면(타임아웃 포함) 풀린다.
+- **갤러리를 샤드로 나눠 동시에 돈다(#56).** 장당 0.72s 는 원본 GET·디코드·DINOv3 의 합이라 같은 연산량으로는
+  더 못 줄인다 — 병렬은 Lambda 호출을 나누는 것뿐이다. wes 가 부른 실행(`shard` 없음)은 **조정자**가 되어 잠금 →
+  대상 조회까지만 하고, 대상이 `SHARD_PHOTOS`(250)를 넘으면 모델을 올리지 않은 채 자기 함수를
+  N = ceil(대상 / 250)(최대 `MAX_SHARDS` 8)번 `{"shard": {"index": i, "total": N}, "force", "runStartedAt"}` 으로
+  EVENT 하고 `coordinator: true` 로 끝난다. 샤드는 같은 `ORDER BY p.id` 목록에서 위치 % N == index 인 사진만 맡는다.
+  score 와 달리 카운터·체인은 없다 — embedder 는 잡을 모르고 wes 가 `photo_analysis` 를 세어 EMBED 단계를 닫으므로
+  샤드는 각자 끝나면 그만이다. **전제: Lambda 예약 동시성 ≥ `MAX_SHARDS`**(인프라 `embedder_reserved_concurrent_executions`) —
+  낮으면 샤드가 스로틀돼 라운드가 늘어난다. 822장 실측: 1회 실행 10.1분 → 4 샤드 약 2.7분(비용 GB-초는 같다). 로컬은 `--shards N` 순차.
+- **force 는 시작 시각을 나른다.** force 실행은 `runStartedAt` 을 샤드·데드라인 재호출에 넘기고, 대상 조회는 "벡터 있음"이
+  아니라 "그 시각 이후 적재된 벡터 있음"(`photo_analysis.updated_at >= runStartedAt`, wes 의 EMBED 진행 관측과 같은 컬럼)을
+  건너뛴다. 재호출이 force 를 잃어도 이번 실행 전의 벡터는 다시 계산된다.
 - **미리보기 파생본도 여기서 만든다.** 임베딩을 하려면 어차피 HEIC를 디코딩하고 EXIF 회전을
   굽고 크기를 줄여야 하는데, 그 결과가 그대로 브라우저가 그릴 수 있는 이미지다. 남은 일은
   JPEG 인코딩과 PUT 하나뿐이라 별도 잡으로 뺄 이유가 없다 — 빼면 같은 이미지를 두 번 받아
@@ -254,3 +265,5 @@ python -m embedder --gallery-id 1
 | `RESIZE_LONG_EDGE` | `1024` | 디코딩 직후 메모리를 누르는 용도. 미리보기 파생본도 이 크기로 나간다 |
 | `PREVIEW_QUALITY` | `82` | 파생본 JPEG 품질. 1024px에서 장당 200KB 안팎 |
 | `STOP_MARGIN_SECONDS` | `60` | 타임아웃 앞에서 멈출 여유. 남은 시간 < (가장 긴 배치 + 이 값)이면 배치 경계에서 멈추고 자기 재호출 |
+| `SHARD_PHOTOS` | `250` | 샤드 하나가 맡는 사진 수(#56). 조정자가 대상 / 이 값 만큼 샤드를 띄운다. `0` 이면 샤딩 없음 |
+| `MAX_SHARDS` | `8` | 샤드 수 상한. Lambda 예약 동시성이 이 값 이상이어야 한다 |
