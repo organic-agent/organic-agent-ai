@@ -89,7 +89,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 cd embedder && python -m venv .venv && .venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu \
   && .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m embedder --gallery-id 1 [--force]
-.venv/bin/python -m pytest tests -q                         # 41
+.venv/bin/python -m pytest tests -q                         # 63
 
 # score — 사진별 점수 (CLIP · ARNIQA · 미학, torch). 끝나면 categorize 를 깨운다. Python 3.12 (torch 2.4.1 핀)
 cd score && uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python \

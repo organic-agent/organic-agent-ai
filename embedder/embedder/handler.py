@@ -2,10 +2,13 @@
 
 앱이 `POST /api/v1/galleries/{id}/embeddings/run`을 받으면 이 함수를 EVENT(비동기)로 부른다.
 페이로드는 `{"galleryId": 1, "force": false}`. 관리자 사진 교체 outbox는 `{"jobId": …}`를 보낸다.
+샤드 실행은 여기에 `"shard": {"index": i, "total": n}` 과 `"runStartedAt"` 이 붙는다(#56) — 조정자(wes 호출)가
+자기 함수를 n번 EVENT 할 때 만드는 페이로드라 wes 계약은 그대로다.
 
 갤러리 잡은 15분 타임아웃 앞에서 스스로 멈춘다(job.run의 `remaining_seconds`). 멈췄고 이번
-실행에서 한 장이라도 처리했으면 같은 갤러리로 자기 자신을 EVENT 재호출해 이어 간다 --
-`force`는 넘기지 않는다. 이미 끝난 사진은 fetch_targets가 건너뛰므로 재호출은 곧 재개다.
+실행에서 한 장이라도 처리했으면 같은 갤러리·샤드로 자기 자신을 EVENT 재호출해 이어 간다 --
+`force`는 넘기지 않고 `runStartedAt` 만 넘긴다. 이미 끝난 사진(force 면 이번 실행이 적은 벡터)은
+fetch_targets가 건너뛰므로 재호출은 곧 재개다.
 처리 0장이면 재호출하지 않는다: 같은 사진이 계속 실패하는 갤러리에서 무한히 도는 것을 막는다.
 
 재호출은 best-effort다. 이 함수가 붙는 서브넷에는 NAT가 없어 Lambda API에 닿으려면 인터페이스
@@ -39,16 +42,29 @@ def handler(event: dict, context) -> dict:
     if gallery_id is None:
         raise ValueError("페이로드에 galleryId가 없습니다")
     gallery_id = int(gallery_id)
+    force = bool(event.get("force", False))
+    shard = job.Shard.from_payload(event.get("shard"))
+    run_started_at = event.get("runStartedAt") or (job.now_iso() if force else None)
+
+    def fan_out(total: int, started_at: str | None) -> bool:
+        return all(
+            _invoke_self(context, gallery_id, _payload(gallery_id, force=force, shard=job.Shard(i, total),
+                                                       run_started_at=started_at))
+            for i in range(total)
+        )
 
     result = job.run(
         gallery_id=gallery_id,
-        force=bool(event.get("force", False)),
+        force=force,
         settings=_SETTINGS,
         remaining_seconds=_remaining_seconds(context),
+        shard=shard,
+        run_started_at=run_started_at,
+        fan_out=None if shard is not None else fan_out,
     )
 
     if result.get("stopped") and result.get("processed", 0) > 0:
-        result["reinvoked"] = reinvoke(context, gallery_id)
+        result["reinvoked"] = reinvoke(context, gallery_id, shard=shard, run_started_at=run_started_at)
     return result
 
 
@@ -60,11 +76,28 @@ def _remaining_seconds(context):
     return lambda: getter() / 1000.0
 
 
-def reinvoke(context, gallery_id: int) -> bool:
-    """같은 갤러리로 자기 자신을 EVENT 호출한다. 실패해도 예외를 올리지 않고 False."""
+def _payload(gallery_id: int, *, force: bool, shard: job.Shard | None, run_started_at: str | None) -> dict:
+    """자기 호출 페이로드. 재호출은 force=False + runStartedAt(이번 실행 전 벡터는 재계산), 샤드는 shard 포함."""
+    payload: dict = {"galleryId": gallery_id, "force": force}
+    if shard is not None:
+        payload["shard"] = shard.to_payload()
+    if run_started_at:
+        payload["runStartedAt"] = run_started_at
+    return payload
+
+
+def reinvoke(context, gallery_id: int, shard: job.Shard | None = None, run_started_at: str | None = None) -> bool:
+    """같은 갤러리·샤드로 자기 자신을 EVENT 호출한다. 실패해도 예외를 올리지 않고 False."""
+    ok = _invoke_self(context, gallery_id, _payload(gallery_id, force=False, shard=shard, run_started_at=run_started_at))
+    if ok:
+        log.info("갤러리 %s: 남은 사진을 위해 자기 재호출 (shard=%s)", gallery_id, shard)
+    return ok
+
+
+def _invoke_self(context, gallery_id: int, payload: dict) -> bool:
     function_name = getattr(context, "function_name", None)
     if not function_name:
-        log.warning("갤러리 %s: 재호출할 함수 이름이 없다 (context.function_name)", gallery_id)
+        log.warning("갤러리 %s: 호출할 함수 이름이 없다 (context.function_name)", gallery_id)
         return False
     try:
         import boto3
@@ -79,10 +112,9 @@ def reinvoke(context, gallery_id: int) -> bool:
         client.invoke(
             FunctionName=function_name,
             InvocationType="Event",
-            Payload=json.dumps({"galleryId": gallery_id, "force": False}).encode("utf-8"),
+            Payload=json.dumps(payload).encode("utf-8"),
         )
-        log.info("갤러리 %s: 남은 사진을 위해 자기 재호출", gallery_id)
         return True
     except Exception:
-        log.exception("갤러리 %s: 자기 재호출 실패 -- 앱이 다시 부르면 이어서 한다", gallery_id)
+        log.exception("갤러리 %s: 자기 호출 실패 (%s) -- 앱이 다시 부르면 이어서 한다", gallery_id, payload)
         return False

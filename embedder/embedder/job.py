@@ -19,6 +19,13 @@ photoselect가 읽는 픽셀과 벡터가 같은 파일이라는 점도 따라�
 받고 다듬기를 번갈아 하면 네트워크와 CPU가 서로를 기다린다 -- 2026-09-05 로컬 E2E의 장당 1.7초는
 대부분 이 대기였다. 처리·PUT·commit 순서는 그대로 메인 스레드가 한 장씩 밟는다.
 
+갤러리 샤딩(#56): wes 가 부른 실행(shard 없음)은 **조정자**다 — 잠금 → 대상 조회까지만 하고 대상이 `shard_photos`
+를 넘으면 모델을 올리지 않은 채 자기 함수를 N번(`shard:{index,total}`) EVENT 하고 끝난다(`fan_out`). 샤드는 같은
+순서의 목록에서 위치 % total == index 인 사진만 맡고, 잠금 키도 (갤러리, 샤드)다. score 와 달리 카운터·체인이 없다 —
+embedder 는 잡을 모르고 wes 가 `photo_analysis` 를 세어 EMBED 단계를 닫으므로 샤드는 각자 끝나면 그만이다.
+force 는 시작 시각(`run_started_at`)을 샤드·재호출에 넘겨 그 이후 벡터만 "있음"으로 본다 — 재호출이 force 를 잃어도
+옛 벡터가 남지 않는다.
+
 끊김에 대한 태도: 배치(8장)마다 commit하므로 어디서 죽어도 그때까지는 남는다. Lambda에서는 남은
 시간(`remaining_seconds`)을 보고 하드 킬 전에 배치 경계에서 스스로 멈춘다 -- 결과에 `stopped`와
 `remaining`이 실리고, 재호출은 handler의 몫이다.
@@ -27,9 +34,11 @@ photoselect가 읽는 픽셀과 벡터가 같은 파일이라는 점도 따라�
 from __future__ import annotations
 
 import logging
+import math
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Callable
 
 from PIL import Image
@@ -46,6 +55,42 @@ ALREADY_RUNNING = "already running"
 #: 지금 처리하는 배치보다 몇 배치 앞까지 원본 GET을 미리 걸어 두는가. 2면 메모리에 원본이 최대
 #: 세 배치(24장, 13MB 원본이면 ~300MB) 올라간다. Lambda 3GB에서 모델과 함께 두어도 남는다.
 PREFETCH_BATCHES = 2
+
+
+@dataclass(frozen=True)
+class Shard:
+    """N 개 중 index 번째. 사진 목록(고정 순서 `ORDER BY p.id`)에서 위치 % total == index 인 것만 맡는다."""
+
+    index: int
+    total: int
+
+    def __post_init__(self) -> None:
+        if not (self.total >= 1 and 0 <= self.index < self.total):
+            raise ValueError(f"잘못된 샤드 {self.index}/{self.total}")
+
+    def select(self, refs: list) -> list:
+        return [r for i, r in enumerate(refs) if i % self.total == self.index]
+
+    def to_payload(self) -> dict:
+        return {"index": self.index, "total": self.total}
+
+    @classmethod
+    def from_payload(cls, value) -> "Shard | None":
+        if not value:
+            return None
+        return cls(index=int(value["index"]), total=int(value["total"]))
+
+
+def plan_shards(n_photos: int, settings: Settings) -> int:
+    """사진 수로 샤드 수. ceil(n / shard_photos) 를 [1, max_shards] 로 자른다. shard_photos 0 이면 샤딩 없음."""
+    shard_photos = getattr(settings, "shard_photos", 0)
+    if shard_photos <= 0 or n_photos <= 0:
+        return 1
+    return max(1, min(getattr(settings, "max_shards", 1), math.ceil(n_photos / shard_photos)))
+
+
+def now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
 
 
 @dataclass
@@ -67,6 +112,13 @@ class RunResult:
     #: 다른 실행이 갤러리를 잡고 있어 아무것도 하지 않았다.
     skipped: str | None = None
     elapsed_seconds: float = 0.0
+    #: 이 실행이 맡은 샤드. 없으면 갤러리 전체.
+    shard: Shard | None = None
+    #: 조정자로 끝났다 — 샤드를 띄우기만 하고 사진은 처리하지 않았다. targets 는 갤러리 전체 대상 수.
+    coordinator: bool = False
+    shards: int = 0
+    fanned_out: bool = False
+    run_started_at: str | None = None
 
     @property
     def remaining(self) -> int:
@@ -85,6 +137,12 @@ class RunResult:
         }
         if self.skipped is not None:
             out["skipped"] = self.skipped
+        if self.shard is not None:
+            out["shard"] = self.shard.to_payload()
+        if self.coordinator:
+            out.update({"coordinator": True, "shards": self.shards, "fannedOut": self.fanned_out})
+        if self.run_started_at:
+            out["runStartedAt"] = self.run_started_at
         return out
 
 
@@ -93,32 +151,59 @@ def run(
     force: bool = False,
     settings: Settings | None = None,
     remaining_seconds: Callable[[], float] | None = None,
+    shard: Shard | None = None,
+    run_started_at: str | None = None,
+    fan_out: Callable[[int, str | None], bool] | None = None,
 ) -> dict:
-    """갤러리 하나를 처리한다.
+    """갤러리 하나(또는 그 샤드 하나)를 처리한다.
 
     `remaining_seconds`는 실행 환경이 남은 시간을 알려 주는 함수다. Lambda handler가
     `context.get_remaining_time_in_millis`를 감싸 넘기고, 로컬 CLI는 None이다(멈추지 않는다).
+
+    `shard` 가 없고 `fan_out` 이 있으면 조정자다: 대상이 샤드 2개 이상이면 fan_out(N, run_started_at) 을 부르고
+    `coordinator: true` 로 끝난다(모델을 올리지 않는다). `run_started_at`(ISO) 은 force 실행의 시작 시각 —
+    그 이후 적재된 벡터만 "있음"으로 친다. force 인데 없으면 지금 시각으로 만든다.
     """
     started = time.monotonic()
     settings = settings or Settings.from_env()
-    result = RunResult(gallery_id=gallery_id)
+    if force and run_started_at is None:
+        run_started_at = now_iso()
+    result = RunResult(gallery_id=gallery_id, shard=shard, run_started_at=run_started_at)
+    tag = f"갤러리 {gallery_id}" + (f" 샤드 {shard.index}/{shard.total}" if shard else "")
 
     storage = PhotoStorage(settings.s3_bucket, max_concurrency=settings.download_workers)
 
     with db.connect(settings) as connection:
         # 모델을 올리기 전에 잠금부터 본다. 겹친 실행이 수 초짜리 모델 로드를 치르고 나서야
         # 물러나는 것보다 낫다. 잠금은 연결이 닫힐 때(with 블록 끝, 또는 프로세스 종료) 풀린다.
-        if not db.try_lock_gallery(connection, gallery_id):
+        if not db.try_lock_gallery(connection, gallery_id, shard.index if shard else 0):
             result.skipped = ALREADY_RUNNING
             result.elapsed_seconds = time.monotonic() - started
-            log.info("갤러리 %s: 다른 실행이 진행 중 -- 건너뜀", gallery_id)
+            log.info("%s: 다른 실행이 진행 중 -- 건너뜀", tag)
             return result.to_dict()
 
-        embedder = model.load_from(settings)
+        # 대상은 갤러리 전체를 같은 순서로 읽는다 — 샤드는 그 목록에서 자기 몫만 고른다. run_started_at 이 있으면
+        # (force 이거나 그 재호출) 그 이후 벡터만 건너뛴다.
+        all_targets = db.fetch_targets(connection, gallery_id, force, run_started_at)
+        result.targets = len(all_targets)
 
-        targets = db.fetch_targets(connection, gallery_id, force)
+        if shard is None and fan_out is not None:
+            n = plan_shards(len(all_targets), settings)
+            if n > 1:
+                result.coordinator = True
+                result.shards = n
+                result.fanned_out = fan_out(n, run_started_at)
+                result.elapsed_seconds = time.monotonic() - started
+                if not result.fanned_out:
+                    raise RuntimeError(f"{tag}: 샤드 {n}개 호출 실패")
+                log.info("%s: 조정자 -- %s장을 샤드 %s개로 (runStartedAt=%s)", tag, len(all_targets), n, run_started_at)
+                return result.to_dict()
+
+        targets = shard.select(all_targets) if shard else all_targets
         result.targets = len(targets)
-        log.info("갤러리 %s: 대상 %s장 (force=%s)", gallery_id, len(targets), force)
+        log.info("%s: 대상 %s장 (force=%s, runStartedAt=%s)", tag, len(targets), force, run_started_at)
+
+        embedder = model.load_from(settings)
 
         # 지금까지 가장 오래 걸린 배치. 데드라인 판단은 이 값 + 여유로 한다 -- 배치 시간은
         # 원본 크기(HEIC·4천만 화소)에 따라 크게 흔들려서 평균보다 최댓값이 안전하다.
@@ -139,8 +224,8 @@ def run(
                     if left < budget:
                         result.stopped = True
                         log.warning(
-                            "갤러리 %s: 남은 시간 %.0fs < 배치 예산 %.0fs -- 배치 경계에서 멈춤 (남은 사진 %s장)",
-                            gallery_id, left, budget, result.remaining,
+                            "%s: 남은 시간 %.0fs < 배치 예산 %.0fs -- 배치 경계에서 멈춤 (남은 사진 %s장)",
+                            tag, left, budget, result.remaining,
                         )
                         break
 

@@ -81,12 +81,19 @@ def connect(settings: Settings) -> psycopg.Connection:
     return connection
 
 
-def fetch_targets(connection: psycopg.Connection, gallery_id: int, force: bool) -> list[PhotoRef]:
+def fetch_targets(
+    connection: psycopg.Connection, gallery_id: int, force: bool, since: str | None = None,
+) -> list[PhotoRef]:
     """이번 실행이 처리할 사진.
 
     기본값은 아직 임베딩이 없는 것만 고른다. 그래서 중간에 죽은 실행을 다시 부르면 남은 것만
     이어서 처리하고, 재시도 로직을 따로 짤 필요가 없다. force는 모델이나 전처리를 바꿔 전량
     다시 계산할 때만 쓴다.
+
+    `since`(ISO 시각)가 있으면 "벡터 있음"을 "그 시각 이후 적재된 벡터 있음"으로 좁힌다(#56). force 실행이
+    시작 시각을 샤드·데드라인 재호출에 넘기는 값이라, 재호출이 force 를 잃어도 이번 실행 전의 벡터는
+    다시 계산되고 이번 실행이 적은 벡터만 건너뛴다. 보는 컬럼은 store_embeddings 가 ON CONFLICT 에서
+    갱신하는 `photo_analysis.updated_at` — wes 의 EMBED 진행 관측과 같은 기준이다. since 가 있으면 force 는 뜻이 없다.
 
     PENDING은 건너뛴다 -- 업로드 URL만 발급되고 S3에 객체가 아직 없을 수 있는 상태다.
 
@@ -103,15 +110,23 @@ def fetch_targets(connection: psycopg.Connection, gallery_id: int, force: bool) 
           AND p.deleted_at IS NULL
           AND g.deleted_at IS NULL
     """
-    if not force:
+    params: tuple = (gallery_id,)
+    if since is not None:
+        sql += (
+            " AND NOT EXISTS (SELECT 1 FROM photo_analysis a"
+            " WHERE a.photo_id = p.id AND a.embedding IS NOT NULL AND a.updated_at >= %s)"
+        )
+        params = (gallery_id, since)
+    elif not force:
         sql += (
             " AND NOT EXISTS (SELECT 1 FROM photo_analysis a"
             " WHERE a.photo_id = p.id AND a.embedding IS NOT NULL)"
         )
+    # 순서가 계약이다 — 샤드가 같은 목록에서 위치 % total 로 자기 몫을 고른다(job.Shard).
     sql += " ORDER BY p.id"
 
     with connection.cursor() as cursor:
-        cursor.execute(sql, (gallery_id,))
+        cursor.execute(sql, params)
         return [PhotoRef(photo_id=row[0], storage_key=row[1]) for row in cursor.fetchall()]
 
 
@@ -209,10 +224,13 @@ def store_embeddings(
 #: 갤러리 잡 advisory lock의 앞쪽 키. 같은 DB를 쓰는 다른 프로세스(wes·photoselect)와
 #: 키 공간이 겹치지 않게 이 모듈만의 상수를 쓴다. 뒤쪽 키가 gallery_id다.
 GALLERY_LOCK_NAMESPACE = 0x454D42  # 'EMB'
+#: 뒤쪽 키 = gallery_id * LOCK_STRIDE + shard_index (#56). 샤드가 최대 8 이라 여유 있게 64 — score 와 같은 모양.
+#: 샤드 없는 실행(조정자·N=1)은 샤드 0 과 같은 키라 둘이 겹쳐 돌지 않는다.
+LOCK_STRIDE = 64
 
 
-def try_lock_gallery(connection: psycopg.Connection, gallery_id: int) -> bool:
-    """같은 갤러리의 임베딩 잡이 이미 돌고 있으면 False.
+def try_lock_gallery(connection: psycopg.Connection, gallery_id: int, shard_index: int = 0) -> bool:
+    """같은 갤러리(·샤드)의 임베딩 잡이 이미 돌고 있으면 False.
 
     세션 수준 advisory lock이라 배치마다 commit해도 유지되고, 연결이 닫히면 풀린다 -- Lambda가
     타임아웃으로 죽어도 잠금이 남지 않는다. 버튼 연타와 타임아웃 뒤 자기 재호출이 겹칠 때
@@ -220,7 +238,10 @@ def try_lock_gallery(connection: psycopg.Connection, gallery_id: int) -> bool:
     낭비된다.
     """
     with connection.cursor() as cursor:
-        cursor.execute("SELECT pg_try_advisory_lock(%s, %s)", (GALLERY_LOCK_NAMESPACE, gallery_id))
+        cursor.execute(
+            "SELECT pg_try_advisory_lock(%s, %s)",
+            (GALLERY_LOCK_NAMESPACE, gallery_id * LOCK_STRIDE + shard_index),
+        )
         row = cursor.fetchone()
     return bool(row and row[0])
 

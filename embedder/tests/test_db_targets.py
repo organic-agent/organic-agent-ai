@@ -119,6 +119,21 @@ class FetchTargetsTest(unittest.TestCase):
         )
         self.assertTrue(sql.endswith("ORDER BY p.id"))
 
+    def test_since_skips_only_vectors_stored_in_this_run(self) -> None:
+        """force 의 시작 시각(runStartedAt)이 오면 그 이후 적재된 벡터만 건너뛴다 — 재호출이 force 를 잃어도 옛 벡터는 재계산(#56)."""
+        connection = _Connection(rows=[])
+
+        db.fetch_targets(connection, gallery_id=7, force=False, since="2026-09-06T00:00:00+00:00")
+
+        sql, params = connection.executed[0]
+        self.assertIn(
+            "NOT EXISTS (SELECT 1 FROM photo_analysis a WHERE a.photo_id = p.id"
+            " AND a.embedding IS NOT NULL AND a.updated_at >= %s)",
+            sql,
+        )
+        self.assertEqual((7, "2026-09-06T00:00:00+00:00"), params)
+        self.assertTrue(sql.endswith("ORDER BY p.id"))
+
     def test_force_recomputes_everything(self) -> None:
         connection = _Connection(rows=[])
 
@@ -217,7 +232,17 @@ class GalleryLockTest(unittest.TestCase):
         sql, params = connection.executed[0]
         self.assertIn("pg_try_advisory_lock(%s, %s)", sql)
         self.assertNotIn("xact", sql)   # 세션 수준이어야 배치 commit을 넘어 유지된다
-        self.assertEqual((db.GALLERY_LOCK_NAMESPACE, 7), params)
+        # 뒤쪽 키 = 갤러리 × LOCK_STRIDE + 샤드(#56). 샤드 없는 실행은 샤드 0 과 같은 키다.
+        self.assertEqual((db.GALLERY_LOCK_NAMESPACE, 7 * db.LOCK_STRIDE), params)
+
+    def test_shard_lock_key_is_gallery_times_stride_plus_index(self) -> None:
+        connection = _Connection(rows=[(True,)])
+
+        self.assertTrue(db.try_lock_gallery(connection, 7, shard_index=3))
+
+        _, params = connection.executed[0]
+        self.assertEqual((db.GALLERY_LOCK_NAMESPACE, 7 * db.LOCK_STRIDE + 3), params)
+        self.assertNotEqual(7 * db.LOCK_STRIDE + 3, 8 * db.LOCK_STRIDE)   # 옆 갤러리와 겹치지 않는다
 
     def test_held_lock_returns_false(self) -> None:
         connection = _Connection(rows=[(False,)])

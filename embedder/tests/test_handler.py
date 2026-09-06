@@ -51,14 +51,14 @@ class HandlerTest(unittest.TestCase):
         self._reinvoke = handler.reinvoke
         self.run_calls: list[dict] = []
         self.reinvoked: list[int] = []
-        handler.reinvoke = lambda context, gallery_id: (self.reinvoked.append(gallery_id) or True)
+        handler.reinvoke = lambda context, gallery_id, **kw: (self.reinvoked.append(gallery_id) or True)
 
     def tearDown(self) -> None:
         handler.job.run = self._run
         handler.reinvoke = self._reinvoke
 
     def _fake_run(self, **result):
-        def run(gallery_id, force, settings, remaining_seconds):
+        def run(gallery_id, force, settings, remaining_seconds, **kwargs):
             self.run_calls.append({
                 "gallery_id": gallery_id, "force": force,
                 "remaining": remaining_seconds() if remaining_seconds else None,
@@ -100,6 +100,88 @@ class HandlerTest(unittest.TestCase):
 
     def test_reinvoke_without_function_name_returns_false(self) -> None:
         self.assertFalse(self._reinvoke(SimpleNamespace(), 7))
+
+    # ── 샤딩(#56) ──
+    def _capture_invocations(self) -> list[dict]:
+        payloads: list[dict] = []
+        saved = handler._invoke_self
+        handler._invoke_self = lambda context, gallery_id, payload: (payloads.append(payload) or True)
+        self.addCleanup(lambda: setattr(handler, "_invoke_self", saved))
+        return payloads
+
+    def test_coordinator_event_gets_fan_out_that_invokes_self_per_shard(self) -> None:
+        payloads = self._capture_invocations()
+        seen: dict = {}
+
+        def run(gallery_id, force, settings, remaining_seconds, shard, run_started_at, fan_out):
+            seen.update(shard=shard, run_started_at=run_started_at)
+            self.assertTrue(fan_out(3, run_started_at))
+            return {"galleryId": gallery_id, "coordinator": True, "shards": 3, "stopped": False}
+        handler.job.run = run
+
+        result = handler.handler({"galleryId": 7, "force": True}, _Context())
+
+        self.assertIsNone(seen["shard"])
+        self.assertIsNotNone(seen["run_started_at"])           # force 라 handler 가 시작 시각을 만든다
+        self.assertEqual(
+            [{"galleryId": 7, "force": True, "shard": {"index": i, "total": 3}, "runStartedAt": seen["run_started_at"]}
+             for i in range(3)],
+            payloads,
+        )
+        self.assertTrue(result["coordinator"])
+        self.assertEqual([], self.reinvoked)
+
+    def test_shard_event_passes_shard_and_run_started_at_and_no_fan_out(self) -> None:
+        seen: dict = {}
+
+        def run(gallery_id, force, settings, remaining_seconds, shard, run_started_at, fan_out):
+            seen.update(shard=shard, run_started_at=run_started_at, fan_out=fan_out, force=force)
+            return {"galleryId": gallery_id, "processed": 2, "stopped": False}
+        handler.job.run = run
+
+        handler.handler({"galleryId": 7, "force": True, "shard": {"index": 2, "total": 4},
+                         "runStartedAt": "2026-09-06T00:00:00+00:00"}, _Context())
+
+        self.assertEqual(handler.job.Shard(2, 4), seen["shard"])
+        self.assertEqual("2026-09-06T00:00:00+00:00", seen["run_started_at"])   # 조정자의 시각을 그대로
+        self.assertIsNone(seen["fan_out"])                                       # 샤드는 다시 나누지 않는다
+        self.assertTrue(seen["force"])
+
+    def test_non_force_event_has_no_run_started_at(self) -> None:
+        seen: dict = {}
+
+        def run(gallery_id, force, settings, remaining_seconds, shard, run_started_at, fan_out):
+            seen["run_started_at"] = run_started_at
+            return {"galleryId": gallery_id, "processed": 1, "stopped": False}
+        handler.job.run = run
+
+        handler.handler({"galleryId": 7}, _Context())
+
+        self.assertIsNone(seen["run_started_at"])
+
+    def test_reinvoke_payload_keeps_shard_and_run_started_at_but_not_force(self) -> None:
+        payloads = self._capture_invocations()
+
+        ok = self._reinvoke(_Context(), 7, shard=handler.job.Shard(1, 4), run_started_at="2026-09-06T00:00:00+00:00")
+
+        self.assertTrue(ok)
+        self.assertEqual(
+            [{"galleryId": 7, "force": False, "shard": {"index": 1, "total": 4}, "runStartedAt": "2026-09-06T00:00:00+00:00"}],
+            payloads,
+        )
+
+    def test_stopped_shard_reinvokes_with_its_shard(self) -> None:
+        handler.reinvoke = self._reinvoke
+        payloads = self._capture_invocations()
+        self._fake_run(processed=8, stopped=True, remaining=40)
+
+        result = handler.handler({"galleryId": 7, "shard": {"index": 1, "total": 4},
+                                  "runStartedAt": "2026-09-06T00:00:00+00:00"}, _Context())
+
+        self.assertTrue(result["reinvoked"])
+        self.assertEqual({"index": 1, "total": 4}, payloads[0]["shard"])
+        self.assertEqual("2026-09-06T00:00:00+00:00", payloads[0]["runStartedAt"])
+        self.assertFalse(payloads[0]["force"])
 
 
 if __name__ == "__main__":

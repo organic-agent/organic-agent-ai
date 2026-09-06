@@ -43,14 +43,18 @@ class _Db:
         self.locked = locked
         self.connection = _Connection()
         self.stored: list[list[tuple]] = []
+        self.lock_keys: list[tuple[int, int]] = []
+        self.fetch_calls: list[dict] = []
 
     def connect(self, settings):
         return self.connection
 
-    def try_lock_gallery(self, connection, gallery_id: int) -> bool:
+    def try_lock_gallery(self, connection, gallery_id: int, shard_index: int = 0) -> bool:
+        self.lock_keys.append((gallery_id, shard_index))
         return self.locked
 
-    def fetch_targets(self, connection, gallery_id: int, force: bool):
+    def fetch_targets(self, connection, gallery_id: int, force: bool, since=None):
+        self.fetch_calls.append({"gallery_id": gallery_id, "force": force, "since": since})
         return list(self.targets)
 
     def store_embeddings(self, connection, results, model_id: str) -> int:
@@ -136,10 +140,12 @@ class _Metadata:
         return f"meta({original})"
 
 
-def _settings(batch_size: int = 2, stop_margin: int = 60, download_workers: int = 2):
+def _settings(batch_size: int = 2, stop_margin: int = 60, download_workers: int = 2,
+              shard_photos: int = 0, max_shards: int = 8):
     return SimpleNamespace(
         s3_bucket="bucket", batch_size=batch_size, resize_long_edge=1024, preview_quality=82,
         model_id="test-model", stop_margin_seconds=stop_margin, download_workers=download_workers,
+        shard_photos=shard_photos, max_shards=max_shards,
     )
 
 
@@ -286,6 +292,98 @@ class GalleryJobTest(unittest.TestCase):
         self.assertEqual(0, result["targets"])
         self.assertEqual([], _Storage.instances[0].reads)
         self.assertEqual(0, self.model.loads)
+
+
+class ShardTest(unittest.TestCase):
+    """갤러리 샤딩(#56) — 분배·샤드 수·조정자·샤드 실행."""
+
+    def test_shard_select_partitions_in_fixed_order_and_validates(self) -> None:
+        refs = list("abcdefg")
+        parts = [job.Shard(i, 3).select(refs) for i in range(3)]
+        self.assertEqual([["a", "d", "g"], ["b", "e"], ["c", "f"]], parts)
+        self.assertEqual(sorted(refs), sorted(sum(parts, [])))      # 빠지거나 겹치지 않는다
+        self.assertEqual({"index": 1, "total": 3}, job.Shard(1, 3).to_payload())
+        self.assertEqual(job.Shard(1, 3), job.Shard.from_payload({"index": "1", "total": "3"}))
+        self.assertIsNone(job.Shard.from_payload(None))
+        for index, total in ((3, 3), (-1, 3), (0, 0)):
+            with self.subTest(index=index, total=total), self.assertRaises(ValueError):
+                job.Shard(index, total)
+
+    def test_plan_shards_by_photo_count_with_cap(self) -> None:
+        s = _settings(shard_photos=250, max_shards=8)
+        self.assertEqual(1, job.plan_shards(0, s))
+        self.assertEqual(1, job.plan_shards(250, s))
+        self.assertEqual(2, job.plan_shards(251, s))
+        self.assertEqual(4, job.plan_shards(822, s))
+        self.assertEqual(8, job.plan_shards(7000, s))                    # 상한
+        self.assertEqual(1, job.plan_shards(7000, _settings(shard_photos=0)))   # 샤딩 끔
+
+
+class ShardedJobTest(GalleryJobTest):
+    """GalleryJobTest 의 가짜(S3·모델·DB)를 그대로 쓴다. 상속이라 부모 테스트도 한 번 더 돈다 — 값싸다."""
+
+    def test_coordinator_fans_out_without_loading_model(self) -> None:
+        targets = [_Ref(i, f"galleries/7/{i}.jpg") for i in range(1, 6)]
+        fake_db = self._install_db(targets)
+        fan_outs: list[tuple[int, str | None]] = []
+
+        result = job.run(7, force=True, settings=_settings(shard_photos=2, max_shards=8),
+                         fan_out=lambda n, started: (fan_outs.append((n, started)) or True))
+
+        self.assertTrue(result["coordinator"])
+        self.assertEqual(3, result["shards"])                 # ceil(5 / 2)
+        self.assertTrue(result["fannedOut"])
+        self.assertEqual(5, result["targets"])
+        self.assertEqual(0, result["processed"])
+        self.assertEqual([(3, result["runStartedAt"])], fan_outs)
+        self.assertIsNotNone(result["runStartedAt"])           # force 라 시작 시각이 생겼고 샤드에 넘어간다
+        self.assertEqual(0, self.model.loads)                  # 조정자는 모델을 올리지 않는다
+        self.assertEqual([], _Storage.instances[0].reads)
+        self.assertEqual([(7, 0)], fake_db.lock_keys)          # 조정자 잠금 = 샤드 0 키
+        # force 의 대상 조회는 since 로 — "이번 실행 이후 벡터"만 건너뛴다.
+        self.assertEqual([{"gallery_id": 7, "force": True, "since": result["runStartedAt"]}], fake_db.fetch_calls)
+
+    def test_coordinator_failure_to_fan_out_raises(self) -> None:
+        self._install_db([_Ref(i, f"galleries/7/{i}.jpg") for i in range(1, 6)])
+
+        with self.assertRaises(RuntimeError):
+            job.run(7, settings=_settings(shard_photos=2), fan_out=lambda n, started: False)
+
+    def test_single_shard_plan_runs_inline(self) -> None:
+        fake_db = self._install_db([_Ref(1, "galleries/7/a.jpg"), _Ref(2, "galleries/7/b.jpg")])
+        fan_outs: list = []
+
+        result = job.run(7, settings=_settings(shard_photos=250), fan_out=lambda n, s: fan_outs.append(n) or True)
+
+        self.assertEqual([], fan_outs)
+        self.assertNotIn("coordinator", result)
+        self.assertEqual(2, result["processed"])
+        self.assertEqual(1, self.model.loads)
+        self.assertEqual([{"gallery_id": 7, "force": False, "since": None}], fake_db.fetch_calls)
+
+    def test_shard_processes_only_its_slice_with_its_own_lock(self) -> None:
+        targets = [_Ref(i, f"galleries/7/{i}.jpg") for i in range(1, 6)]
+        fake_db = self._install_db(targets)
+
+        result = job.run(7, settings=_settings(batch_size=2, shard_photos=2), shard=job.Shard(1, 2),
+                         run_started_at="2026-09-06T00:00:00+00:00")
+
+        self.assertEqual({"index": 1, "total": 2}, result["shard"])
+        self.assertEqual(2, result["targets"])                 # 위치 1, 3 → id 2, 4
+        self.assertEqual(2, result["processed"])
+        self.assertEqual([2, 4], [row[0].photo_id for row in fake_db.stored[0]])
+        self.assertEqual([(7, 1)], fake_db.lock_keys)
+        self.assertEqual("2026-09-06T00:00:00+00:00", result["runStartedAt"])
+        self.assertEqual("2026-09-06T00:00:00+00:00", fake_db.fetch_calls[0]["since"])
+        self.assertNotIn("coordinator", result)
+
+    def test_shard_never_fans_out_even_if_large(self) -> None:
+        self._install_db([_Ref(i, f"galleries/7/{i}.jpg") for i in range(1, 6)])
+
+        result = job.run(7, settings=_settings(shard_photos=1), shard=job.Shard(0, 1), fan_out=None)
+
+        self.assertEqual(5, result["processed"])
+        self.assertNotIn("coordinator", result)
 
 
 if __name__ == "__main__":
