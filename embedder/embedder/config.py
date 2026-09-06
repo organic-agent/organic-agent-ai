@@ -83,9 +83,10 @@ class Settings:
     #: 빌드 시 내려받은 모델 snapshot과 런타임 로드를 같은 immutable commit으로 묶는다.
     model_revision: str = "5931719e67bbdb9737e363e781fb0c67687896bc"
     #: 갤러리 샤딩(#56). wes 가 부른 실행(조정자)은 대상 사진 수를 이 값으로 나눈 만큼(최대 max_shards)
-    #: 자기 함수를 동시에 띄우고 끝난다. 장당 0.72s 라 250장 = 약 3분 — 15분 데드라인과 콜드 스타트 비용 사이.
+    #: 자기 함수를 동시에 띄우고 끝난다. 장당 0.78s 라 150장 = 약 2분. 250 에서 150 으로 낮춘 이유(#59): 벽시계는 가장 긴
+    #: 샤드가 정하는데 Lambda 호스트 편차로 한 샤드가 1.7배 느린 일이 있었다 — 샤드가 짧을수록 그 피해 폭이 준다(콜드 스타트 +2회).
     #: 0 이면 샤딩하지 않는다. Lambda 예약 동시성이 max_shards 이상이어야 샤드가 스로틀되지 않는다.
-    shard_photos: int = 250
+    shard_photos: int = 150
     max_shards: int = 8
 
     @staticmethod
@@ -113,7 +114,7 @@ class Settings:
                 "EMBED_MODEL_REVISION",
                 "5931719e67bbdb9737e363e781fb0c67687896bc",
             ),
-            shard_photos=int(os.environ.get("SHARD_PHOTOS", "250")),
+            shard_photos=int(os.environ.get("SHARD_PHOTOS", "150")),
             max_shards=int(os.environ.get("MAX_SHARDS", "8")),
         )
 
