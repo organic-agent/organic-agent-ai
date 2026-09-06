@@ -82,8 +82,9 @@ class Settings:
     work_dir: Path = Path("/tmp/score")
 
     #: 갤러리 샤딩(#54). 사진 수 / shard_photos 를 올림한 만큼(최대 max_shards) 같은 함수를 동시에 띄운다.
-    #: 1 이면 지금처럼 한 실행. 250 이면 822장 → 4 샤드(각 ~206장 ≈ 5분).
-    shard_photos: int = 250
+    #: 1 이면 지금처럼 한 실행. 150 이면 822장 → 6 샤드(각 ~137장 ≈ 3.5분). 250(4 샤드)에서 150 으로 낮춘 이유(#58):
+    #: 벽시계는 가장 긴 샤드가 정하는데 Lambda 호스트 편차로 한 샤드가 1.7배 느린 일이 있었다 — 샤드가 짧을수록 그 피해 폭이 준다.
+    shard_photos: int = 150
     max_shards: int = 8
 
     #: Lambda 타임아웃 앞에서 멈출 여유(초). "지금까지 가장 오래 걸린 쓰기 배치 + 이 값"보다 남은 시간이
@@ -124,7 +125,7 @@ class Settings:
             s3_bucket=os.environ.get("S3_BUCKET"),
             work_dir=Path(os.environ.get("SCORE_WORK", "/tmp/score")),
             stop_margin_seconds=int(os.environ.get("STOP_MARGIN_SECONDS", "60")),
-            shard_photos=int(os.environ.get("SHARD_PHOTOS", "250")),
+            shard_photos=int(os.environ.get("SHARD_PHOTOS", "150")),
             max_shards=int(os.environ.get("MAX_SHARDS", "8")),
             categorize_function_name=os.environ.get("CATEGORIZE_FUNCTION_NAME") or None,
             categorize_command=os.environ.get("CATEGORIZE_COMMAND") or None,
