@@ -67,12 +67,21 @@ class LaionRunner:
         """L2 정규화된 CLIP 임베딩. 코사인 = 내적."""
         return self.embed_batch([source])[0]
 
+    def prepare(self, source: str | Image.Image) -> torch.Tensor:
+        """CPU 전처리(224 리사이즈·크롭·정규화) → (3, 224, 224). 디코드 스레드에서 미리 해 두면 GPU 가 이걸 기다리지 않는다(#68)."""
+        return self._preprocess(as_image(source))
+
     @torch.no_grad()
     def embed_batch(self, sources: list[str | Image.Image]) -> np.ndarray:
         """(n, 768) L2 정규화 임베딩 — 여러 장을 한 번의 forward 로(#51). 순서 유지. 빈 목록이면 (0, 768)."""
-        if not sources:
+        return self.embed_prepared([self.prepare(s) for s in sources])
+
+    @torch.no_grad()
+    def embed_prepared(self, tensors: list[torch.Tensor]) -> np.ndarray:
+        """`prepare()` 결과들을 한 forward 로."""
+        if not tensors:
             return np.zeros((0, EMBED_DIM), dtype=np.float32)
-        x = torch.stack([self._preprocess(as_image(s)) for s in sources]).to(self.device)
+        x = torch.stack(tensors).to(self.device, non_blocking=True)
         with autocast(self.device, self.fp16):
             feat = self._clip.encode_image(x)
         feat = feat.float()                      # 정규화는 fp32 로 — half 에서 norm 이 흔들린다

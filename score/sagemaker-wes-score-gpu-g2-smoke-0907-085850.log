@@ -1,0 +1,29 @@
+2026-09-07 09:01:07,284 INFO  score.sagemaker | SageMaker 벤치마크: 갤러리 2 force=True limit=None 컨테이너 시작 2026-09-07T09:01:07Z
+2026-09-07 09:01:08,806 WARNING urllib3.connectionpool | Connection pool is full, discarding connection: wes-photos-233927217926.s3.amazonaws.com. Connection pool size: 10
+2026-09-07 09:01:08,812 WARNING urllib3.connectionpool | Connection pool is full, discarding connection: wes-photos-233927217926.s3.amazonaws.com. Connection pool size: 10
+2026-09-07 09:01:08,814 WARNING urllib3.connectionpool | Connection pool is full, discarding connection: wes-photos-233927217926.s3.amazonaws.com. Connection pool size: 10
+2026-09-07 09:01:08,815 WARNING urllib3.connectionpool | Connection pool is full, discarding connection: wes-photos-233927217926.s3.amazonaws.com. Connection pool size: 10
+2026-09-07 09:01:08,818 WARNING urllib3.connectionpool | Connection pool is full, discarding connection: wes-photos-233927217926.s3.amazonaws.com. Connection pool size: 10
+2026-09-07 09:01:08,826 WARNING urllib3.connectionpool | Connection pool is full, discarding connection: wes-photos-233927217926.s3.amazonaws.com. Connection pool size: 10
+2026-09-07 09:01:09,574 WARNING urllib3.connectionpool | Connection pool is full, discarding connection: wes-photos-233927217926.s3.ap-northeast-2.amazonaws.com. Connection pool size: 10
+2026-09-07 09:01:09,580 WARNING urllib3.connectionpool | Connection pool is full, discarding connection: wes-photos-233927217926.s3.ap-northeast-2.amazonaws.com. Connection pool size: 10
+2026-09-07 09:01:09,583 WARNING urllib3.connectionpool | Connection pool is full, discarding connection: wes-photos-233927217926.s3.ap-northeast-2.amazonaws.com. Connection pool size: 10
+2026-09-07 09:01:09,596 WARNING urllib3.connectionpool | Connection pool is full, discarding connection: wes-photos-233927217926.s3.ap-northeast-2.amazonaws.com. Connection pool size: 10
+2026-09-07 09:01:09,598 WARNING urllib3.connectionpool | Connection pool is full, discarding connection: wes-photos-233927217926.s3.ap-northeast-2.amazonaws.com. Connection pool size: 10
+2026-09-07 09:01:09,606 WARNING urllib3.connectionpool | Connection pool is full, discarding connection: wes-photos-233927217926.s3.ap-northeast-2.amazonaws.com. Connection pool size: 10
+2026-09-07 09:01:09,608 INFO  score.job | 갤러리 2: 미리보기 80장 다운로드 1.7s (workers=16)
+2026-09-07 09:01:09,613 INFO  score.pipeline | [score] 갤러리 2: 대상 80장, 이미 점수 있음 0장
+/usr/local/lib/python3.12/site-packages/timm/models/layers/__init__.py:49: FutureWarning: Importing from timm.models.layers is deprecated, please import via timm.layers
+  warnings.warn(f"Importing from {__name__} is deprecated, please import via timm.layers", FutureWarning)
+2026-09-07 09:01:12,791 INFO  root | Loading pretrained ViT-L-14 from OpenAI.
+Using cache found in /opt/torch/hub/miccunifi_ARNIQA_66d16eb0ff1e1655872d32c0c233614a3922aaad
+2026-09-07 09:01:23,793 INFO  score.pipeline | [score] 러너 로드 14.2s · torch_threads=2 interop=2 cpu_count=4 device=cuda:Tesla T4 15GB · clip_batch=32 arniqa_batch=8 fp16=True decode_workers=4
+2026-09-07 09:01:26,189 INFO  score.pipeline |   20/80  (0.07s/장)  decode=0.01 clip=0.06 arniqa=0.05 classical=0.03 tag=0.00 write=0.00
+2026-09-07 09:01:26,235 INFO  score.store | photo_analysis 점수 적재: gallery=2 32행
+2026-09-07 09:01:27,821 INFO  score.pipeline |   40/80  (0.07s/장)  decode=0.01 clip=0.04 arniqa=0.05 classical=0.04 tag=0.00 write=0.00
+2026-09-07 09:01:27,830 INFO  score.pipeline |   60/80  (0.06s/장)  decode=0.00 clip=0.03 arniqa=0.03 classical=0.02 tag=0.00 write=0.00
+2026-09-07 09:01:27,842 INFO  score.store | photo_analysis 점수 적재: gallery=2 32행
+2026-09-07 09:01:28,703 INFO  score.pipeline |   80/80  (0.06s/장)  decode=0.00 clip=0.03 arniqa=0.03 classical=0.02 tag=0.00 write=0.00
+2026-09-07 09:01:28,710 INFO  score.store | photo_analysis 점수 적재: gallery=2 16행
+2026-09-07 09:01:28,728 INFO  score.job | 완료: {'gallery': '2', 'pipeline': 'v3', 'mode': 'score', 'targets': 80, 'processed': 80, 'skipped': 0, 'failed': [], 'stopped': False, 'remaining': 0, 'subjectsUsed': True, 'elapsedSeconds': 19.1, 'perStageSeconds': {'load': 14.2, 'photos': 4.9, 'decode': 0.3, 'clip': 2.2, 'arniqa': 2.3, 'classical': 1.9, 'tag': 0.0, 'write': 0.1}, 'runStartedAt': '2026-09-07T09:01:07.700999+00:00'}
+2026-09-07 09:01:28,733 INFO  score.sagemaker | BENCHMARK_RESULT {"galleryId": 2, "force": true, "limit": null, "containerStartedAt": 1788771667.2848077, "wallSeconds": 21.0, "instance": null, "knobs": {"clipBatch": 32, "arniqaBatch": 8, "fp16": true, "decodeWorkers": 4, "downloadWorkers": 16, "device": "auto"}, "gpu": {"gpu": "Tesla T4", "samples": 21, "utilAvg": 11.3, "utilP50": 0.0, "utilMax": 80.0, "utilAbove80Pct": 4.8, "memMaxMB": 4166}, "result": {"gallery": "2", "pipeline": "v3", "mode": "score", "targets": 80, "processed": 80, "skipped": 0, "failed": [], "stopped": false, "remaining": 0, "subjectsUsed": true, "elapsedSeconds": 19.1, "perStageSeconds": {"load": 14.2, "photos": 4.9, "decode": 0.3, "clip": 2.2, "arniqa": 2.3, "classical": 1.9, "tag": 0.0, "write": 0.1}, "runStartedAt": "2026-09-07T09:01:07.700999+00:00"}}

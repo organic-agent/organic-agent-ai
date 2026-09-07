@@ -13,8 +13,8 @@ repo 데모와 같이 전체 이미지(`long_edge` 로 줄인 것)와 half-scale
 
 from __future__ import annotations
 
+import numpy as np
 import torch
-import torchvision.transforms.functional as TF
 
 from PIL import Image
 
@@ -48,6 +48,14 @@ class ArniqaRunner:
             skip_validation=True,   # 캐시 히트 뒤 GitHub API 를 건드리지 않게 — Lambda 에는 인터넷이 없다
         )
         self._model.eval().to(self.device)
+        self._mean = torch.tensor(_MEAN, device=self.device).view(1, 3, 1, 1)
+        self._std = torch.tensor(_STD, device=self.device).view(1, 3, 1, 1)
+
+    def prepare(self, source: str | Image.Image) -> torch.Tensor:
+        """CPU 전처리 → (3, H, W) uint8. float 변환·정규화는 GPU 에서 한다 — 1024px 한 장이 uint8 2MB, float 는 8MB 라
+        전송도 CPU 연산도 4분의 1 이다(#68). CPU 경로에서는 같은 값을 CPU 에서 계산한다(수치 동일)."""
+        arr = np.array(as_image(source, self.long_edge))              # (H, W, 3) uint8 — 복사본(쓰기 가능)이라야 torch 가 경고 없이 받는다
+        return torch.from_numpy(arr).permute(2, 0, 1).contiguous()
 
     @torch.no_grad()
     def score(self, source: str | Image.Image) -> dict[str, float]:
@@ -55,14 +63,18 @@ class ArniqaRunner:
 
     @torch.no_grad()
     def score_batch(self, sources: list[str | Image.Image]) -> list[dict[str, float]]:
-        """순서 유지. 크기가 같은 것끼리 한 forward. 빈 목록이면 []."""
-        tensors = [TF.normalize(TF.to_tensor(as_image(s, self.long_edge)), _MEAN, _STD) for s in sources]
+        return self.score_prepared([self.prepare(s) for s in sources])
+
+    @torch.no_grad()
+    def score_prepared(self, tensors: list[torch.Tensor]) -> list[dict[str, float]]:
+        """`prepare()` 결과들. 순서 유지. 크기가 같은 것끼리 한 forward. 빈 목록이면 []."""
         out: list[dict[str, float] | None] = [None] * len(tensors)
         groups: dict[tuple[int, ...], list[int]] = {}
         for i, t in enumerate(tensors):
             groups.setdefault(tuple(t.shape), []).append(i)
         for idx in groups.values():
-            x = torch.stack([tensors[i] for i in idx]).to(self.device)
+            x = torch.stack([tensors[i] for i in idx]).to(self.device, non_blocking=True)
+            x = (x.float().div_(255) - self._mean) / self._std
             x_ds = torch.nn.functional.interpolate(x, scale_factor=0.5, mode="bilinear", align_corners=False)
             with autocast(self.device, self.fp16):
                 s = self._model(x, x_ds, return_embedding=False, scale_score=True)

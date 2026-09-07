@@ -41,6 +41,12 @@ class _FakeLaion:
         self.batch_sizes.append(len(sources))
         return np.stack([self.embed(s) for s in sources])
 
+    def prepare(self, source):
+        return source
+
+    def embed_prepared(self, tensors):
+        return self.embed_batch(tensors)
+
     def embed_texts(self, prompts):
         return np.stack([_unit(self.rng.normal(size=self.dim)) for _ in prompts])
 
@@ -61,6 +67,12 @@ class _FakeArniqa:
     def score_batch(self, sources):
         self.batch_sizes.append(len(sources))
         return [self.score(s) for s in sources]
+
+    def prepare(self, source):
+        return source
+
+    def score_prepared(self, tensors):
+        return self.score_batch(tensors)
 
 
 @pytest.fixture
@@ -215,7 +227,7 @@ def test_arniqa_runs_in_batches_and_falls_back_alone(tmp_path, fake_runners):
         fake_runners.arniqa.batch_sizes.append(len(sources))
         raise RuntimeError("batch oom")
 
-    fake_runners.arniqa.score_batch = boom
+    fake_runners.arniqa.score_prepared = boom
     result = pipeline.run(store, "g", refs, settings, force=True)
     assert result["processed"] == 10 and result["failed"] == [] and len(fake_runners.arniqa.seen) == 10
 
@@ -256,6 +268,7 @@ def test_arniqa_batches_group_by_shape_and_keep_order(tmp_path):
 
     runner = ArniqaRunner.__new__(ArniqaRunner)
     runner.long_edge, runner.device, runner.fp16, runner._model = 64, "cpu", False, _Model()
+    runner._mean, runner._std = torch.zeros(1, 3, 1, 1), torch.ones(1, 3, 1, 1)
     portrait = Image.new("RGB", (32, 64), (10, 20, 30))
     landscape = Image.new("RGB", (64, 32), (200, 210, 220))
     out = runner.score_batch([portrait, landscape, portrait, landscape])
