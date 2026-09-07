@@ -1,0 +1,8 @@
+# preference — 선택 사진으로 계속 학습하는 선호 가중치 층 Lambda. torch 없음. 로컬 venv 는 score/.venv 에 같이.
+numpy==1.26.4
+scipy==1.14.1
+# DB
+psycopg[binary]==3.2.3
+pgvector==0.3.6
+# 테스트
+pytest==8.3.3
