@@ -156,36 +156,40 @@ def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, fo
         C = np.stack([clips[i] for i in ids]) if ids else np.zeros((0, 768))
         store.write_scores(gallery, rows, (ids, C))
 
-    def prepare(ref: PhotoRef) -> tuple[object, dict, float]:
-        """CPU 만 쓰는 준비 — 디코드 1회 + classical. 스레드에서 돌릴 수 있게 torch 를 건드리지 않는다."""
+    def prepare(ref: PhotoRef) -> tuple[object, dict, float, object, object]:
+        """CPU 만 쓰는 준비 — 디코드 1회 + classical + 러너별 전처리(CLIP 224 · ARNIQA uint8). 스레드에서 돈다 —
+        GPU forward 를 제외한 장당 CPU 일이 전부 여기 있어야 메인 스레드(GPU)가 기다리지 않는다(#68)."""
         img = load_image(ref.path)
         t = time.monotonic()
         cl = classical.measure(img)
-        return img, cl, time.monotonic() - t
+        t_cl = time.monotonic() - t
+        return img, cl, t_cl, laion.prepare(img), arniqa.prepare(img)
 
     def embed_chunk(chunk: list[PhotoRef], futures: list[Future] | None) -> list[tuple]:
         """[(ref, 이미지, CLIP 벡터, classical, ARNIQA 점수, 오류)] — 디코드는 한 번, CLIP·ARNIQA 는 묶어서.
         실패한 장은 오류를 들고 나온다."""
-        loaded: list[tuple[PhotoRef, object, dict]] = []
+        loaded: list[tuple[PhotoRef, object, dict, object]] = []
+        arniqa_in: dict[str, object] = {}
         out: dict[str, list] = {}
         t = time.monotonic()
         for j, ref in enumerate(chunk):
             try:
-                img, cl, t_cl = futures[j].result() if futures is not None else prepare(ref)
+                img, cl, t_cl, clip_x, arniqa_x = futures[j].result() if futures is not None else prepare(ref)
                 t_stage["classical"] += t_cl
-                loaded.append((ref, img, cl))
+                loaded.append((ref, img, cl, clip_x))
+                arniqa_in[ref.photo_id] = arniqa_x
             except Exception as exc:  # noqa: BLE001
                 out[ref.photo_id] = [ref, None, None, None, None, exc]
         t_stage["decode"] += time.monotonic() - t
         t = time.monotonic()
         if loaded:
             try:
-                embs = laion.embed_batch([img for _, img, _ in loaded])
-                for (ref, img, cl), emb in zip(loaded, embs):
+                embs = laion.embed_prepared([x for _, _, _, x in loaded])
+                for (ref, img, cl, _), emb in zip(loaded, embs):
                     out[ref.photo_id] = [ref, img, emb, cl, None, None]
             except Exception as exc:  # noqa: BLE001 — 묶음이 죽으면 한 장씩 물러난다
                 log.warning("CLIP 배치 %d장 실패(%s) — 한 장씩 재시도", len(loaded), exc)
-                for ref, img, cl in loaded:
+                for ref, img, cl, _ in loaded:
                     try:
                         out[ref.photo_id] = [ref, img, laion.embed(img), cl, None, None]
                     except Exception as exc1:  # noqa: BLE001
@@ -197,7 +201,7 @@ def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, fo
         for start in range(0, len(alive), step):
             group = alive[start:start + step]
             try:
-                for entry, tech in zip(group, arniqa.score_batch([e[1] for e in group])):
+                for entry, tech in zip(group, arniqa.score_prepared([arniqa_in[e[0].photo_id] for e in group])):
                     entry[4] = tech["technical_score"]
             except Exception as exc:  # noqa: BLE001 — 묶음이 죽으면 한 장씩 물러난다
                 log.warning("ARNIQA 배치 %d장 실패(%s) — 한 장씩 재시도", len(group), exc)

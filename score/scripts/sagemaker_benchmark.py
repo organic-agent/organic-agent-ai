@@ -74,7 +74,7 @@ def cmd_setup(args) -> None:
     ]}
     try:
         iam.create_role(RoleName=ROLE_NAME, AssumeRolePolicyDocument=json.dumps(trust),
-                        Description="score GPU 벤치마크(#68) SageMaker training 실행 역할 — 벤치마크 뒤 삭제")
+                        Description="score GPU benchmark (#68) SageMaker training execution role - delete after benchmark")
         print(f"역할 생성: {ROLE_NAME}")
     except iam.exceptions.EntityAlreadyExistsException:
         print(f"역할 있음: {ROLE_NAME}")
