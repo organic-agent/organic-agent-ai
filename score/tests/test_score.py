@@ -52,10 +52,15 @@ class _FakeArniqa:
     def __init__(self, long_edge=None):
         self.long_edge = long_edge
         self.seen = []
+        self.batch_sizes = []
 
     def score(self, source):
         self.seen.append(source)
         return {"technical_score": 0.6}
+
+    def score_batch(self, sources):
+        self.batch_sizes.append(len(sources))
+        return [self.score(s) for s in sources]
 
 
 @pytest.fixture
@@ -63,7 +68,7 @@ def fake_runners(monkeypatch):
     """pipeline.run 이 함수 안에서 import 하는 torch 러너·classical 을 가짜로 바꾼다."""
     laion = _FakeLaion()
     runners = types.ModuleType("score.runners")
-    runners.LaionRunner = lambda: laion
+    runners.LaionRunner = lambda **kw: laion
     laion.arniqa = _FakeArniqa()
 
     def make_arniqa(**kw):
@@ -192,6 +197,73 @@ def test_batch_failure_falls_back_to_single_embeds(tmp_path, fake_runners):
 
     assert result["processed"] == 6 and result["failed"] == []
     assert fake_runners.embed_calls == 6
+
+
+def test_arniqa_runs_in_batches_and_falls_back_alone(tmp_path, fake_runners):
+    store, refs, _, settings = _world(tmp_path, n=10)
+    settings = Settings(out_root=settings.out_root, dataset_root=settings.dataset_root,
+                        knobs=Knobs(write_batch=4, clip_batch=8, arniqa_batch=3))
+
+    result = pipeline.run(store, "g", refs, settings, force=True)
+
+    assert result["processed"] == 10 and fake_runners.arniqa.batch_sizes == [3, 3, 2, 2]
+
+    fake_runners.arniqa.batch_sizes.clear()
+    fake_runners.arniqa.seen.clear()
+
+    def boom(sources):
+        fake_runners.arniqa.batch_sizes.append(len(sources))
+        raise RuntimeError("batch oom")
+
+    fake_runners.arniqa.score_batch = boom
+    result = pipeline.run(store, "g", refs, settings, force=True)
+    assert result["processed"] == 10 and result["failed"] == [] and len(fake_runners.arniqa.seen) == 10
+
+
+def test_decode_prefetch_threads_give_same_result_and_keep_order(tmp_path, fake_runners):
+    store, refs, _, settings = _world(tmp_path, n=13)
+    settings = Settings(out_root=settings.out_root, dataset_root=settings.dataset_root,
+                        knobs=Knobs(write_batch=4, clip_batch=5, decode_workers=3))
+    broken = refs[3]
+    Path(broken.path).write_bytes(b"not a jpeg")
+
+    result = pipeline.run(store, "g", refs, settings, force=True)
+
+    assert result["processed"] == 12 and result["failed"] == [broken.photo_id]
+    assert fake_runners.batch_sizes == [4, 5, 3]
+    ids, _ = store.read_clip_embeddings("g")   # 깨진 장은 _world 가 미리 넣어 둔 옛 벡터가 남는다 — 그것만 빼고 순서 비교
+    assert [i for i in ids if i != broken.photo_id] == [r.photo_id for r in refs if r is not broken]
+
+
+def test_arniqa_batches_group_by_shape_and_keep_order(tmp_path):
+    """실제 ArniqaRunner.score_batch — 모델은 가짜(입력 합을 점수로), 크기가 다른 장이 섞여도 순서가 지켜진다."""
+    import torch
+
+    from score.runners.arniqa import ArniqaRunner
+
+    calls = []
+
+    class _Model:
+        def eval(self):
+            return self
+
+        def to(self, device):
+            return self
+
+        def __call__(self, x, x_ds, return_embedding=False, scale_score=True):
+            calls.append(tuple(x.shape))
+            return x.float().mean(dim=(1, 2, 3)) + x_ds.float().mean(dim=(1, 2, 3))
+
+    runner = ArniqaRunner.__new__(ArniqaRunner)
+    runner.long_edge, runner.device, runner.fp16, runner._model = 64, "cpu", False, _Model()
+    portrait = Image.new("RGB", (32, 64), (10, 20, 30))
+    landscape = Image.new("RGB", (64, 32), (200, 210, 220))
+    out = runner.score_batch([portrait, landscape, portrait, landscape])
+    single = [runner.score(im)["technical_score"] for im in (portrait, landscape)]
+
+    assert [o["technical_score"] for o in out] == pytest.approx([single[0], single[1], single[0], single[1]])
+    assert calls[:2] == [(2, 3, 64, 32), (2, 3, 32, 64)]
+    assert torch.tensor(single[0]) != torch.tensor(single[1])
 
 
 def test_images_fit_long_edge_never_upscales_and_accepts_paths_or_images(tmp_path):

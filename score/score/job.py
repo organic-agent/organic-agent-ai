@@ -147,7 +147,10 @@ def run(gallery_id: int, force: bool = False, settings: Settings | None = None,
                     return result
 
             mine = shard.select(all_refs) if shard else all_refs
-            refs = download_previews(storage, mine, settings.work_dir / str(gallery_id))
+            t_dl = time.monotonic()
+            refs = download_previews(storage, mine, settings.work_dir / str(gallery_id), workers=settings.download_workers)
+            log.info("%s: 미리보기 %d장 다운로드 %.1fs (workers=%d)", tag, len(refs), time.monotonic() - t_dl,
+                     settings.download_workers)
             store = DbStore(settings, connection)
             result = pipeline.run(store, str(gallery_id), refs, settings, force=force and since is None,
                                   remaining_seconds=remaining_seconds, since=since)

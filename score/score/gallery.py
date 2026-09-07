@@ -96,14 +96,20 @@ def load_db(conn, storage, gallery_id: int, work_dir: Path, limit: int | None = 
     return refs
 
 
-def download_previews(storage, refs: list[PhotoRef], dest_dir: Path) -> list[PhotoRef]:
-    """path 가 없는 ref 의 미리보기를 내려받아 path 를 채운 새 목록. 샤드가 자기 몫만 받을 때 쓴다(#54)."""
+def download_previews(storage, refs: list[PhotoRef], dest_dir: Path, workers: int = 8) -> list[PhotoRef]:
+    """path 가 없는 ref 의 미리보기를 내려받아 path 를 채운 새 목록. 샤드가 자기 몫만 받을 때 쓴다(#54).
+
+    `workers` 스레드로 동시에 받는다(#68): 장당 0.2MB 라 시간은 전송량이 아니라 S3 왕복(~80ms)이 정한다 — 한 프로세스가
+    7,000장을 한 장씩 받으면 9분이지만 8개 동시면 1분 남짓. boto3 클라이언트는 스레드에서 같이 써도 된다."""
+    from concurrent.futures import ThreadPoolExecutor
     from dataclasses import replace
 
-    out = []
-    for ref in refs:
+    def fetch(ref: PhotoRef) -> PhotoRef:
         if ref.path is None and ref.preview_key:
-            out.append(replace(ref, path=str(storage.download(ref.preview_key, dest_dir / f"{ref.photo_id}.jpg"))))
-        else:
-            out.append(ref)
-    return out
+            return replace(ref, path=str(storage.download(ref.preview_key, dest_dir / f"{ref.photo_id}.jpg")))
+        return ref
+
+    if workers <= 1:
+        return [fetch(ref) for ref in refs]
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        return list(pool.map(fetch, refs))
