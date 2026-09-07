@@ -64,7 +64,7 @@ score/
 ├── tests/test_score.py   pytest 30 — 재개 · 컬럼 경계 · 배치/데드라인 · CLIP/ARNIQA 배치·실패 격리 · 프리페치 · 샤딩(분배·조정자·마지막 체인·since) · chain · handler · categorize 와의 상수 일치
 ├── Dockerfile · deploy.sh   컨테이너 Lambda (가중치 빌드 시 번들) · ECR 푸시 + update-function-code
 ├── Dockerfile.gpu           GPU 벤치마크 이미지 (cu121 torch, ECR :gpu) — .github/workflows/build-gpu-image.yml 이 민다
-├── scripts/sagemaker_benchmark.py   SageMaker training job 제출·대기·로그 요약 · snapshot_scores.py  점수 스냅샷·비교(fp16 검증)
+├── scripts/sagemaker_benchmark.py   SageMaker training job 제출·대기·로그 요약 · ec2_benchmark.py  EC2 stop/start 실측 · snapshot_scores.py  점수 스냅샷·비교(fp16 검증)
 └── requirements.txt · pyproject.toml
 ```
 
@@ -102,6 +102,8 @@ Lambda 32 샤드 대신 GPU 한 대로 돌리면 얼마나 빠르고 얼마인�
 .venv/bin/python scripts/sagemaker_benchmark.py setup                               # 실행 역할 (한 번)
 .venv/bin/python scripts/sagemaker_benchmark.py run --gallery-id 7 --force          # ml.g4dn.xlarge, fp16, clip 32 · arniqa 8 · decode 4
 .venv/bin/python scripts/sagemaker_benchmark.py run --gallery-id 7 --force --no-fp16 --instance ml.g6.xlarge
+.venv/bin/python scripts/ec2_benchmark.py setup && .venv/bin/python scripts/ec2_benchmark.py launch --instance g6.xlarge   # DLAMI + 이미지 pull → 정지
+.venv/bin/python scripts/ec2_benchmark.py run --gallery-id 8 --force        # StartInstances → 잡 → StopInstances 타임라인 (2026-09-07: 233s, 콜드 16s)
 DB_HOST=localhost DB_PORT=15432 … .venv/bin/python scripts/snapshot_scores.py dump 7 cpu-g7.json     # force 전에 CPU 점수 보관
 .venv/bin/python scripts/snapshot_scores.py compare cpu-g7.json gpu-g7.json         # Spearman ≥ 0.99 면 같은 모델
 ```
