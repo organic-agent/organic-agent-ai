@@ -95,9 +95,12 @@ class Settings:
     work_dir: Path = Path("/tmp/score")
 
     #: GPU 워커(#75): 한 번에 집는 장수 · 집을 게 없을 때 대기 초 · 연속 유휴가 이 초를 넘기면 자기 인스턴스를 정지(0 이면 안 함).
+    #: 유휴 기본 30초(#81) — 지금은 갤러리를 연달아 처리할 사용자가 없어 켜 둘 이유가 없다. 다중 사용자 운영에서는 600 으로(콜드 16s·로드 22s 를 아낌).
     worker_batch: int = 32
     worker_poll_seconds: float = 3.0
-    worker_idle_stop_seconds: int = 600
+    worker_idle_stop_seconds: int = 30
+    #: 배치가 이만큼 연속으로 실패하면 루프를 끝낸다(#81) — 같은 오류로 헛도는 것을 막는다. 종료 코드 1, 인스턴스 정지는 wes 감시 몫.
+    worker_max_consecutive_failures: int = 5
     #: 이만큼 배치를 처리하면 루프를 끝낸다(0 = 무한). 검증·벤치마크용.
     worker_max_batches: int = 0
 
@@ -153,7 +156,8 @@ class Settings:
             download_workers=int(os.environ.get("SCORE_DOWNLOAD_WORKERS", "8")),
             worker_batch=int(os.environ.get("WORKER_BATCH", "32")),
             worker_poll_seconds=float(os.environ.get("WORKER_POLL_SECONDS", "3")),
-            worker_idle_stop_seconds=int(os.environ.get("WORKER_IDLE_STOP_SECONDS", "600")),
+            worker_idle_stop_seconds=int(os.environ.get("WORKER_IDLE_STOP_SECONDS", "30")),
+            worker_max_consecutive_failures=int(os.environ.get("WORKER_MAX_CONSECUTIVE_FAILURES", "5")),
             worker_max_batches=int(os.environ.get("WORKER_MAX_BATCHES", "0")),
             stop_margin_seconds=int(os.environ.get("STOP_MARGIN_SECONDS", "60")),
             shard_photos=int(os.environ.get("SHARD_PHOTOS", "150")),

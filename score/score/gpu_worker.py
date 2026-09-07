@@ -109,7 +109,19 @@ def loop(settings: Settings, *, once: bool = False, stop_on_idle: bool = True, m
     scorer.warm_up()
     prefetch = ThreadPoolExecutor(max_workers=1, thread_name_prefix="prefetch")
     poison: list[int] = []
-    summary = {"batches": 0, "processed": 0, "failed": 0, "idleStopped": False}
+    summary = {"batches": 0, "processed": 0, "failed": 0, "idleStopped": False, "aborted": False}
+    consecutive_failures = 0
+
+    def failed_again(what: str) -> bool:
+        """연속 실패를 세고 상한이면 True(루프 종료)."""
+        nonlocal consecutive_failures
+        consecutive_failures += 1
+        cap = settings.worker_max_consecutive_failures
+        if cap > 0 and consecutive_failures >= cap:
+            log.error("[worker] %s %d회 연속 실패 — 루프 종료 (같은 오류로 헛돌지 않게)", what, consecutive_failures)
+            summary["aborted"] = True
+            return True
+        return False
     idle_since: float | None = None
     log.info("[worker] 시작 batch=%d poll=%.0fs idle_stop=%ds", settings.worker_batch, settings.worker_poll_seconds,
              settings.worker_idle_stop_seconds)
@@ -127,6 +139,8 @@ def loop(settings: Settings, *, once: bool = False, stop_on_idle: bool = True, m
                 pending = None
                 if once:
                     raise
+                if failed_again("집기/다운로드"):
+                    return summary
                 time.sleep(settings.worker_poll_seconds)
                 continue
             pending = None
@@ -158,11 +172,14 @@ def loop(settings: Settings, *, once: bool = False, stop_on_idle: bool = True, m
                 current, other = other, current
                 if once:
                     raise
+                if failed_again("배치"):
+                    return summary
                 time.sleep(settings.worker_poll_seconds)
                 continue
             finally:
                 current.cleanup()                   # 미리보기 임시 파일 — 장기 실행이라 매 배치 비운다
 
+            consecutive_failures = 0
             failed = [int(pid) for pid in result.get("failed", []) if str(pid).isdigit()]
             poison.extend(failed)
             summary["batches"] += 1
