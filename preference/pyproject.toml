@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "preference"
+version = "0.1.0"
+description = "wes AI — 부부의 최종 선택으로 계속 학습하는 선호 가중치 층 (로지스틱 프로브 · 홀드아웃 · 게이트). torch 없음"
+requires-python = ">=3.12"
+dynamic = ["dependencies"]
+
+[tool.setuptools.packages.find]
+include = ["preference*"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
