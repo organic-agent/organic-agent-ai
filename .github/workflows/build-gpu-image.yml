@@ -1,8 +1,15 @@
-# score GPU 벤치마크 이미지(#68) — 수동 실행만. `score/Dockerfile.gpu` 를 빌드해 ECR `wes-score:gpu` 로 민다.
-# Lambda 는 건드리지 않는다(deploy-lambda.yml 과 별개). SageMaker training job 이 이 태그를 집는다(score/scripts/sagemaker_benchmark.py).
+# score GPU 이미지(#68 · #77) — `score/Dockerfile.gpu` 를 빌드해 ECR `wes-score` 에 두 태그로 민다:
+#   gpu          이동 태그. GPU 워커 인스턴스가 부팅할 때 pull 한다(파이프라인 v2, AMI 에 코드 이미지를 굽지 않음)
+#   gpu-<sha>    불변 태그. 추적·롤백용 (`docker pull …:gpu-abc1234`)
+# main 에 score/** 가 바뀌면 자동, 수동 실행도 된다. Lambda 배포(deploy-lambda.yml, CPU 이미지)와는 별개다.
 name: Build score GPU image
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - "score/**"
+      - ".github/workflows/build-gpu-image.yml"
   workflow_dispatch:
 
 permissions:
@@ -39,8 +46,9 @@ jobs:
           echo "REPO=$REPO" >> "$GITHUB_ENV"
           aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin "${REPO%%/*}"
 
-      - name: Build · push
+      - name: Build · push (gpu + gpu-<sha>)
         run: |
+          SHA_TAG="gpu-${GITHUB_SHA::7}"
           docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
-            -f score/Dockerfile.gpu -t "$REPO:gpu" --push score
-          echo "pushed $REPO:gpu"
+            -f score/Dockerfile.gpu -t "$REPO:gpu" -t "$REPO:$SHA_TAG" --push score
+          echo "pushed $REPO:gpu and $REPO:$SHA_TAG"
