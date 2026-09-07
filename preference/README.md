@@ -49,4 +49,4 @@ Lambda 는 `handler.handler`, 페이로드 `{"galleryId": N}` (wes 가 CLOSED �
 
 `config.py`(환경 · 손잡이) · `db.py` · `store.py`(GalleryData · Local/Db) · `golden.py`(xlsx) · `features.py` · `train.py` ·
 `evaluate.py`(recall · AUC · LOGO · 게이트) · `model.py`(PreferenceModel · λ · z · prior) · `job.py`(run_train · run_sanity) ·
-`handler.py` · `__main__.py`. 설계와 실측은 `docs/photoselect/plan-preference-layer.md` · `preference-sanity-2026-09-07.md`(로컬).
+`handler.py` · `__main__.py`. 산출물·학습 순서·서비스 연결 설명은 `docs/preference-layer.md`(이 디렉토리). 상세 설계와 실측은 루트 `docs/photoselect/plan-preference-layer.md` · `preference-sanity-2026-09-07.md`(로컬).
