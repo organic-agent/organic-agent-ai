@@ -2,6 +2,7 @@
 
 앱이 `POST /api/v1/galleries/{id}/embeddings/run`을 받으면 이 함수를 EVENT(비동기)로 부른다.
 페이로드는 `{"galleryId": 1, "force": false}`. 관리자 사진 교체 outbox는 `{"jobId": …}`를 보낸다.
+v2 스트리밍(#73)은 `{"galleryId": 1, "photoIds": [101, 102, …]}` — 그 목록만 임베딩하고 끝난다(잠금·샤딩·재호출 없음).
 샤드 실행은 여기에 `"shard": {"index": i, "total": n}` 과 `"runStartedAt"` 이 붙는다(#56) — 조정자(wes 호출)가
 자기 함수를 n번 EVENT 할 때 만드는 페이로드라 wes 계약은 그대로다.
 
@@ -42,6 +43,13 @@ def handler(event: dict, context) -> dict:
     if gallery_id is None:
         raise ValueError("페이로드에 galleryId가 없습니다")
     gallery_id = int(gallery_id)
+    if event.get("photoIds") is not None:
+        # v2 스트리밍(#73): wes 스위퍼가 배정한 사진 목록만. 잠금·fan-out·재호출 없음 — 남은 장은 wes 가 다시 배정한다.
+        photo_ids = [int(pid) for pid in event["photoIds"]]
+        log.info("갤러리 %s: 사진 %s장 배치", gallery_id, len(photo_ids))
+        return job.run(gallery_id=gallery_id, settings=_SETTINGS, remaining_seconds=_remaining_seconds(context),
+                       photo_ids=photo_ids)
+
     force = bool(event.get("force", False))
     shard = job.Shard.from_payload(event.get("shard"))
     run_started_at = event.get("runStartedAt") or (job.now_iso() if force else None)

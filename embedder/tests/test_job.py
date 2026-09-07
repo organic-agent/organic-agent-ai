@@ -57,10 +57,16 @@ class _Db:
         self.fetch_calls.append({"gallery_id": gallery_id, "force": force, "since": since})
         return list(self.targets)
 
-    def store_embeddings(self, connection, results, model_id: str) -> int:
+    def store_embeddings(self, connection, results, model_id: str, set_status="EMBEDDED") -> int:
         rows = list(results)
         self.stored.append(rows)
+        self.set_status = set_status
         return len(rows)
+
+    def fetch_by_ids(self, connection, photo_ids):
+        self.fetch_calls.append({"photo_ids": list(photo_ids)})
+        by_id = {t.photo_id: t for t in self.targets}
+        return [by_id[pid] for pid in photo_ids if pid in by_id]
 
 
 class _Storage:
@@ -388,3 +394,42 @@ class ShardedJobTest(GalleryJobTest):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PhotoIdsJobTest(GalleryJobTest):
+    """v2 스트리밍(#73): 사진 id 목록 호출은 잠금·대상 조회·fan-out 없이 그 목록만 처리한다."""
+
+    def test_photo_ids_path_skips_lock_and_fetch_targets_and_keeps_request_order(self) -> None:
+        fake_db = self._install_db([_Ref(1, "galleries/7/a.jpg"), _Ref(2, "galleries/7/b.jpg"), _Ref(3, "galleries/7/c.jpg")],
+                                   locked=False)   # 잠금이 막혀 있어도 이 경로는 잠금을 보지 않는다
+        fanned: list[int] = []
+
+        result = job.run(7, settings=_settings(batch_size=2, shard_photos=1, max_shards=8),
+                         photo_ids=[3, 1, 99], fan_out=lambda n, started: (fanned.append(n) or True))
+
+        self.assertEqual([], fake_db.lock_keys)
+        self.assertEqual([{"photo_ids": [3, 1, 99]}], fake_db.fetch_calls)
+        self.assertEqual([], fanned)                       # shard_photos=1 이어도 조정자로 가지 않는다
+        self.assertEqual(2, result["targets"])             # 없는 id 99 는 조용히 빠진다
+        self.assertEqual(2, result["processed"])
+        self.assertEqual(3, result["photoIds"])
+        self.assertNotIn("coordinator", result)
+        rows = fake_db.stored[0]
+        self.assertEqual(["previews/galleries/7/c.jpg", "previews/galleries/7/a.jpg"], [r[2] for r in rows])
+
+    def test_set_status_from_settings_reaches_store(self) -> None:
+        fake_db = self._install_db([_Ref(1, "galleries/7/a.jpg")])
+        settings = _settings(batch_size=1)
+        settings.set_status = None
+        job.run(7, settings=settings, photo_ids=[1])
+        self.assertIsNone(fake_db.set_status)
+
+        fake_db = self._install_db([_Ref(1, "galleries/7/a.jpg")])
+        job.run(7, settings=_settings(batch_size=1), photo_ids=[1])   # 설정에 없으면 옛 계약 EMBEDDED
+        self.assertEqual("EMBEDDED", fake_db.set_status)
+
+    def test_empty_photo_ids_does_nothing(self) -> None:
+        fake_db = self._install_db([_Ref(1, "galleries/7/a.jpg")])
+        result = job.run(7, settings=_settings(), photo_ids=[])
+        self.assertEqual(0, result["targets"])
+        self.assertEqual([], fake_db.stored)

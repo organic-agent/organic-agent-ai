@@ -25,6 +25,10 @@ def main() -> None:
         "--shards", type=int, default=1,
         help="갤러리를 N개 샤드로 나눠 한 프로세스에서 순차로 돈다(#56). Lambda 의 동시 샤드와 같은 분배·잠금 키.",
     )
+    parser.add_argument(
+        "--photo-ids", metavar="ID,ID,…",
+        help="v2 스트리밍(#73): 이 사진 id 목록만 임베딩한다. 잠금·샤딩 없음. --force·--shards 와 함께 쓰지 않는다.",
+    )
     args = parser.parse_args()
 
     logging.basicConfig(
@@ -32,7 +36,10 @@ def main() -> None:
         format="%(asctime)s %(levelname)-5s %(name)s | %(message)s",
     )
 
-    if args.shards <= 1:
+    if args.photo_ids:
+        ids = [int(x) for x in args.photo_ids.split(",") if x.strip()]
+        result = job.run(gallery_id=args.gallery_id, photo_ids=ids)
+    elif args.shards <= 1:
         result = job.run(gallery_id=args.gallery_id, force=args.force)
     else:
         # force 의 시작 시각을 샤드가 공유해야 뒤 샤드가 앞 샤드의 벡터를 "이번 실행 것"으로 본다.
