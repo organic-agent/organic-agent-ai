@@ -719,3 +719,62 @@ def test_job_photo_ids_path_downloads_scores_and_skips_lock_and_jobs(monkeypatch
 
     assert seen == {"force": True, "ids": ["3", "1"]}
     assert result["processed"] == 2 and result["photoIds"] == 2
+
+
+def test_gpu_worker_runs_real_pipeline_with_label_gallery(fake_runners, tmp_path, monkeypatch):
+    """#81 회귀: 워커는 gallery 자리에 라벨 "worker" 를 넘긴다 — 실제 pipeline.run 이 DbStore 의 int(gallery) 조회를 타면 안 된다.
+    가짜 DbStore 는 실제처럼 read_* 에서 int() 캐스팅을 한다."""
+    from score import gpu_worker
+
+    img_root = tmp_path / "imgs"
+    img_root.mkdir()
+    for i in range(1, 6):
+        Image.new("RGB", (32, 32), (10, 20, 30)).save(img_root / f"{i}.jpg")
+    queue = [[PhotoRef(photo_id=str(i), path=str(img_root / f"{i}.jpg"), preview_key=f"p/{i}.jpg") for i in (1, 2, 3)],
+             [PhotoRef(photo_id=str(i), path=str(img_root / f"{i}.jpg"), preview_key=f"p/{i}.jpg") for i in (4, 5)]]
+    written = []
+
+    class Store:
+        def __init__(self, settings, connection):
+            pass
+
+        def claim_batch(self, n, exclude=None):
+            return queue.pop(0) if queue else []
+
+        def read_analysis(self, gallery):
+            int(gallery)                                    # 실제 DbStore 와 같은 캐스팅
+            return []
+
+        def read_clip_embeddings(self, gallery):
+            int(gallery)
+            return [], np.zeros((0, 0))
+
+        def write_scores(self, gallery, rows, clips):
+            written.extend(r.photo_id for r in rows)
+
+        def rollback(self):
+            pass
+
+    monkeypatch.setattr(gpu_worker.db, "connect", lambda s: _Conn())
+    monkeypatch.setattr(gpu_worker, "DbStore", Store)
+    monkeypatch.setattr(gpu_worker, "PreviewStorage", lambda bucket: None)
+    monkeypatch.setattr(gpu_worker, "download_previews", lambda storage, refs, d, workers=8: refs)
+    monkeypatch.setattr(gpu_worker, "stop_self", lambda: True)
+    monkeypatch.setattr(gpu_worker.time, "sleep", lambda s: None)
+    settings = Settings(out_root=tmp_path, dataset_root=tmp_path, s3_bucket="b", work_dir=tmp_path / "w",
+                        worker_batch=3, worker_poll_seconds=0.0, worker_idle_stop_seconds=0, worker_max_batches=2)
+
+    summary = gpu_worker.loop(settings, stop_on_idle=False)
+
+    assert summary["processed"] == 5 and summary["aborted"] is False and sorted(written) == ["1", "2", "3", "4", "5"]
+
+
+def test_gpu_worker_aborts_after_consecutive_failures(fake_worker):
+    w = fake_worker
+    w["queue"] = [_refs("boom")] * 10
+    w["settings"] = Settings(out_root=w["settings"].out_root, dataset_root=w["settings"].dataset_root, s3_bucket="b",
+                             work_dir=w["settings"].work_dir, worker_poll_seconds=0.0, worker_max_consecutive_failures=3)
+
+    summary = w["module"].loop(w["settings"], stop_on_idle=False)
+
+    assert summary["aborted"] is True and summary["batches"] == 0 and len(w["runs"]) == 3

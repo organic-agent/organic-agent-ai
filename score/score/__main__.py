@@ -55,6 +55,8 @@ def main(argv: list[str] | None = None) -> None:
             from score import gpu_worker
             summary = gpu_worker.loop(settings, once=args.once, stop_on_idle=not args.no_idle_stop)
             print(json.dumps(summary, ensure_ascii=False))
+            if summary.get("aborted"):
+                sys.exit(1)
             return
         from score import worker
         worker.loop(settings, poll_seconds=args.poll, once=args.once)

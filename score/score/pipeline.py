@@ -315,9 +315,12 @@ def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, fo
         at = _as_dt(r.analyzed_at)
         return at is not None and at >= since
 
-    previous = {} if force else {r.photo_id: r for r in store.read_analysis(gallery) if fresh(r)}
-    prev_clip_ids, _ = store.read_clip_embeddings(gallery)
-    prev_clip = set() if force else set(prev_clip_ids)
+    if force:
+        # 재개 판정을 건너뛴다 — store 를 읽지 않는다(#81: 워커는 gallery 자리에 라벨을 넘기므로 갤러리 조회가 있어선 안 된다)
+        previous, prev_clip = {}, set()
+    else:
+        previous = {r.photo_id: r for r in store.read_analysis(gallery) if fresh(r)}
+        prev_clip = set(store.read_clip_embeddings(gallery)[0])
     todo = [r for r in refs if r.photo_id not in previous or r.photo_id not in prev_clip]
     result.skipped = len(refs) - len(todo)
     log.info("[score] 갤러리 %s: 대상 %d장, 이미 점수 있음 %d장", gallery, len(refs), result.skipped)

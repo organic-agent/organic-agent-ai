@@ -11,7 +11,9 @@ from botocore.config import Config
 class PreviewStorage:
     def __init__(self, bucket: str) -> None:
         self.bucket = bucket
-        self._client = boto3.client("s3", config=Config(retries={"max_attempts": 5, "mode": "standard"}))
+        # 커넥션 풀은 다운로드 스레드(SCORE_DOWNLOAD_WORKERS, 워커 16)보다 커야 "pool is full" 경고 없이 병렬이 산다(#81).
+        self._client = boto3.client("s3", config=Config(retries={"max_attempts": 5, "mode": "standard"},
+                                                        max_pool_connections=32))
 
     def download(self, key: str, dest: Path) -> Path:
         """이미 있으면 다시 받지 않는다 — 재실행·--force 때 갤러리를 통째로 다시 내려받지 않게."""
