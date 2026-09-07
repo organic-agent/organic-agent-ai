@@ -35,6 +35,13 @@ def handler(event: dict, context) -> dict:
     if gallery_id is None:
         raise ValueError("페이로드에 galleryId가 없습니다")
     gallery_id = int(gallery_id)
+    if event.get("photoIds") is not None:
+        # v2 폴백(#75): GPU 워커가 전부 바쁠 때 wes 가 사진 목록으로 부른다. 점수만 쓰고 끝 — 잡·재호출·categorize 체인 없음.
+        photo_ids = [int(pid) for pid in event["photoIds"]]
+        log.info("갤러리 %s: 사진 %d장 배치(폴백)", gallery_id, len(photo_ids))
+        return job.run(gallery_id=gallery_id, settings=_SETTINGS, remaining_seconds=_remaining_seconds(context),
+                       photo_ids=photo_ids)
+
     job_id = int(event["jobId"]) if event.get("jobId") is not None else None
     force = bool(event.get("force", False))
     shard = job.Shard.from_payload(event.get("shard"))

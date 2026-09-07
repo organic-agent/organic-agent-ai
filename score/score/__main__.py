@@ -25,7 +25,11 @@ from score import job
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="score")
-    ap.add_argument("cmd", nargs="?", choices=["worker"], help="worker: 로컬 폴링 워커")
+    ap.add_argument("cmd", nargs="?", choices=["worker", "train"],
+                    help="worker: 잡 폴링 워커(로컬) 또는 --gpu 로 GPU 집기 워커(#75). train: SageMaker 벤치마크 진입점")
+    ap.add_argument("--gpu", action="store_true", help="worker: GPU 집기 루프 (photo_analysis SKIP LOCKED 32장씩, 유휴면 자기 정지)")
+    ap.add_argument("--no-idle-stop", action="store_true", help="worker --gpu: 유휴여도 인스턴스를 정지하지 않는다(로컬)")
+    ap.add_argument("--photo-ids", metavar="ID,ID,…", help="v2 폴백(#75): 이 사진 id 목록만 점수. 잡·체인 없음")
     ap.add_argument("--gallery-id", type=int, help="photos.gallery_id (DB 모드)")
     ap.add_argument("--job-id", type=int, help="ai_analysis_jobs.id — 있으면 RUNNING 기록 + 끝나면 categorize 체인")
     ap.add_argument("--force", action="store_true", help="이미 점수가 있는 사진도 다시")
@@ -42,7 +46,16 @@ def main(argv: list[str] | None = None) -> None:
     from score.config import Settings
     settings = Settings.from_env()
 
+    if args.cmd == "train":
+        from score import sagemaker
+        sys.exit(sagemaker.main())
+
     if args.cmd == "worker":
+        if args.gpu:
+            from score import gpu_worker
+            summary = gpu_worker.loop(settings, once=args.once, stop_on_idle=not args.no_idle_stop)
+            print(json.dumps(summary, ensure_ascii=False))
+            return
         from score import worker
         worker.loop(settings, poll_seconds=args.poll, once=args.once)
         return
@@ -65,6 +78,10 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.gallery_id is None:
         sys.exit("--gallery-id 또는 --local 이 필요하다 (--list 로 로컬 목록)")
+    if args.photo_ids:
+        ids = [int(x) for x in args.photo_ids.split(",") if x.strip()]
+        print(json.dumps(job.run(gallery_id=args.gallery_id, settings=settings, photo_ids=ids), ensure_ascii=False, indent=2))
+        return
     if args.shards > 1:
         started_at = job.now_iso() if args.force else None
         results = [job.run(gallery_id=args.gallery_id, force=args.force, settings=settings, job_id=args.job_id,

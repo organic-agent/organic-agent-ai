@@ -12,6 +12,17 @@ from pgvector.psycopg import register_vector
 from score.config import Settings
 
 
+def resolve_password(settings: Settings) -> str | None:
+    """DB_PASSWORD 가 없고 DB_PASSWORD_SSM_PARAM 이 있으면 SSM SecureString 에서 읽는다(#75, GPU 워커 인스턴스).
+    Lambda 는 지금처럼 env 로 받는다. 값은 프로세스 안에서만 살고 파일로 남기지 않는다."""
+    if settings.db_password or not settings.db_password_ssm_param:
+        return settings.db_password
+    import boto3
+
+    ssm = boto3.client("ssm")
+    return ssm.get_parameter(Name=settings.db_password_ssm_param, WithDecryption=True)["Parameter"]["Value"]
+
+
 def connect(settings: Settings) -> psycopg.Connection:
     if not settings.db_enabled:
         raise SystemExit("DB 모드인데 DB_HOST/DB_NAME/DB_USER 가 없다 (DB_PASSWORD, DB_SSLMODE 도 확인)")
@@ -20,7 +31,7 @@ def connect(settings: Settings) -> psycopg.Connection:
         port=settings.db_port,
         dbname=settings.db_name,
         user=settings.db_user,
-        password=settings.db_password,
+        password=resolve_password(settings),
         sslmode=settings.db_sslmode,
         connect_timeout=10,
     )

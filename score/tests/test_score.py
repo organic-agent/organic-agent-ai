@@ -514,3 +514,207 @@ def test_handler_returns_early_on_lock_skip(fake_handler):
     result = handler.handler({"galleryId": 7, "jobId": 3}, _Context())
 
     assert fake_handler["chained"] == [] and "chained" not in result
+
+
+# ── v2 (#75): Scorer 재사용 · claim_batch · GPU 워커 루프 · photoIds 폴백 ─────────────────────────────
+def test_scorer_is_reused_across_runs(tmp_path, fake_runners, monkeypatch):
+    store, refs, _, settings = _world(tmp_path, n=6)
+    fake_mod = sys.modules["score.runners"]          # fixture 가 끼운 가짜 모듈
+    made = []
+    original = fake_mod.LaionRunner
+    monkeypatch.setattr(fake_mod, "LaionRunner", lambda **kw: made.append(1) or original(**kw))
+
+    scorer = pipeline.Scorer(settings)
+    a = pipeline.run(store, "g", refs[:3], settings, force=True, scorer=scorer)
+    b = pipeline.run(store, "g", refs[3:], settings, force=True, scorer=scorer)
+
+    assert made == [1] and a["processed"] == 3 and b["processed"] == 3
+    assert a["perStageSeconds"]["load"] == b["perStageSeconds"]["load"] == round(scorer.load_seconds, 1)
+    # scorer 없이 부르면 예전처럼 하나 새로 만든다
+    pipeline.run(store, "g", refs[:1], settings, force=True)
+    assert made == [1, 1]
+
+
+class _Cur:
+    def __init__(self, conn):
+        self.conn = conn
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return None
+
+    def execute(self, sql, params=None):
+        self.conn.executed.append((" ".join(sql.split()), params))
+
+    def executemany(self, sql, params):
+        self.conn.executed.append((" ".join(sql.split()), list(params)))
+
+    def fetchall(self):
+        return self.conn.rows
+
+
+class _Conn:
+    def __init__(self, rows=()):
+        self.rows = list(rows)
+        self.executed = []
+        self.commits = 0
+        self.rollbacks = 0
+
+    def cursor(self):
+        return _Cur(self)
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+
+    def close(self):
+        pass
+
+
+def test_claim_batch_locks_photo_analysis_rows_without_embedding_and_skips_locked():
+    from score.store import DbStore
+
+    conn = _Conn(rows=[(11, "previews/a.jpg", None, "Canon", "R5"), (12, "previews/b.jpg", None, None, None)])
+    store = DbStore(SimpleNamespace(), conn)
+
+    refs = store.claim_batch(32, exclude=[99])
+
+    sql, params = conn.executed[0]
+    assert "FROM photo_analysis a" in sql and "FOR UPDATE OF a SKIP LOCKED" in sql
+    assert "a.embedding IS NOT NULL AND a.clip_embedding IS NULL" in sql
+    assert "p.preview_key IS NOT NULL" in sql and "p.deleted_at IS NULL" in sql and "g.deleted_at IS NULL" in sql
+    assert "status" not in sql                                    # v2: status 는 보지 않는다
+    assert params == ([99], 32)
+    assert [(r.photo_id, r.preview_key, r.camera) for r in refs] == [("11", "previews/a.jpg", "Canon R5"), ("12", "previews/b.jpg", None)]
+    assert conn.commits == 0                                      # 잠금은 호출자가 commit/rollback 할 때까지
+
+
+def test_load_db_and_load_by_ids_do_not_depend_on_embedded_status():
+    from score.gallery import load_by_ids, load_db
+
+    conn = _Conn(rows=[(5, "previews/e.jpg", None, None, None), (3, "previews/c.jpg", None, "Sony", "A7")])
+    refs = load_by_ids(conn, [3, 5, 8])
+    sql, params = conn.executed[0]
+    assert "p.id = ANY(%s)" in sql and "status" not in sql and params == ([3, 5, 8],)
+    assert [r.photo_id for r in refs] == ["3", "5"] and refs[0].camera == "Sony A7"
+
+    conn = _Conn(rows=[])
+    load_db(conn, None, 7, Path("/tmp"), download=False)
+    sql, _ = conn.executed[0]
+    assert "status" not in sql and "preview_key IS NOT NULL" in sql
+
+
+@pytest.fixture
+def fake_worker(monkeypatch, tmp_path):
+    """gpu_worker 의 바깥(DB·S3·러너)을 전부 가짜로. claim 은 큐에서 꺼내고, run 은 처리 장수를 돌려준다."""
+    from score import gpu_worker
+
+    state = {"claims": [], "queue": [], "runs": [], "rollbacks": 0, "stopped": 0, "excludes": []}
+
+    class Store:
+        def __init__(self, settings, connection):
+            pass
+
+        def claim_batch(self, n, exclude=None):
+            state["excludes"].append(list(exclude or []))
+            batch = state["queue"].pop(0) if state["queue"] else []
+            state["claims"].append(len(batch))
+            return batch
+
+        def rollback(self):
+            state["rollbacks"] += 1
+
+    def run(store, gallery, refs, settings, force=False, scorer=None, **kw):
+        state["runs"].append([r.photo_id for r in refs])
+        if any(r.photo_id == "boom" for r in refs):
+            raise RuntimeError("batch boom")
+        failed = [r.photo_id for r in refs if r.photo_id == "7"]
+        return {"processed": len(refs) - len(failed), "failed": failed}
+
+    monkeypatch.setattr(gpu_worker.db, "connect", lambda s: _Conn())
+    monkeypatch.setattr(gpu_worker, "DbStore", Store)
+    monkeypatch.setattr(gpu_worker, "PreviewStorage", lambda bucket: None)
+    monkeypatch.setattr(gpu_worker, "download_previews", lambda storage, refs, d, workers=8: refs)
+    monkeypatch.setattr(gpu_worker.pipeline, "Scorer", lambda settings: object())
+    monkeypatch.setattr(gpu_worker.pipeline, "run", run)
+    monkeypatch.setattr(gpu_worker, "stop_self", lambda: state.__setitem__("stopped", state["stopped"] + 1) or True)
+    monkeypatch.setattr(gpu_worker.time, "sleep", lambda s: None)
+    state["settings"] = Settings(out_root=tmp_path, dataset_root=tmp_path, s3_bucket="b", work_dir=tmp_path / "w",
+                                 worker_batch=4, worker_poll_seconds=0.0, worker_idle_stop_seconds=1)
+    state["module"] = gpu_worker
+    return state
+
+
+def _refs(*ids):
+    return [PhotoRef(photo_id=str(i), path=None, preview_key=f"previews/{i}.jpg") for i in ids]
+
+
+def test_gpu_worker_processes_batches_then_stops_itself_when_idle(fake_worker, monkeypatch):
+    w = fake_worker
+    w["queue"] = [_refs(1, 2, 3), _refs(4)]
+    clock = {"t": 0.0}
+    monkeypatch.setattr(w["module"].time, "monotonic", lambda: clock.__setitem__("t", clock["t"] + 0.6) or clock["t"])
+
+    summary = w["module"].loop(w["settings"])
+
+    assert w["runs"] == [["1", "2", "3"], ["4"]]
+    assert summary["processed"] == 4 and summary["batches"] == 2 and summary["idleStopped"] is True
+    assert w["stopped"] == 1
+    assert w["rollbacks"] >= 1                                     # 빈 집기마다 트랜잭션을 닫는다
+
+
+def test_gpu_worker_rolls_back_failed_batch_and_excludes_poison_photos(fake_worker):
+    w = fake_worker
+    w["queue"] = [_refs("boom", 2), _refs(7, 8), _refs(9)]
+
+    summary = w["module"].loop(w["settings"], stop_on_idle=False, max_batches=2)
+
+    assert w["runs"][0] == ["boom", "2"] and w["rollbacks"] >= 1   # 예외 → rollback, 루프는 계속
+    assert summary["batches"] == 2 and summary["processed"] == 2 and summary["failed"] == 1
+    assert w["excludes"][-1] == [7]                                # 실패한 장은 다음 집기에서 뺀다
+
+
+def test_gpu_worker_once_returns_after_one_batch(fake_worker):
+    w = fake_worker
+    w["queue"] = [_refs(1), _refs(2)]
+    summary = w["module"].loop(w["settings"], once=True)
+    assert summary["batches"] == 1 and w["stopped"] == 0 and len(w["queue"]) == 1
+
+
+def test_handler_photo_ids_scores_only_without_job_or_chain(fake_handler, monkeypatch):
+    calls = []
+
+    def run(gallery_id, settings, remaining_seconds=None, photo_ids=None, **kw):
+        calls.append({"gallery_id": gallery_id, "photo_ids": photo_ids, "kw": kw})
+        return {"gallery": str(gallery_id), "processed": len(photo_ids), "photoIds": len(photo_ids), "stopped": True}
+    monkeypatch.setattr(handler.job, "run", run)
+
+    result = handler.handler({"galleryId": 7, "jobId": 3, "photoIds": ["5", 6]}, None)
+
+    assert calls == [{"gallery_id": 7, "photo_ids": [5, 6], "kw": {}}]
+    assert fake_handler["chained"] == [] and fake_handler["reinvoked"] == [] and "chained" not in result
+
+
+def test_job_photo_ids_path_downloads_scores_and_skips_lock_and_jobs(monkeypatch, tmp_path):
+    from score import gallery as gallery_mod
+
+    conn = _Conn()
+    monkeypatch.setattr(job.db, "connect", lambda s: conn)
+    monkeypatch.setattr(job, "try_lock_gallery", lambda *a, **k: (_ for _ in ()).throw(AssertionError("잠금 없음")))
+    monkeypatch.setattr(job.jobs, "start", lambda *a, **k: (_ for _ in ()).throw(AssertionError("잡 없음")))
+    monkeypatch.setattr(job, "PreviewStorage", lambda bucket: None)
+    monkeypatch.setattr(gallery_mod, "load_by_ids", lambda c, ids: _refs(*ids))
+    monkeypatch.setattr(job, "download_previews", lambda storage, refs, d, workers=8: refs)
+    seen = {}
+    monkeypatch.setattr(job.pipeline, "run", lambda store, g, refs, settings, force=False, **kw: seen.update(
+        force=force, ids=[r.photo_id for r in refs]) or {"processed": len(refs)})
+
+    result = job.run(gallery_id=7, settings=Settings(out_root=tmp_path, dataset_root=tmp_path, s3_bucket="b",
+                                                     db_host="h", db_name="d", db_user="u"), photo_ids=[3, 1])
+
+    assert seen == {"force": True, "ids": ["3", "1"]}
+    assert result["processed"] == 2 and result["photoIds"] == 2

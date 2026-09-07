@@ -152,6 +152,42 @@ class DbStore:
         # 값은 필요 없다 — 자리 표시용 빈 벡터. pipeline 은 id 집합만 본다.
         return ids, np.zeros((len(ids), 0), dtype=np.float32)
 
+    def claim_batch(self, n: int, exclude: list[int] | None = None) -> list:
+        """GPU 워커의 집기(#75): 임베딩은 있고 CLIP 점수는 없는 사진을 n장 잠근다 — `FOR UPDATE OF photo_analysis SKIP LOCKED`.
+
+        트랜잭션을 연 채로 돌려준다. 호출자가 처리한 뒤 `write_scores`(commit) 하거나, 실패하면 `rollback()` 한다 —
+        잠금이 트랜잭션에 묶여 있어 워커가 죽어도 행은 자동으로 "미처리"로 돌아간다. 다른 워커가 잠근 행은 기다리지 않고
+        건너뛰므로 여러 대가 같은 사진을 집을 수 없다. 갤러리는 가리지 않는다(여러 대가 한 갤러리를 나눠 먹어도 된다).
+        photos 가 아니라 photo_analysis 를 잠그는 이유: photoselect 유저에게 photos UPDATE 권한이 없다.
+        `exclude` 는 이 프로세스에서 계속 실패하는 사진(독성)을 빼는 용도."""
+        from score.gallery import PhotoRef
+
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT p.id, p.preview_key, p.taken_at, p.camera_make, p.camera_model
+                FROM photo_analysis a
+                JOIN photos p ON p.id = a.photo_id
+                JOIN galleries g ON g.id = p.gallery_id
+                WHERE a.embedding IS NOT NULL AND a.clip_embedding IS NULL
+                  AND p.preview_key IS NOT NULL AND p.deleted_at IS NULL AND g.deleted_at IS NULL
+                  AND NOT (p.id = ANY(%s))
+                ORDER BY p.gallery_id, p.id
+                LIMIT %s
+                FOR UPDATE OF a SKIP LOCKED
+                """,
+                (list(exclude or []), int(n)),
+            )
+            rows = cur.fetchall()
+        refs = []
+        for photo_id, key, taken_at, make, model in rows:
+            camera = " ".join(s.strip() for s in (make, model) if s and s.strip()) or None
+            refs.append(PhotoRef(photo_id=str(photo_id), path=None, taken_at=taken_at, camera=camera, preview_key=key))
+        return refs
+
+    def rollback(self) -> None:
+        self.conn.rollback()
+
     def write_scores(self, gallery: str, rows: list[PhotoAnalysis],
                      clip_embeddings: tuple[list[str], np.ndarray]) -> None:
         """SCORE 의 컬럼만 UPSERT — subjects · sub_scores · clip_embedding · model_version.
