@@ -639,7 +639,7 @@ def fake_worker(monkeypatch, tmp_path):
     monkeypatch.setattr(gpu_worker, "DbStore", Store)
     monkeypatch.setattr(gpu_worker, "PreviewStorage", lambda bucket: None)
     monkeypatch.setattr(gpu_worker, "download_previews", lambda storage, refs, d, workers=8: refs)
-    monkeypatch.setattr(gpu_worker.pipeline, "Scorer", lambda settings: object())
+    monkeypatch.setattr(gpu_worker.pipeline, "Scorer", lambda settings: SimpleNamespace(warm_up=lambda: 0.0))
     monkeypatch.setattr(gpu_worker.pipeline, "run", run)
     monkeypatch.setattr(gpu_worker, "stop_self", lambda: state.__setitem__("stopped", state["stopped"] + 1) or True)
     monkeypatch.setattr(gpu_worker.time, "sleep", lambda s: None)
@@ -682,7 +682,8 @@ def test_gpu_worker_once_returns_after_one_batch(fake_worker):
     w = fake_worker
     w["queue"] = [_refs(1), _refs(2)]
     summary = w["module"].loop(w["settings"], once=True)
-    assert summary["batches"] == 1 and w["stopped"] == 0 and len(w["queue"]) == 1
+    # 한 배치만 점수. 미리 잠가 둔 다음 배치는 rollback 으로 돌려준다(실 DB 에서는 행이 다시 미처리로)
+    assert summary["batches"] == 1 and w["stopped"] == 0 and w["runs"] == [["1"]] and w["rollbacks"] >= 1
 
 
 def test_handler_photo_ids_scores_only_without_job_or_chain(fake_handler, monkeypatch):

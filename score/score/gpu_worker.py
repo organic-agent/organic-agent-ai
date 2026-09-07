@@ -61,35 +61,78 @@ def stop_self() -> bool:
         return False
 
 
+class _Lane:
+    """커넥션 하나 + 그 커넥션이 잠근 배치(#79). 두 레인이 교대한다 — 한 레인이 점수를 내는 동안 다른 레인이 다음 배치를
+    잠그고 미리보기를 내려받는다. 잠금이 트랜잭션에 묶여 있어 같은 커넥션으로는 다음 배치를 미리 잠글 수 없기 때문이다."""
+
+    def __init__(self, settings: Settings, index: int) -> None:
+        self.connection = db.connect(settings)
+        self.store = DbStore(settings, self.connection)
+        self.work_dir = settings.work_dir / f"worker-{index}"
+        self.refs: list = []
+
+    def claim_and_download(self, settings: Settings, storage, poison: list[int]) -> list:
+        """잠그고 내려받는다. 예외는 호출자가 rollback 한다."""
+        refs = self.store.claim_batch(settings.worker_batch, exclude=poison)
+        if refs:
+            refs = download_previews(storage, refs, self.work_dir, workers=settings.download_workers)
+        self.refs = refs
+        return refs
+
+    def rollback(self) -> None:
+        self.refs = []
+        try:
+            self.store.rollback()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def cleanup(self) -> None:
+        shutil.rmtree(self.work_dir, ignore_errors=True)
+
+    def close(self) -> None:
+        self.connection.close()
+
+
 def loop(settings: Settings, *, once: bool = False, stop_on_idle: bool = True, max_batches: int | None = None) -> dict:
-    """루프 본체. 테스트·`--once` 를 위해 처리 요약을 돌려준다."""
+    """루프 본체. 테스트·`--once` 를 위해 처리 요약을 돌려준다.
+
+    교대 규칙: 레인 A 의 배치를 점수 내기 전에 레인 B 의 claim+download 를 스레드에 건다. A 가 commit 하면 B 가 "현재"가 되고
+    A 는 다음을 미리 받는다. 집을 게 없으면(빈 배치) 그 레인은 rollback 으로 스냅샷을 닫고 대기한다."""
+    from concurrent.futures import ThreadPoolExecutor
+
     if not settings.s3_bucket:
         raise RuntimeError("S3_BUCKET 이 없다 — 미리보기 버킷")
-    connection = db.connect(settings)
-    store = DbStore(settings, connection)
+    max_batches = max_batches if max_batches is not None else (settings.worker_max_batches or None)
+    lanes = [_Lane(settings, 0), _Lane(settings, 1)]
     storage = PreviewStorage(settings.s3_bucket)
-    work_dir = settings.work_dir / "worker"
     scorer = pipeline.Scorer(settings)
+    scorer.warm_up()
+    prefetch = ThreadPoolExecutor(max_workers=1, thread_name_prefix="prefetch")
     poison: list[int] = []
     summary = {"batches": 0, "processed": 0, "failed": 0, "idleStopped": False}
     idle_since: float | None = None
     log.info("[worker] 시작 batch=%d poll=%.0fs idle_stop=%ds", settings.worker_batch, settings.worker_poll_seconds,
              settings.worker_idle_stop_seconds)
+    current, other = lanes
+    pending = None            # other 레인의 claim+download Future
     try:
         while True:
+            # 현재 레인의 배치를 확보한다 — 앞 루프가 미리 걸어 둔 Future 가 있으면 그 결과, 없으면 지금 집는다.
             try:
-                refs = store.claim_batch(settings.worker_batch, exclude=poison)
-            except Exception as exc:  # noqa: BLE001 — 접속 끊김 등. 롤백하고 기다린다
-                log.warning("[worker] 집기 실패 (%s: %s) — %.0fs 뒤 재시도", type(exc).__name__, str(exc).splitlines()[0],
-                            settings.worker_poll_seconds)
-                store.rollback()
+                refs = pending.result() if pending is not None else current.claim_and_download(settings, storage, poison)
+            except Exception as exc:  # noqa: BLE001 — 접속 끊김·S3 오류. 롤백하고 기다린다
+                log.warning("[worker] 집기/다운로드 실패 (%s: %s) — %.0fs 뒤 재시도", type(exc).__name__,
+                            str(exc).splitlines()[0], settings.worker_poll_seconds)
+                current.rollback()
+                pending = None
                 if once:
                     raise
                 time.sleep(settings.worker_poll_seconds)
                 continue
+            pending = None
 
             if not refs:
-                store.rollback()                    # 빈 SELECT 도 트랜잭션을 열었다 — 닫아야 다음 집기가 새 스냅샷을 본다
+                current.rollback()                  # 빈 SELECT 도 트랜잭션을 열었다 — 닫아야 다음 집기가 새 스냅샷을 본다
                 now = time.monotonic()
                 idle_since = idle_since or now
                 idle = now - idle_since
@@ -103,20 +146,22 @@ def loop(settings: Settings, *, once: bool = False, stop_on_idle: bool = True, m
                 continue
 
             idle_since = None
+            # 다음 배치를 다른 레인이 미리 잠그고 받는다 — 지금 배치의 GPU 시간과 겹친다.
+            pending = prefetch.submit(other.claim_and_download, settings, storage, poison)
             t0 = time.monotonic()
             try:
-                refs = download_previews(storage, refs, work_dir, workers=settings.download_workers)
                 # 집기가 곧 대상 선정이라 force=True — 재개 판정(read_analysis)을 건너뛴다. write_scores 가 commit = 잠금 해제.
-                result = pipeline.run(store, "worker", refs, settings, force=True, scorer=scorer)
+                result = pipeline.run(current.store, "worker", refs, settings, force=True, scorer=scorer)
             except Exception as exc:  # noqa: BLE001 — 배치를 돌려주고 계속 산다
                 log.exception("[worker] 배치 %d장 실패 — rollback: %s", len(refs), exc)
-                store.rollback()
+                current.rollback()
+                current, other = other, current
                 if once:
                     raise
                 time.sleep(settings.worker_poll_seconds)
                 continue
             finally:
-                shutil.rmtree(work_dir, ignore_errors=True)   # 미리보기 임시 파일 — 장기 실행이라 매 배치 비운다
+                current.cleanup()                   # 미리보기 임시 파일 — 장기 실행이라 매 배치 비운다
 
             failed = [int(pid) for pid in result.get("failed", []) if str(pid).isdigit()]
             poison.extend(failed)
@@ -125,7 +170,16 @@ def loop(settings: Settings, *, once: bool = False, stop_on_idle: bool = True, m
             summary["failed"] += len(failed)
             log.info("[worker] 배치 %d장 %.1fs (장당 %.3fs) 실패 %d 누적 %d장", len(refs), time.monotonic() - t0,
                      (time.monotonic() - t0) / max(1, len(refs)), len(failed), summary["processed"])
+            current, other = other, current
             if once or (max_batches is not None and summary["batches"] >= max_batches):
+                if pending is not None:             # 미리 잠근 배치는 돌려준다
+                    try:
+                        pending.result()
+                    except Exception:  # noqa: BLE001
+                        pass
+                    current.rollback()
                 return summary
     finally:
-        connection.close()
+        prefetch.shutdown(wait=False, cancel_futures=True)
+        for lane in lanes:
+            lane.close()

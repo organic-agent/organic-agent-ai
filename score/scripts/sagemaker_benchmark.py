@@ -29,7 +29,7 @@ IMAGE_TAG = "gpu"
 ROLE_NAME = "wes-sagemaker-benchmark"
 LOG_GROUP = "/aws/sagemaker/TrainingJobs"
 KEEP_LINES = ("러너 로드", "/장)", "다운로드", "BENCHMARK_RESULT", "완료:", "실패", "Error", "error", "Traceback",
-              "SageMaker 벤치마크")
+              "SageMaker 벤치마크", "[worker]", "워밍", "batches")
 
 
 def _session():
@@ -96,6 +96,14 @@ def cmd_run(args) -> None:
     })
     if args.limit:
         env["LIMIT"] = str(args.limit)
+    for kv in args.env or []:
+        k, _, v = kv.partition("=")
+        env[k] = v
+    algo = {"TrainingImage": image_uri(s), "TrainingInputMode": "File"}
+    if args.container_args:
+        # 워커 모드 검증(#79): 이미지 ENTRYPOINT(python -m score)에 인자를 바꿔 넣는다. 예: "worker --gpu"
+        algo["ContainerEntrypoint"] = ["python", "-m", "score"]
+        algo["ContainerArguments"] = args.container_args.split()
     vpc = cfg["VpcConfig"]
     bucket = env["S3_BUCKET"]
     label = args.label or f"{args.instance.split('.')[-2]}-{'fp32' if args.no_fp16 else 'fp16'}"
@@ -103,7 +111,7 @@ def cmd_run(args) -> None:
     sm = s.client("sagemaker")
     sm.create_training_job(
         TrainingJobName=name,
-        AlgorithmSpecification={"TrainingImage": image_uri(s), "TrainingInputMode": "File"},
+        AlgorithmSpecification=algo,
         RoleArn=role_arn(s),
         OutputDataConfig={"S3OutputPath": f"s3://{bucket}/sagemaker-benchmark/"},
         ResourceConfig={"InstanceType": args.instance, "InstanceCount": 1, "VolumeSizeInGB": 30},
@@ -198,6 +206,8 @@ def main(argv=None) -> None:
     r.add_argument("--max-seconds", type=int, default=3600)
     r.add_argument("--label", help="잡 이름에 붙일 짧은 표식")
     r.add_argument("--no-wait", action="store_true")
+    r.add_argument("--container-args", help='ENTRYPOINT 뒤 인자 교체. 예: "worker --gpu" (워커 루프 검증, #79)')
+    r.add_argument("--env", action="append", metavar="KEY=VAL", help="추가 환경변수 (반복 가능)")
     lg = sub.add_parser("logs")
     lg.add_argument("job_name")
     args = ap.parse_args(argv)
