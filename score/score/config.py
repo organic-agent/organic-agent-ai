@@ -56,6 +56,17 @@ class Knobs:
     clip_batch: int = 8
     #: ARNIQA 입력 긴 변(#51). 1600 → 1024 로 연산 ~2.4배 절감. 바꾸면 technical_score 스케일이 바뀐다.
     arniqa_long_edge: int = 1024
+    #: ARNIQA 를 이 장수씩 한 forward 로(#68). 같은 픽셀 크기끼리만 묶인다(세로 683×1024 / 가로 1024×683) — 갤러리는
+    #: 대개 한 방향이 95% 라 묶음이 거의 그대로 산다. CPU 에서는 1 이 낫다(배치 이득 없음, 메모리만 든다).
+    arniqa_batch: int = 1
+    #: 연산 장치. "auto" 면 cuda → mps → cpu 순. Lambda 는 cpu 로 떨어지고, SageMaker/EC2 GPU 는 cuda(#68).
+    device: str = "auto"
+    #: cuda 에서 fp16 autocast. 처리량 ~2배, 점수는 소수점 셋째 자리에서 흔들린다 — CPU 점수와 Spearman ≥ 0.99 검증 뒤 씀.
+    #: cpu·mps 에서는 무시된다.
+    fp16: bool = True
+    #: 디코드·classical(선명도) 을 GPU 추론과 겹치게 하는 스레드 수. 0 이면 지금처럼 한 스레드에서 순서대로.
+    #: GPU 는 4 vCPU 의 JPEG 디코드를 기다리는 게 병목이라 GPU 환경에서 켠다. Lambda(CPU) 는 0 — 디코드와 추론이 같은 코어를 다툰다.
+    decode_workers: int = 0
 
 
 @dataclass(frozen=True)
@@ -80,6 +91,9 @@ class Settings:
     s3_bucket: str | None = None
     #: DB 모드에서 미리보기를 내려받는 자리. 갤러리마다 하위 폴더. Lambda 는 /tmp 만 쓸 수 있다.
     work_dir: Path = Path("/tmp/score")
+
+    #: 미리보기를 S3 에서 동시에 내려받는 스레드 수(#68). 장당 왕복이 병목이라 8 이면 한 프로세스가 7,000장을 1분대에 받는다.
+    download_workers: int = 8
 
     #: 갤러리 샤딩(#54). 사진 수 / shard_photos 를 올림한 만큼(최대 max_shards) 같은 함수를 동시에 띄운다.
     #: 1 이면 지금처럼 한 실행. 150 이면 822장 → 6 샤드(각 ~137장 ≈ 3.5분). 250(4 샤드)에서 150 으로 낮춘 이유(#58):
@@ -126,6 +140,7 @@ class Settings:
             db_sslrootcert=os.environ.get("DB_SSLROOTCERT"),
             s3_bucket=os.environ.get("S3_BUCKET"),
             work_dir=Path(os.environ.get("SCORE_WORK", "/tmp/score")),
+            download_workers=int(os.environ.get("SCORE_DOWNLOAD_WORKERS", "8")),
             stop_margin_seconds=int(os.environ.get("STOP_MARGIN_SECONDS", "60")),
             shard_photos=int(os.environ.get("SHARD_PHOTOS", "150")),
             max_shards=int(os.environ.get("MAX_SHARDS", "32")),
@@ -134,5 +149,9 @@ class Settings:
             knobs=Knobs(
                 clip_batch=int(os.environ.get("CLIP_BATCH", Knobs.clip_batch)),
                 arniqa_long_edge=int(os.environ.get("ARNIQA_LONG_EDGE", Knobs.arniqa_long_edge)),
+                arniqa_batch=int(os.environ.get("ARNIQA_BATCH", Knobs.arniqa_batch)),
+                device=os.environ.get("SCORE_DEVICE", Knobs.device),
+                fp16=os.environ.get("SCORE_FP16", "1" if Knobs.fp16 else "0") not in ("0", "false", "no", ""),
+                decode_workers=int(os.environ.get("SCORE_DECODE_WORKERS", Knobs.decode_workers)),
             ),
         )

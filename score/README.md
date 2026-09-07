@@ -54,13 +54,17 @@ score/
 │   ├── worker.py       로컬 폴링 워커 (운영 없음 — wes 에 invoker 가 생기면 삭제)
 │   ├── subjects.py     CLIP zero-shot — SubjectsTagger · ParentTagger
 │   ├── classical.py    Laplacian 선명도 · 노출 클립
-│   ├── runners/        ArniqaRunner(torch.hub, SHA 고정) · LaionRunner(open_clip + MLP) — torch 는 여기만
+│   ├── runners/        ArniqaRunner(torch.hub, SHA 고정, score_batch) · LaionRunner(open_clip + MLP) — torch 는 여기만
+│   ├── device.py       cuda → mps → cpu 선택 · cuda fp16 autocast (#68)
+│   ├── sagemaker.py    SageMaker training 진입점 — GPU 벤치마크 전용, GPU 사용률 표본
 │   ├── config.py       Settings · Knobs · MODEL_VERSION · PARENTS · PARENT_PROMPTS
 │   ├── store.py        LocalStore(out/v3/) · DbStore — write_scores 하나
 │   ├── gallery.py      PhotoRef — 로컬 폴더 / DB(EMBEDDED + preview_key)
 │   ├── storage.py      S3 미리보기 다운로드    ├── db.py  접속    ├── jobs.py  start · record · fail · claim_next
-├── tests/test_score.py   pytest 27 — 재개 · 컬럼 경계 · 배치/데드라인 · CLIP 배치/실패 격리 · 샤딩(분배·조정자·마지막 체인·since) · chain · handler · categorize 와의 상수 일치
+├── tests/test_score.py   pytest 30 — 재개 · 컬럼 경계 · 배치/데드라인 · CLIP/ARNIQA 배치·실패 격리 · 프리페치 · 샤딩(분배·조정자·마지막 체인·since) · chain · handler · categorize 와의 상수 일치
 ├── Dockerfile · deploy.sh   컨테이너 Lambda (가중치 빌드 시 번들) · ECR 푸시 + update-function-code
+├── Dockerfile.gpu           GPU 벤치마크 이미지 (cu121 torch, ECR :gpu) — .github/workflows/build-gpu-image.yml 이 민다
+├── scripts/sagemaker_benchmark.py   SageMaker training job 제출·대기·로그 요약 · snapshot_scores.py  점수 스냅샷·비교(fp16 검증)
 └── requirements.txt · pyproject.toml
 ```
 
@@ -88,6 +92,23 @@ wes 쪽 스크립트가 이걸 감싼다: `../organic-agent-server/wes/scripts/l
 - **`MODEL_VERSION` 이 재개 키다.** 러너·전처리를 바꾸면 올린다 — 전 갤러리가 재점수 대상이 된다. categorize 의
   같은 상수와 값이 같아야 하며 테스트가 고정한다.
 - `photo_ratings` · `photo_selection_items` 는 읽지 않는다(정책).
+
+## GPU 벤치마크 (#68, 운영 경로 아님)
+
+Lambda 32 샤드 대신 GPU 한 대로 돌리면 얼마나 빠르고 얼마인지 재는 도구. 계획·결과는 `docs/gpu-benchmark-*.md`(로컬 문서).
+
+```bash
+# 이미지: GitHub Actions "Build score GPU image" 수동 실행 → ECR wes-score:gpu
+.venv/bin/python scripts/sagemaker_benchmark.py setup                               # 실행 역할 (한 번)
+.venv/bin/python scripts/sagemaker_benchmark.py run --gallery-id 7 --force          # ml.g4dn.xlarge, fp16, clip 32 · arniqa 8 · decode 4
+.venv/bin/python scripts/sagemaker_benchmark.py run --gallery-id 7 --force --no-fp16 --instance ml.g6.xlarge
+DB_HOST=localhost DB_PORT=15432 … .venv/bin/python scripts/snapshot_scores.py dump 7 cpu-g7.json     # force 전에 CPU 점수 보관
+.venv/bin/python scripts/snapshot_scores.py compare cpu-g7.json gpu-g7.json         # Spearman ≥ 0.99 면 같은 모델
+```
+
+손잡이(환경변수): `SCORE_DEVICE`(auto) · `SCORE_FP16`(cuda 만) · `CLIP_BATCH` · `ARNIQA_BATCH`(같은 크기끼리만 묶임) ·
+`SCORE_DECODE_WORKERS`(디코드·classical 프리페치 스레드, Lambda 는 0) · `SCORE_DOWNLOAD_WORKERS`(S3 동시 다운로드, 기본 8).
+CPU 경로는 이 손잡이가 기본값일 때 이전과 비트 단위로 같다(16장 검증).
 
 ## 배포
 

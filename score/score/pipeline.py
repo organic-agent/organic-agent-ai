@@ -7,8 +7,10 @@
     고전 지표                    → sharpness · highlight_clip · shadow_clip · mean_luma (sub_scores)
     → store.write_scores  (subjects · sub_scores · clip_embedding · model_version 만)
 
-한 장은 한 번만 디코드해서(1600px PIL) 세 러너에 넘기고, CLIP 은 `clip_batch` 장씩 한 forward 로 묶는다(#51).
-배치 CLIP 이 실패하면 그 묶음만 한 장씩으로 물러난다 — 한 장 실패가 묶음·잡을 죽이지 않는다.
+한 장은 한 번만 디코드해서(1024px PIL) 세 러너에 넘기고, CLIP 은 `clip_batch` 장씩, ARNIQA 는 `arniqa_batch` 장씩 한 forward 로
+묶는다(#51 · #68). 배치가 실패하면 그 묶음만 한 장씩으로 물러난다 — 한 장 실패가 묶음·잡을 죽이지 않는다.
+GPU(#68)에서는 디코드·classical 을 `decode_workers` 스레드가 두 묶음 앞서 준비한다 — 그러지 않으면 GPU 가 4 vCPU 의 JPEG
+디코드를 기다리며 논다. Lambda(CPU) 는 0 이라 예전처럼 한 스레드에서 순서대로.
 사진마다 독립이라 재개가 쉽다: 같은 MODEL_VERSION 이고 CLIP 벡터가 저장된 사진은 건너뛴다.
 `write_batch` 장마다 commit 하고, `remaining_seconds` 가 있으면(Lambda) 배치 경계에서 데드라인을 보고 멈춘다 —
 결과의 `stopped`·`remaining` 으로 드러나고, 재호출은 handler 의 몫이다(embedder #24 와 같은 규칙).
@@ -19,6 +21,7 @@ from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
@@ -62,16 +65,23 @@ class ScoreResult:
         }
 
 
-def _compute_env() -> str:
-    """torch 스레드 · CPU 수 — Lambda 에서 실제로 몇 코어를 쓰는지 로그로 남긴다(#51)."""
+#: 디코드 스레드가 앞서 준비해 두는 묶음 수. 묶음 = clip_batch 장. 2 면 메모리의 PIL 이미지는 세 묶음을 넘지 않는다.
+PREFETCH_CHUNKS = 2
+
+
+def _compute_env(device: str | None = None) -> str:
+    """torch 스레드 · CPU 수 · 장치 — Lambda 에서 실제로 몇 코어를 쓰는지, GPU 면 어떤 GPU 인지 로그로 남긴다(#51 · #68)."""
     import os
 
     try:
         import torch
 
-        return f"torch_threads={torch.get_num_threads()} interop={torch.get_num_interop_threads()} cpu_count={os.cpu_count()}"
+        from score.device import describe
+
+        dev = f" device={describe(device)}" if device else ""
+        return f"torch_threads={torch.get_num_threads()} interop={torch.get_num_interop_threads()} cpu_count={os.cpu_count()}{dev}"
     except Exception:  # noqa: BLE001 — 테스트의 가짜 러너 환경
-        return f"cpu_count={os.cpu_count()}"
+        return f"cpu_count={os.cpu_count()} device={device}"
 
 
 def _load_runners():
@@ -127,13 +137,18 @@ def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, fo
 
     t0 = time.monotonic()
     classical, ArniqaRunner, LaionRunner, ParentTagger, SubjectsTagger = _load_runners()
-    laion, arniqa = LaionRunner(), ArniqaRunner(long_edge=k.arniqa_long_edge)
+    laion = LaionRunner(device=k.device, fp16=k.fp16)
+    arniqa = ArniqaRunner(long_edge=k.arniqa_long_edge, device=k.device, fp16=k.fp16)
+    device = getattr(laion, "device", None)
     tagger = SubjectsTagger(laion) if k.subjects_zero_shot else None
     parent_tagger = ParentTagger(laion)
     result.subjects_used = tagger is not None
     stage["load"] = time.monotonic() - t0
-    log.info("[score] 러너 로드 %.1fs · %s", stage["load"], _compute_env())
-    #: 장별 누적 시간 — 어디서 시간이 가는지 Lambda 로그로 본다(#51). decode+clip 은 묶음 단위라 묶음 시간을 장수로 나눈다.
+    log.info("[score] 러너 로드 %.1fs · %s · clip_batch=%d arniqa_batch=%d fp16=%s decode_workers=%d",
+             stage["load"], _compute_env(device), k.clip_batch, k.arniqa_batch, k.fp16, k.decode_workers)
+    #: 장별 누적 시간 — 어디서 시간이 가는지 로그로 본다(#51). decode·clip·arniqa 는 묶음 단위라 묶음 시간을 장수로 나눈다.
+    #: 프리페치(decode_workers > 0)면 decode 는 "묶음이 준비되길 기다린 벽시계", classical 은 스레드 안에서 잰 CPU 시간이라
+    #: 추론과 겹친다 — 둘을 더해 장당 시간으로 읽으면 안 된다.
     t_stage = {"decode": 0.0, "clip": 0.0, "arniqa": 0.0, "classical": 0.0, "tag": 0.0, "write": 0.0}
 
     def flush(rows: list[PhotoAnalysis], clips: dict[str, np.ndarray]) -> None:
@@ -141,32 +156,58 @@ def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, fo
         C = np.stack([clips[i] for i in ids]) if ids else np.zeros((0, 768))
         store.write_scores(gallery, rows, (ids, C))
 
-    def embed_chunk(chunk: list[PhotoRef]) -> list[tuple[PhotoRef, object, np.ndarray | None, Exception | None]]:
-        """(ref, 이미지, CLIP 벡터, 오류) — 디코드는 한 번, CLIP 은 묶어서. 실패한 장은 오류를 들고 나온다."""
-        loaded: list[tuple[PhotoRef, object]] = []
-        out: dict[str, tuple] = {}
+    def prepare(ref: PhotoRef) -> tuple[object, dict, float]:
+        """CPU 만 쓰는 준비 — 디코드 1회 + classical. 스레드에서 돌릴 수 있게 torch 를 건드리지 않는다."""
+        img = load_image(ref.path)
         t = time.monotonic()
-        for ref in chunk:
+        cl = classical.measure(img)
+        return img, cl, time.monotonic() - t
+
+    def embed_chunk(chunk: list[PhotoRef], futures: list[Future] | None) -> list[tuple]:
+        """[(ref, 이미지, CLIP 벡터, classical, ARNIQA 점수, 오류)] — 디코드는 한 번, CLIP·ARNIQA 는 묶어서.
+        실패한 장은 오류를 들고 나온다."""
+        loaded: list[tuple[PhotoRef, object, dict]] = []
+        out: dict[str, list] = {}
+        t = time.monotonic()
+        for j, ref in enumerate(chunk):
             try:
-                loaded.append((ref, load_image(ref.path)))
+                img, cl, t_cl = futures[j].result() if futures is not None else prepare(ref)
+                t_stage["classical"] += t_cl
+                loaded.append((ref, img, cl))
             except Exception as exc:  # noqa: BLE001
-                out[ref.photo_id] = (ref, None, None, exc)
+                out[ref.photo_id] = [ref, None, None, None, None, exc]
         t_stage["decode"] += time.monotonic() - t
         t = time.monotonic()
         if loaded:
             try:
-                embs = laion.embed_batch([img for _, img in loaded])
-                for (ref, img), emb in zip(loaded, embs):
-                    out[ref.photo_id] = (ref, img, emb, None)
+                embs = laion.embed_batch([img for _, img, _ in loaded])
+                for (ref, img, cl), emb in zip(loaded, embs):
+                    out[ref.photo_id] = [ref, img, emb, cl, None, None]
             except Exception as exc:  # noqa: BLE001 — 묶음이 죽으면 한 장씩 물러난다
                 log.warning("CLIP 배치 %d장 실패(%s) — 한 장씩 재시도", len(loaded), exc)
-                for ref, img in loaded:
+                for ref, img, cl in loaded:
                     try:
-                        out[ref.photo_id] = (ref, img, laion.embed(img), None)
+                        out[ref.photo_id] = [ref, img, laion.embed(img), cl, None, None]
                     except Exception as exc1:  # noqa: BLE001
-                        out[ref.photo_id] = (ref, img, None, exc1)
+                        out[ref.photo_id] = [ref, img, None, cl, None, exc1]
         t_stage["clip"] += time.monotonic() - t
-        return [out[ref.photo_id] for ref in chunk]
+        t = time.monotonic()
+        alive = [out[ref.photo_id] for ref in chunk if out[ref.photo_id][5] is None]
+        step = max(1, k.arniqa_batch)
+        for start in range(0, len(alive), step):
+            group = alive[start:start + step]
+            try:
+                for entry, tech in zip(group, arniqa.score_batch([e[1] for e in group])):
+                    entry[4] = tech["technical_score"]
+            except Exception as exc:  # noqa: BLE001 — 묶음이 죽으면 한 장씩 물러난다
+                log.warning("ARNIQA 배치 %d장 실패(%s) — 한 장씩 재시도", len(group), exc)
+                for entry in group:
+                    try:
+                        entry[4] = arniqa.score(entry[1])["technical_score"]
+                    except Exception as exc1:  # noqa: BLE001
+                        entry[5] = exc1
+        t_stage["arniqa"] += time.monotonic() - t
+        return [tuple(out[ref.photo_id]) for ref in chunk]
 
     rows: list[PhotoAnalysis] = []
     clips: dict[str, np.ndarray] = {}
@@ -176,61 +217,69 @@ def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, fo
     done = 0
     i = 0
     chunk_size = max(1, k.clip_batch)
-    for start in range(0, len(todo), chunk_size):
-        t_chunk = time.monotonic()
-        prepared = embed_chunk(todo[start:start + chunk_size])
-        t_shared = (time.monotonic() - t_chunk) / max(1, len(prepared))   # 디코드+CLIP 몫을 장별로 나눈다
-        for ref, img, clip_emb, err in prepared:
-            i += 1
-            t0 = time.monotonic()
-            try:
-                if err is not None:
-                    raise err
-                t = time.monotonic()
-                aes = laion.score_from_embedding(clip_emb)
-                tech = arniqa.score(img)["technical_score"]
-                t_stage["arniqa"] += time.monotonic() - t
-                t = time.monotonic()
-                cl = classical.measure(img)
-                t_stage["classical"] += time.monotonic() - t
-                sub = {"technical_score": tech, "aesthetic_score": aes, **cl}
-                subjects = UNKNOWN
-                t = time.monotonic()
-                if tagger is not None:
-                    subjects, margin = tagger.tag(clip_emb)
-                    sub["subjects_margin"] = margin
-                sub["clip_parent"] = parent_tagger.tag(clip_emb)
-                t_stage["tag"] += time.monotonic() - t
-                rows.append(PhotoAnalysis(photo_id=ref.photo_id, subjects=subjects,
-                                          sub_scores=sub, model_version=MODEL_VERSION))
-                clips[ref.photo_id] = clip_emb
-                result.processed += 1
-                t_photo += time.monotonic() - t0 + t_shared
-                if i % 20 == 0 or i == len(todo):
-                    log.info("  %d/%d  (%.2fs/장)  %s", i, len(todo), t_photo / i,
-                             " ".join(f"{k}={v / i:.2f}" for k, v in t_stage.items()))
-            except Exception as exc:  # noqa: BLE001 — 한 장 실패가 잡을 죽이면 안 된다
-                log.exception("사진 실패 %s: %s", ref.photo_id, exc)
-                result.failed.append(ref.photo_id)
-            done = i
+    chunks = [todo[start:start + chunk_size] for start in range(0, len(todo), chunk_size)]
+    executor = ThreadPoolExecutor(max_workers=k.decode_workers) if k.decode_workers > 0 else None
+    pending: dict[int, list[Future]] = {}
 
-            if len(rows) >= k.write_batch or i == len(todo):
-                t = time.monotonic()
-                flush(rows, clips)
-                t_stage["write"] += time.monotonic() - t
-                rows, clips = [], {}
-                longest_batch = max(longest_batch, time.monotonic() - batch_started)
-                batch_started = time.monotonic()
-                if remaining_seconds is not None and i < len(todo):
-                    budget = longest_batch + settings.stop_margin_seconds
-                    left = remaining_seconds()
-                    if left < budget:
-                        result.stopped = True
-                        log.warning("[score] 갤러리 %s: 남은 시간 %.0fs < 배치 예산 %.0fs — 배치 경계에서 멈춤 (남은 %d장)",
-                                    gallery, left, budget, len(todo) - i)
-                        break
-        if result.stopped:
-            break
+    def prefetch(ci: int) -> None:
+        if executor is not None and ci < len(chunks) and ci not in pending:
+            pending[ci] = [executor.submit(prepare, ref) for ref in chunks[ci]]
+
+    try:
+        for ci, chunk in enumerate(chunks):
+            for ahead in range(ci, ci + PREFETCH_CHUNKS + 1):
+                prefetch(ahead)
+            t_chunk = time.monotonic()
+            prepared = embed_chunk(chunk, pending.pop(ci, None))
+            t_shared = (time.monotonic() - t_chunk) / max(1, len(prepared))   # 디코드+CLIP+ARNIQA 몫을 장별로 나눈다
+            for ref, img, clip_emb, cl, tech, err in prepared:
+                i += 1
+                t0 = time.monotonic()
+                try:
+                    if err is not None:
+                        raise err
+                    aes = laion.score_from_embedding(clip_emb)
+                    sub = {"technical_score": tech, "aesthetic_score": aes, **cl}
+                    subjects = UNKNOWN
+                    t = time.monotonic()
+                    if tagger is not None:
+                        subjects, margin = tagger.tag(clip_emb)
+                        sub["subjects_margin"] = margin
+                    sub["clip_parent"] = parent_tagger.tag(clip_emb)
+                    t_stage["tag"] += time.monotonic() - t
+                    rows.append(PhotoAnalysis(photo_id=ref.photo_id, subjects=subjects,
+                                              sub_scores=sub, model_version=MODEL_VERSION))
+                    clips[ref.photo_id] = clip_emb
+                    result.processed += 1
+                    t_photo += time.monotonic() - t0 + t_shared
+                    if i % 20 == 0 or i == len(todo):
+                        log.info("  %d/%d  (%.2fs/장)  %s", i, len(todo), t_photo / i,
+                                 " ".join(f"{k}={v / i:.2f}" for k, v in t_stage.items()))
+                except Exception as exc:  # noqa: BLE001 — 한 장 실패가 잡을 죽이면 안 된다
+                    log.exception("사진 실패 %s: %s", ref.photo_id, exc)
+                    result.failed.append(ref.photo_id)
+                done = i
+
+                if len(rows) >= k.write_batch or i == len(todo):
+                    t = time.monotonic()
+                    flush(rows, clips)
+                    t_stage["write"] += time.monotonic() - t
+                    rows, clips = [], {}
+                    longest_batch = max(longest_batch, time.monotonic() - batch_started)
+                    batch_started = time.monotonic()
+                    if remaining_seconds is not None and i < len(todo):
+                        budget = longest_batch + settings.stop_margin_seconds
+                        left = remaining_seconds()
+                        if left < budget:
+                            result.stopped = True
+                            log.warning("[score] 갤러리 %s: 남은 시간 %.0fs < 배치 예산 %.0fs — 배치 경계에서 멈춤 (남은 %d장)",
+                                        gallery, left, budget, len(todo) - i)
+                            break
+            if result.stopped:
+                break
+    finally:
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     result.remaining = len(todo) - done
     stage["photos"] = t_photo

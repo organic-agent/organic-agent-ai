@@ -14,6 +14,7 @@ import torch.nn as nn
 
 from PIL import Image
 
+from score.device import autocast, pick_device
 from score.images import as_image
 from score.runners.common import fetch_weight
 
@@ -44,13 +45,17 @@ class _MLP(nn.Module):
 
 
 class LaionRunner:
-    def __init__(self) -> None:
+    """`device`(#68): CLIP 만 GPU 로 간다. MLP 는 768 → 1 이라 장당 전송이 forward 보다 비싸 CPU 에 둔다."""
+
+    def __init__(self, device: str | None = None, fp16: bool = False) -> None:
         import open_clip
 
+        self.device = pick_device(device)
+        self.fp16 = fp16
         self._clip, _, self._preprocess = open_clip.create_model_and_transforms(
             CLIP_MODEL, pretrained=CLIP_PRETRAINED
         )
-        self._clip.eval()
+        self._clip.eval().to(self.device)
         state = torch.load(fetch_weight(MLP_URL, "laion_aesthetic_v2_l14_linearMSE.pth"),
                            map_location="cpu", weights_only=True)
         self._mlp = _MLP()
@@ -67,10 +72,12 @@ class LaionRunner:
         """(n, 768) L2 정규화 임베딩 — 여러 장을 한 번의 forward 로(#51). 순서 유지. 빈 목록이면 (0, 768)."""
         if not sources:
             return np.zeros((0, EMBED_DIM), dtype=np.float32)
-        x = torch.stack([self._preprocess(as_image(s)) for s in sources])
-        feat = self._clip.encode_image(x)
+        x = torch.stack([self._preprocess(as_image(s)) for s in sources]).to(self.device)
+        with autocast(self.device, self.fp16):
+            feat = self._clip.encode_image(x)
+        feat = feat.float()                      # 정규화는 fp32 로 — half 에서 norm 이 흔들린다
         feat = feat / feat.norm(dim=-1, keepdim=True)
-        return feat.float().numpy()
+        return feat.cpu().numpy()
 
     @torch.no_grad()
     def embed_texts(self, prompts: list[str]) -> np.ndarray:
@@ -78,9 +85,11 @@ class LaionRunner:
         import open_clip
 
         tok = open_clip.get_tokenizer(CLIP_MODEL)
-        feat = self._clip.encode_text(tok(prompts))
+        with autocast(self.device, self.fp16):
+            feat = self._clip.encode_text(tok(prompts).to(self.device))
+        feat = feat.float()
         feat = feat / feat.norm(dim=-1, keepdim=True)
-        return feat.float().numpy()
+        return feat.cpu().numpy()
 
     @torch.no_grad()
     def score_from_embedding(self, emb: np.ndarray) -> float:

@@ -1,0 +1,31 @@
+# score GPU 이미지 — SageMaker training job / EC2 벤치마크(#68). 운영 Lambda 는 `Dockerfile`(CPU) 그대로다.
+#
+# 베이스가 CUDA 이미지가 아니라 python:3.12 인 이유: torch 의 cu121 휠이 CUDA 런타임·cuDNN 을 pip 의존성(nvidia-*)으로
+# 함께 가져온다. 호스트에는 드라이버만 있으면 되고 SageMaker·DLAMI 가 그걸 준다. 그래서 Lambda 이미지와 파이썬 버전이 같다.
+# 이미지는 약 6GB(CPU 이미지 1.5GB) — 가중치·CUDA 라이브러리 몫.
+FROM python:3.12-slim-bookworm
+
+RUN pip install --no-cache-dir torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu121
+
+WORKDIR /app
+COPY requirements.txt .
+# requirements 의 torch 핀은 로컬(맥)용 — 위에서 cu121 로 깔았으니 걸러 낸다. nvidia-ml-py 는 GPU 사용률 표본(sagemaker.py).
+RUN grep -v -E '^(torch|torchvision)==' requirements.txt > /tmp/req.txt \
+ && pip install --no-cache-dir -r /tmp/req.txt nvidia-ml-py==12.560.30
+
+# RDS 의 CA 번들 — 프라이빗 서브넷에는 인터넷이 없어 런타임에 못 받는다. Lambda 이미지와 같은 경로.
+RUN mkdir -p /opt/rds-ca \
+ && python -c "import urllib.request; urllib.request.urlretrieve('https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem', '/opt/rds-ca/global-bundle.pem')"
+
+COPY score/ /app/score/
+
+# 가중치를 빌드 타임에 굽는다(CLIP · LAION MLP · ARNIQA hub). 빌드 머신에는 GPU 가 없어 cpu 로 로드된다 — 캐시만 채우는 것이라 상관없다.
+ENV HOME=/opt/home \
+    TORCH_HOME=/opt/torch \
+    SCORE_WORK=/tmp/score \
+    PYTHONUNBUFFERED=1
+RUN mkdir -p /opt/home /opt/torch \
+ && SCORE_DEVICE=cpu python -c "from score.runners import LaionRunner, ArniqaRunner; LaionRunner(); ArniqaRunner()"
+
+# SageMaker 는 `docker run <image> train` 으로 띄운다 — 인자는 무시하고 환경변수(GALLERY_ID …)로 받는다.
+ENTRYPOINT ["python", "-m", "score.sagemaker"]

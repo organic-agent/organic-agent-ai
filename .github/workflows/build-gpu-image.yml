@@ -1,0 +1,46 @@
+# score GPU 벤치마크 이미지(#68) — 수동 실행만. `score/Dockerfile.gpu` 를 빌드해 ECR `wes-score:gpu` 로 민다.
+# Lambda 는 건드리지 않는다(deploy-lambda.yml 과 별개). SageMaker training job 이 이 태그를 집는다(score/scripts/sagemaker_benchmark.py).
+name: Build score GPU image
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build:
+    name: score (GPU) → ECR :gpu
+    runs-on: ubuntu-latest
+    if: vars.AWS_LAMBDA_DEPLOY_ROLE_ARN != ''
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_LAMBDA_DEPLOY_ROLE_ARN }}
+          aws-region: ap-northeast-2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver: docker-container
+
+      - name: Free disk space (CUDA torch 이미지는 6GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h / | tail -1
+
+      - name: Login to ECR
+        run: |
+          REPO=$(aws ecr describe-repositories --region ap-northeast-2 --repository-names wes-score --query 'repositories[0].repositoryUri' --output text)
+          echo "REPO=$REPO" >> "$GITHUB_ENV"
+          aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin "${REPO%%/*}"
+
+      - name: Build · push
+        run: |
+          docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
+            -f score/Dockerfile.gpu -t "$REPO:gpu" --push score
+          echo "pushed $REPO:gpu"
