@@ -90,6 +90,9 @@ class Settings:
     #: 샤드 상한 32(#63)의 근거는 RDS 커넥션 — 샤드는 세션 advisory lock 으로 커넥션 1개를 끝까지 붙들고, db.t4g.micro(79)에서
     #: 평상시 24 + 32 = 56 이 여유 20 의 한계다. 인프라 예약 동시성(embedder_reserved_concurrent_executions)도 같은 값이어야 한다.
     max_shards: int = 32
+    #: 벡터·미리보기를 적재할 때 `photos.status` 에 찍을 값(#73). 기본 'EMBEDDED' 는 지금 wes 계약. 파이프라인 v2 에서 wes 가
+    #: EMBEDDED 를 없애면(status 는 PENDING·UPLOADED 둘뿐, 진행은 photo_analysis 컬럼으로) 빈 값으로 두어 status 를 건드리지 않는다.
+    set_status: str | None = "EMBEDDED"
 
     @staticmethod
     def from_env() -> "Settings":
@@ -118,6 +121,7 @@ class Settings:
             ),
             shard_photos=int(os.environ.get("SHARD_PHOTOS", "150")),
             max_shards=int(os.environ.get("MAX_SHARDS", "32")),
+            set_status=os.environ.get("EMBED_SET_STATUS", "EMBEDDED") or None,
         )
 
 

@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Iterable, Sequence
 
@@ -130,10 +131,36 @@ def fetch_targets(
         return [PhotoRef(photo_id=row[0], storage_key=row[1]) for row in cursor.fetchall()]
 
 
+def fetch_by_ids(connection: psycopg.Connection, photo_ids: list[int]) -> list[PhotoRef]:
+    """사진 id 목록을 그대로 대상으로(#73). wes 스위퍼가 UPLOADED 사진을 50장씩 배정해 부르는 v2 경로.
+
+    status 는 보지 않는다 — 어느 사진을 임베딩할지는 배정한 쪽(wes)이 정했고, v2 에서 status 는 "S3 에 있나"만 답한다.
+    휴지통(사진·갤러리)과 storage_key 없는 행만 거른다. 순서는 요청 순서. 없는 id 는 조용히 빠진다(결과 장수로 드러난다).
+    """
+    if not photo_ids:
+        return []
+    with connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT p.id, p.storage_key
+            FROM photos p
+            JOIN galleries g ON g.id = p.gallery_id
+            WHERE p.id = ANY(%s)
+              AND p.storage_key IS NOT NULL
+              AND p.deleted_at IS NULL
+              AND g.deleted_at IS NULL
+            """,
+            (list(photo_ids),),
+        )
+        found = {row[0]: row[1] for row in cursor.fetchall()}
+    return [PhotoRef(photo_id=pid, storage_key=found[pid]) for pid in photo_ids if pid in found]
+
+
 def store_embeddings(
     connection: psycopg.Connection,
     results: Iterable[tuple[PhotoRef, np.ndarray, str, PhotoMetadata | None]],
     model_id: str,
+    set_status: str | None = "EMBEDDED",
 ) -> int:
     """계산된 벡터와 파생본 위치, 촬영 정보를 배치로 적재한다.
 
@@ -191,8 +218,14 @@ def store_embeddings(
             """,
             analysis_rows,
         )
+        # v2(#73): wes 가 EMBEDDED 를 없애면 set_status=None 으로 status 를 건드리지 않는다. 값은 파라미터가 아니라
+        # 상수로 넣는다 — psycopg 가 status 를 문자열로 바인딩하면 wes 의 CHECK 제약과 무관하게 동작하지만, 문장 자체를
+        # 갈라 두는 편이 "무엇을 쓰는지"가 SQL 에 그대로 보인다.
+        if set_status is not None and not re.fullmatch(r"[A-Z_]{1,32}", set_status):
+            raise ValueError(f"EMBED_SET_STATUS 값이 이상하다: {set_status!r}")
+        status_clause = f"status = '{set_status}'," if set_status else ""
         cursor.executemany(
-            """
+            f"""
             UPDATE photos
             SET preview_key = %s,
                 taken_at = COALESCE(%s, taken_at),
@@ -204,7 +237,7 @@ def store_embeddings(
                 width = COALESCE(%s, width),
                 height = COALESCE(%s, height),
                 byte_size = COALESCE(%s, byte_size),
-                status = 'EMBEDDED',
+                {status_clause}
                 version = version + 1,
                 updated_at = now()
             WHERE id = %s AND storage_key = %s AND deleted_at IS NULL

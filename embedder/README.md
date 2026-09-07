@@ -6,7 +6,7 @@ DINOv3 벡터를 본다.
 Lambda로 배포되지만 **로컬에서도 같은 코드가 그대로 돈다** — 진입점만 다르다.
 
 ```
-handler.py    Lambda      event {"galleryId": 1, "force": false}
+handler.py    Lambda      event {"galleryId": 1, "force": false} | v2 {"galleryId": 1, "photoIds": [101, …]} (#73)
 __main__.py   로컬 CLI    python -m embedder --gallery-id 1              # --force, --shards N(샤드 N개를 한 프로세스에서 순차, #56)
      └─────── 둘 다 job.run() 하나를 부른다
 ```
@@ -27,6 +27,9 @@ WHERE gallery_id = ? AND status <> 'PENDING'
 
 **순서가 계약이다(#24).** 벡터는 메모리의 중간 이미지가 아니라 **S3에 실제로 올라간 미리보기
 파일**에서 계산한다. 그래서 "미리보기는 없는데 벡터는 있는" 사진이 구조적으로 생길 수 없고,
+**v2 스트리밍(#73)**: wes 스위퍼가 `{"galleryId", "photoIds": [50장]}` 으로 부르면 그 목록만 처리한다 — 잠금·대상 조회·샤딩·재호출 없음
+(배정은 wes 의 `photos.dispatched_at` 이 원자적으로). CLI 는 `--photo-ids 1,2,3`. 갤러리 페이로드 경로는 wes 가 전환할 때까지 그대로다.
+
 `status = 'EMBEDDED'`는 곧 "벡터와 미리보기가 둘 다 있다"는 뜻이다. photoselect가 보는 픽셀과
 벡터가 같은 파일이라는 점도 따라온다. 대가는 1024px JPEG를 한 번 더 디코드하는 장당 수십 ms다.
 
@@ -267,3 +270,4 @@ python -m embedder --gallery-id 1
 | `STOP_MARGIN_SECONDS` | `60` | 타임아웃 앞에서 멈출 여유. 남은 시간 < (가장 긴 배치 + 이 값)이면 배치 경계에서 멈추고 자기 재호출 |
 | `SHARD_PHOTOS` | `150` | 샤드 하나가 맡는 사진 수(#56 · #59 — 짧은 샤드가 느린 호스트 편차를 줄인다). 조정자가 대상 / 이 값 만큼 샤드를 띄운다. `0` 이면 샤딩 없음 |
 | `MAX_SHARDS` | `32` | 샤드 수 상한(#63). Lambda 예약 동시성이 이 값 이상이어야 하고, 상한은 RDS 커넥션(샤드당 1개)이 정한다 |
+| `EMBED_SET_STATUS` | `EMBEDDED` | 적재 시 `photos.status` 에 찍을 값(#73). 파이프라인 v2 에서 wes 가 EMBEDDED 를 없애면 빈 값으로 — status 를 건드리지 않는다 |

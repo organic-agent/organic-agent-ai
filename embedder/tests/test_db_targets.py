@@ -293,3 +293,50 @@ class AdminPhotoJobDatabaseContractTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class FetchByIdsTest(unittest.TestCase):
+    """v2(#73): id 목록 조회는 status 를 보지 않고 휴지통·storage_key 만 거르며, 요청 순서를 지킨다."""
+
+    def test_filters_and_keeps_request_order(self) -> None:
+        connection = _Connection(rows=[(1, "galleries/7/a.jpg"), (3, "galleries/7/c.jpg")])
+        refs = db.fetch_by_ids(connection, [3, 1, 2])
+        sql, params = connection.executed[0]
+        self.assertIn("p.id = ANY(%s)", sql)
+        self.assertIn("p.storage_key IS NOT NULL", sql)
+        self.assertIn("p.deleted_at IS NULL", sql)
+        self.assertIn("g.deleted_at IS NULL", sql)
+        self.assertNotIn("status", sql)
+        self.assertEqual(([3, 1, 2],), params)
+        self.assertEqual([(3, "galleries/7/c.jpg"), (1, "galleries/7/a.jpg")], [(r.photo_id, r.storage_key) for r in refs])
+
+    def test_empty_ids_skip_the_query(self) -> None:
+        connection = _Connection(rows=[])
+        self.assertEqual([], db.fetch_by_ids(connection, []))
+        self.assertEqual([], connection.executed)
+
+
+class StoreEmbeddingsStatusSwitchTest(unittest.TestCase):
+    """v2(#73): set_status=None 이면 photos.status 를 건드리지 않는다. 값은 대문자·밑줄만."""
+
+    def _ref(self):
+        return db.PhotoRef(photo_id=1, storage_key="galleries/7/a.jpg")
+
+    def test_default_writes_embedded(self) -> None:
+        connection = _Connection(rows=[])
+        db.store_embeddings(connection, [(self._ref(), "VECTOR", "previews/galleries/7/a.jpg", None)], model_id="m")
+        photos_sql, _ = connection.executed[1]
+        self.assertIn("status = 'EMBEDDED'", photos_sql)
+
+    def test_none_leaves_status_alone(self) -> None:
+        connection = _Connection(rows=[])
+        db.store_embeddings(connection, [(self._ref(), "VECTOR", "previews/galleries/7/a.jpg", None)], model_id="m",
+                            set_status=None)
+        photos_sql, _ = connection.executed[1]
+        self.assertNotIn("status", photos_sql)
+        self.assertIn("preview_key = %s", photos_sql)
+
+    def test_rejects_odd_status_value(self) -> None:
+        connection = _Connection(rows=[])
+        with self.assertRaises(ValueError):
+            db.store_embeddings(connection, [(self._ref(), "VECTOR", "p.jpg", None)], model_id="m", set_status="x'; --")

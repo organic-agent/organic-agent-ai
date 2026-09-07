@@ -186,3 +186,33 @@ class HandlerTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PhotoIdsHandlerTest(unittest.TestCase):
+    """v2(#73): photoIds 페이로드는 job.run(photo_ids=…) 로 가고, 재호출·fan-out 을 하지 않는다."""
+
+    def setUp(self) -> None:
+        self._run = handler.job.run
+        self._reinvoke = handler.reinvoke
+        self.calls: list[dict] = []
+        handler.reinvoke = lambda *a, **kw: self.fail("photoIds 경로는 재호출하지 않는다")
+
+        def run(gallery_id, settings, remaining_seconds=None, photo_ids=None, **kwargs):
+            self.calls.append({"gallery_id": gallery_id, "photo_ids": photo_ids, "kwargs": kwargs,
+                               "remaining": remaining_seconds() if remaining_seconds else None})
+            return {"galleryId": gallery_id, "photoIds": len(photo_ids), "processed": len(photo_ids), "stopped": True}
+        handler.job.run = run
+
+    def tearDown(self) -> None:
+        handler.job.run = self._run
+        handler.reinvoke = self._reinvoke
+
+    def test_photo_ids_go_to_job_without_fan_out_or_reinvoke(self) -> None:
+        result = handler.handler({"galleryId": "7", "photoIds": [3, "1"]}, _Context(remaining_ms=120_000))
+        self.assertEqual(1, len(self.calls))
+        self.assertEqual(7, self.calls[0]["gallery_id"])
+        self.assertEqual([3, 1], self.calls[0]["photo_ids"])
+        self.assertNotIn("fan_out", self.calls[0]["kwargs"])
+        self.assertNotIn("shard", self.calls[0]["kwargs"])
+        self.assertAlmostEqual(120.0, self.calls[0]["remaining"], places=0)
+        self.assertNotIn("reinvoked", result)           # stopped=True 여도 재호출 없음 — 남은 장은 wes 가 재배정

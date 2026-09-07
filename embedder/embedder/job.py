@@ -114,6 +114,8 @@ class RunResult:
     elapsed_seconds: float = 0.0
     #: 이 실행이 맡은 샤드. 없으면 갤러리 전체.
     shard: Shard | None = None
+    #: v2(#73) 사진 목록 호출이면 요청 장수. 갤러리 호출이면 None.
+    photo_ids: int | None = None
     #: 조정자로 끝났다 — 샤드를 띄우기만 하고 사진은 처리하지 않았다. targets 는 갤러리 전체 대상 수.
     coordinator: bool = False
     shards: int = 0
@@ -139,6 +141,8 @@ class RunResult:
             out["skipped"] = self.skipped
         if self.shard is not None:
             out["shard"] = self.shard.to_payload()
+        if self.photo_ids is not None:
+            out["photoIds"] = self.photo_ids
         if self.coordinator:
             out.update({"coordinator": True, "shards": self.shards, "fannedOut": self.fanned_out})
         if self.run_started_at:
@@ -154,8 +158,13 @@ def run(
     shard: Shard | None = None,
     run_started_at: str | None = None,
     fan_out: Callable[[int, str | None], bool] | None = None,
+    photo_ids: list[int] | None = None,
 ) -> dict:
-    """갤러리 하나(또는 그 샤드 하나)를 처리한다.
+    """갤러리 하나(또는 그 샤드 하나), 또는 사진 id 목록(v2, #73)을 처리한다.
+
+    `photo_ids` 가 있으면 **그 목록만** 임베딩한다 — wes 스위퍼가 UPLOADED 사진을 50장씩 배정해 부르는 스트리밍 경로.
+    갤러리 잠금·대상 조회·조정자·fan-out 을 전부 건너뛴다(배정 자체가 wes 의 `dispatched_at` 로 원자적이라 잠금이 필요 없다).
+    force 는 뜻이 없다(목록에 있으면 계산한다). 데드라인 정지는 그대로 — 50장이면 발동하지 않지만 코드 경로는 같다.
 
     `remaining_seconds`는 실행 환경이 남은 시간을 알려 주는 함수다. Lambda handler가
     `context.get_remaining_time_in_millis`를 감싸 넘기고, 로컬 CLI는 None이다(멈추지 않는다).
@@ -169,23 +178,33 @@ def run(
     if force and run_started_at is None:
         run_started_at = now_iso()
     result = RunResult(gallery_id=gallery_id, shard=shard, run_started_at=run_started_at)
-    tag = f"갤러리 {gallery_id}" + (f" 샤드 {shard.index}/{shard.total}" if shard else "")
+    if photo_ids is not None:
+        result.photo_ids = len(photo_ids)
+    tag = f"갤러리 {gallery_id}" + (f" 샤드 {shard.index}/{shard.total}" if shard else "") + (
+        f" 사진 {len(photo_ids)}장" if photo_ids is not None else "")
 
     storage = PhotoStorage(settings.s3_bucket, max_concurrency=settings.download_workers)
 
     with db.connect(settings) as connection:
-        # 모델을 올리기 전에 잠금부터 본다. 겹친 실행이 수 초짜리 모델 로드를 치르고 나서야
-        # 물러나는 것보다 낫다. 잠금은 연결이 닫힐 때(with 블록 끝, 또는 프로세스 종료) 풀린다.
-        if not db.try_lock_gallery(connection, gallery_id, shard.index if shard else 0):
-            result.skipped = ALREADY_RUNNING
-            result.elapsed_seconds = time.monotonic() - started
-            log.info("%s: 다른 실행이 진행 중 -- 건너뜀", tag)
-            return result.to_dict()
+        if photo_ids is not None:
+            # v2 스트리밍 경로 — 잠금·조정자 없음. 배정한 쪽이 겹치지 않게 했다.
+            all_targets = db.fetch_by_ids(connection, photo_ids)
+            result.targets = len(all_targets)
+            fan_out = None
+            shard = None
+        else:
+            # 모델을 올리기 전에 잠금부터 본다. 겹친 실행이 수 초짜리 모델 로드를 치르고 나서야
+            # 물러나는 것보다 낫다. 잠금은 연결이 닫힐 때(with 블록 끝, 또는 프로세스 종료) 풀린다.
+            if not db.try_lock_gallery(connection, gallery_id, shard.index if shard else 0):
+                result.skipped = ALREADY_RUNNING
+                result.elapsed_seconds = time.monotonic() - started
+                log.info("%s: 다른 실행이 진행 중 -- 건너뜀", tag)
+                return result.to_dict()
 
-        # 대상은 갤러리 전체를 같은 순서로 읽는다 — 샤드는 그 목록에서 자기 몫만 고른다. run_started_at 이 있으면
-        # (force 이거나 그 재호출) 그 이후 벡터만 건너뛴다.
-        all_targets = db.fetch_targets(connection, gallery_id, force, run_started_at)
-        result.targets = len(all_targets)
+            # 대상은 갤러리 전체를 같은 순서로 읽는다 — 샤드는 그 목록에서 자기 몫만 고른다. run_started_at 이 있으면
+            # (force 이거나 그 재호출) 그 이후 벡터만 건너뛴다.
+            all_targets = db.fetch_targets(connection, gallery_id, force, run_started_at)
+            result.targets = len(all_targets)
 
         if shard is None and fan_out is not None:
             n = plan_shards(len(all_targets), settings)
@@ -284,6 +303,7 @@ def run(
                         connection,
                         zip(loaded_refs, vectors, loaded_keys, loaded_metadata),
                         model_id=settings.model_id,
+                        set_status=getattr(settings, "set_status", "EMBEDDED"),
                     )
 
                     # ④ 배치 단위로 커밋한다. 중간에 죽어도 그때까지의 벡터·미리보기는 남고,
