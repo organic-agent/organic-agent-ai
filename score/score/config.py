@@ -98,6 +98,8 @@ class Settings:
     worker_batch: int = 32
     worker_poll_seconds: float = 3.0
     worker_idle_stop_seconds: int = 600
+    #: 이만큼 배치를 처리하면 루프를 끝낸다(0 = 무한). 검증·벤치마크용.
+    worker_max_batches: int = 0
 
     #: 미리보기를 S3 에서 동시에 내려받는 스레드 수(#68). 장당 왕복이 병목이라 8 이면 한 프로세스가 7,000장을 1분대에 받는다.
     download_workers: int = 8
@@ -152,6 +154,7 @@ class Settings:
             worker_batch=int(os.environ.get("WORKER_BATCH", "32")),
             worker_poll_seconds=float(os.environ.get("WORKER_POLL_SECONDS", "3")),
             worker_idle_stop_seconds=int(os.environ.get("WORKER_IDLE_STOP_SECONDS", "600")),
+            worker_max_batches=int(os.environ.get("WORKER_MAX_BATCHES", "0")),
             stop_margin_seconds=int(os.environ.get("STOP_MARGIN_SECONDS", "60")),
             shard_photos=int(os.environ.get("SHARD_PHOTOS", "150")),
             max_shards=int(os.environ.get("MAX_SHARDS", "32")),

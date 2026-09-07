@@ -128,6 +128,24 @@ class Scorer:
         log.info("[score] 러너 로드 %.1fs · %s · clip_batch=%d arniqa_batch=%d fp16=%s decode_workers=%d",
                  self.load_seconds, _compute_env(self.device), k.clip_batch, k.arniqa_batch, k.fp16, k.decode_workers)
 
+    def warm_up(self) -> float:
+        """cuda 일 때 더미 1장을 한 번 돌린다(#79) — cuDNN 자동 튜닝·가중치 페이지 캐시를 첫 실제 배치 앞에서 치른다.
+        cpu·mps 는 건너뛴다. 실패해도 예외를 내지 않는다(워밍은 최적화일 뿐)."""
+        if self.device != "cuda":
+            return 0.0
+        t0 = time.monotonic()
+        try:
+            from PIL import Image
+
+            dummy = Image.new("RGB", (683, 1024), (128, 128, 128))
+            self.laion.embed_batch([dummy])
+            self.arniqa.score_batch([dummy])
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[score] 워밍 실패 (무시): %s", exc)
+        took = time.monotonic() - t0
+        log.info("[score] 워밍 %.1fs", took)
+        return took
+
     def score(self, store: Store, gallery: str, todo: list[PhotoRef], settings: Settings, result: "ScoreResult",
               stage: dict[str, float], remaining_seconds: Callable[[], float] | None = None) -> None:
         """`todo` 를 계산해 store 에 쓴다. result·stage 를 채운다(호출자가 만든 것)."""
