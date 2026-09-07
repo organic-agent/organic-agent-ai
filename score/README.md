@@ -48,20 +48,21 @@ score/
 │   ├── handler.py      Lambda: 데드라인 → 자기 재호출 / 끝나면 chain / 체인 실패면 잡 FAILED
 │   ├── __main__.py     CLI: --gallery-id N [--job-id J] [--force] | --local "갤러리" | --list | worker
 │   ├── job.py          갤러리 잡: lock → 잡 RUNNING → EMBEDDED 사진 + 미리보기 다운로드 → pipeline → result 기록
-│   ├── pipeline.py     SCORE 본체 (위 그림). 디코드 1회 · CLIP 배치 · 배치 쓰기 · 데드라인 정지
+│   ├── pipeline.py     SCORE 본체 (위 그림). Scorer(러너 1회 로드, #75) · 디코드 1회 · CLIP/ARNIQA 배치 · 배치 쓰기 · 데드라인 정지
 │   ├── images.py       이미지 로드 (torch 없음) — load_image · fit_long_edge · as_image
 │   ├── chain.py        categorize 호출 — Lambda EVENT | 서브프로세스
 │   ├── worker.py       로컬 폴링 워커 (운영 없음 — wes 에 invoker 가 생기면 삭제)
 │   ├── subjects.py     CLIP zero-shot — SubjectsTagger · ParentTagger
 │   ├── classical.py    Laplacian 선명도 · 노출 클립
 │   ├── runners/        ArniqaRunner(torch.hub, SHA 고정, score_batch) · LaionRunner(open_clip + MLP) — torch 는 여기만
+│   ├── gpu_worker.py   v2 GPU 워커 루프(#75): photo_analysis SKIP LOCKED 32장 집기 → 점수 → commit, 유휴면 자기 정지
 │   ├── device.py       cuda → mps → cpu 선택 · cuda fp16 autocast (#68)
 │   ├── sagemaker.py    SageMaker training 진입점 — GPU 벤치마크 전용, GPU 사용률 표본
 │   ├── config.py       Settings · Knobs · MODEL_VERSION · PARENTS · PARENT_PROMPTS
 │   ├── store.py        LocalStore(out/v3/) · DbStore — write_scores 하나
 │   ├── gallery.py      PhotoRef — 로컬 폴더 / DB(EMBEDDED + preview_key)
 │   ├── storage.py      S3 미리보기 다운로드    ├── db.py  접속    ├── jobs.py  start · record · fail · claim_next
-├── tests/test_score.py   pytest 30 — 재개 · 컬럼 경계 · 배치/데드라인 · CLIP/ARNIQA 배치·실패 격리 · 프리페치 · 샤딩(분배·조정자·마지막 체인·since) · chain · handler · categorize 와의 상수 일치
+├── tests/test_score.py   pytest 38 — 재개 · 컬럼 경계 · 배치/데드라인 · CLIP/ARNIQA 배치·실패 격리 · 프리페치 · 샤딩(분배·조정자·마지막 체인·since) · chain · handler · categorize 와의 상수 일치
 ├── Dockerfile · deploy.sh   컨테이너 Lambda (가중치 빌드 시 번들) · ECR 푸시 + update-function-code
 ├── Dockerfile.gpu           GPU 벤치마크 이미지 (cu121 torch, ECR :gpu) — .github/workflows/build-gpu-image.yml 이 민다
 ├── scripts/sagemaker_benchmark.py   SageMaker training job 제출·대기·로그 요약 · ec2_benchmark.py  EC2 stop/start 실측 · snapshot_scores.py  점수 스냅샷·비교(fp16 검증)
@@ -93,12 +94,28 @@ wes 쪽 스크립트가 이걸 감싼다: `../organic-agent-server/wes/scripts/l
   같은 상수와 값이 같아야 하며 테스트가 고정한다.
 - `photo_ratings` · `photo_selection_items` 는 읽지 않는다(정책).
 
+## GPU 워커 — 파이프라인 v2 의 운영 모양 (#75)
+
+Lambda 32 샤드 대신 GPU 인스턴스 한 대(또는 몇 대)가 **사진 단위로 집어서** 점수를 낸다. 갤러리를 배정받지 않는다.
+
+```bash
+python -m score worker --gpu [--once] [--no-idle-stop]     # 컨테이너 기본 CMD. 로컬에서는 --no-idle-stop
+```
+
+- 집기: `photo_analysis.embedding IS NOT NULL AND clip_embedding IS NULL`(+ 미리보기 있음·휴지통 아님) 32장을 `FOR UPDATE OF photo_analysis SKIP LOCKED`
+  로 잠근 채 미리보기 다운로드(16 스레드) → CLIP·ARNIQA·classical → `write_scores`(UPSERT + commit = 잠금 해제). 워커가 죽으면 롤백으로 행이 자동 반환된다.
+  여러 대가 같은 사진을 집을 수 없고(RDS 에서 확인), 한 갤러리를 나눠 먹어도 된다. status 는 보지 않는다(v2 에서 EMBEDDED 가 사라진다).
+- 유휴: 집을 게 없으면 `WORKER_POLL_SECONDS`(3) 대기, 연속 `WORKER_IDLE_STOP_SECONDS`(600) 를 넘기면 IMDSv2 로 자기 인스턴스를 `StopInstances`. 켜는 것·폴백은 wes.
+- 잡 테이블은 건드리지 않는다 — 완료는 wes 가 데이터로 관측. 계속 실패하는 사진은 이 프로세스에서 더 집지 않는다(재시작하면 다시).
+- 비밀번호: `DB_PASSWORD` 가 없고 `DB_PASSWORD_SSM_PARAM` 이 있으면 SSM SecureString 에서(인스턴스 역할).
+- Lambda 폴백: `{"galleryId", "photoIds": [...]}` 페이로드는 점수만 쓰고 끝난다(잡·재호출·체인 없음). CLI `--photo-ids 1,2,3`.
+
 ## GPU 벤치마크 (#68, 운영 경로 아님)
 
 Lambda 32 샤드 대신 GPU 한 대로 돌리면 얼마나 빠르고 얼마인지 재는 도구. 계획·결과는 `docs/gpu-benchmark-*.md`(로컬 문서).
 
 ```bash
-# 이미지: GitHub Actions "Build score GPU image" 수동 실행 → ECR wes-score:gpu
+# 이미지: GitHub Actions "Build score GPU image" → ECR wes-score:gpu (컨테이너 CMD 는 워커, 벤치마크는 `train` 인자)
 .venv/bin/python scripts/sagemaker_benchmark.py setup                               # 실행 역할 (한 번)
 .venv/bin/python scripts/sagemaker_benchmark.py run --gallery-id 7 --force          # ml.g4dn.xlarge, fp16, clip 32 · arniqa 8 · decode 4
 .venv/bin/python scripts/sagemaker_benchmark.py run --gallery-id 7 --force --no-fp16 --instance ml.g6.xlarge

@@ -78,6 +78,25 @@ def plan_shards(n_photos: int, settings: Settings) -> int:
     return max(1, min(settings.max_shards, math.ceil(n_photos / settings.shard_photos)))
 
 
+def _run_photo_ids(gallery_id: int, photo_ids: list[int], settings: Settings,
+                   remaining_seconds: Callable[[], float] | None, started: float) -> dict:
+    from score.gallery import load_by_ids
+
+    connection = db.connect(settings)
+    try:
+        storage = PreviewStorage(settings.s3_bucket)
+        refs = load_by_ids(connection, photo_ids)
+        refs = download_previews(storage, refs, settings.work_dir / str(gallery_id), workers=settings.download_workers)
+        store = DbStore(settings, connection)
+        result = pipeline.run(store, str(gallery_id), refs, settings, force=True, remaining_seconds=remaining_seconds)
+        result["photoIds"] = len(photo_ids)
+        result["elapsedSeconds"] = round(time.monotonic() - started, 1)
+        log.info("갤러리 %s 사진 %d장: 완료 %s", gallery_id, len(photo_ids), result)
+        return result
+    finally:
+        connection.close()
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -96,13 +115,17 @@ def run(gallery_id: int, force: bool = False, settings: Settings | None = None,
         job_id: int | None = None, limit: int | None = None,
         remaining_seconds: Callable[[], float] | None = None,
         shard: Shard | None = None, run_started_at: str | None = None,
-        fan_out: Callable[[int, str | None], bool] | None = None) -> dict:
+        fan_out: Callable[[int, str | None], bool] | None = None,
+        photo_ids: list[int] | None = None) -> dict:
     """shard 가 없고 fan_out 이 있으면 조정자: 샤드 수가 2 이상일 때 fan_out(N, run_started_at) 을 부르고
-    `coordinator=True` 로 끝난다. run_started_at(ISO) 은 force 실행의 시작 시각 — 그 이후 점수만 "있음"으로 친다."""
+    `coordinator=True` 로 끝난다. run_started_at(ISO) 은 force 실행의 시작 시각 — 그 이후 점수만 "있음"으로 친다.
+    `photo_ids` 가 있으면(v2 폴백, #75) 그 목록만 점수 — 잠금·잡·샤딩·체인 없음. wes 가 배정했으니 무조건 계산한다."""
     started = time.monotonic()
     settings = settings or Settings.from_env()
     if not settings.s3_bucket:
         raise RuntimeError("S3_BUCKET 이 없다 — 미리보기를 내려받을 버킷")
+    if photo_ids is not None:
+        return _run_photo_ids(gallery_id, photo_ids, settings, remaining_seconds, started)
     if force and run_started_at is None:
         run_started_at = now_iso()
     since = datetime.fromisoformat(run_started_at) if run_started_at else None

@@ -84,6 +84,8 @@ class Settings:
     db_name: str | None = None
     db_user: str | None = None
     db_password: str | None = None
+    #: DB_PASSWORD 가 없을 때 SSM SecureString 이름(#75). GPU 워커 인스턴스는 역할로 이걸 읽는다.
+    db_password_ssm_param: str | None = None
     #: RDS 는 평문 접속을 거부하므로 기본 require. 로컬 docker pg 는 DB_SSLMODE=disable.
     db_sslmode: str = "require"
     db_sslrootcert: str | None = None
@@ -91,6 +93,11 @@ class Settings:
     s3_bucket: str | None = None
     #: DB 모드에서 미리보기를 내려받는 자리. 갤러리마다 하위 폴더. Lambda 는 /tmp 만 쓸 수 있다.
     work_dir: Path = Path("/tmp/score")
+
+    #: GPU 워커(#75): 한 번에 집는 장수 · 집을 게 없을 때 대기 초 · 연속 유휴가 이 초를 넘기면 자기 인스턴스를 정지(0 이면 안 함).
+    worker_batch: int = 32
+    worker_poll_seconds: float = 3.0
+    worker_idle_stop_seconds: int = 600
 
     #: 미리보기를 S3 에서 동시에 내려받는 스레드 수(#68). 장당 왕복이 병목이라 8 이면 한 프로세스가 7,000장을 1분대에 받는다.
     download_workers: int = 8
@@ -136,11 +143,15 @@ class Settings:
             db_name=os.environ.get("DB_NAME"),
             db_user=os.environ.get("DB_USER"),
             db_password=os.environ.get("DB_PASSWORD"),
+            db_password_ssm_param=os.environ.get("DB_PASSWORD_SSM_PARAM") or None,
             db_sslmode=os.environ.get("DB_SSLMODE", "require"),
             db_sslrootcert=os.environ.get("DB_SSLROOTCERT"),
             s3_bucket=os.environ.get("S3_BUCKET"),
             work_dir=Path(os.environ.get("SCORE_WORK", "/tmp/score")),
             download_workers=int(os.environ.get("SCORE_DOWNLOAD_WORKERS", "8")),
+            worker_batch=int(os.environ.get("WORKER_BATCH", "32")),
+            worker_poll_seconds=float(os.environ.get("WORKER_POLL_SECONDS", "3")),
+            worker_idle_stop_seconds=int(os.environ.get("WORKER_IDLE_STOP_SECONDS", "600")),
             stop_margin_seconds=int(os.environ.get("STOP_MARGIN_SECONDS", "60")),
             shard_photos=int(os.environ.get("SHARD_PHOTOS", "150")),
             max_shards=int(os.environ.get("MAX_SHARDS", "32")),
