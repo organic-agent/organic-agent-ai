@@ -10,3 +10,6 @@ __pycache__/
 
 # 루트 docs/ — 계획·아키텍처·설계 이력·학습 노트, 로컬 전용 (#45). 모듈 아래 <모듈>/docs/ 는 올린다
 /docs/
+
+# 벤치마크 스크립트가 남기는 SageMaker 로그(#68) — docs/ 로 옮겨 둔다
+score/sagemaker-*.log
