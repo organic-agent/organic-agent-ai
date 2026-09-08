@@ -388,3 +388,87 @@ def test_load_db_targets_previews_and_ignores_photo_status():
     assert "preview_key IS NOT NULL" in sql and "deleted_at IS NULL" in sql
     assert params == (7,)
     assert [(r.photo_id, r.camera, r.path) for r in refs] == [("11", "Canon R5", None), ("12", None, None)]
+
+
+# ── 잡 계약 (wes V16) ─────────────────────────────────────────────────────────
+class _JobConn:
+    def __init__(self):
+        self.executed = []
+        self.commits = 0
+        self.rollbacks = 0
+
+    def cursor(self):
+        conn = self
+
+        class _C:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return None
+
+            def execute(self_inner, sql, params=None):
+                conn.executed.append((" ".join(sql.split()), params))
+
+        return _C()
+
+    def commit(self):
+        self.commits += 1
+
+    def rollback(self):
+        self.rollbacks += 1
+
+    def close(self):
+        pass
+
+
+def test_jobs_only_writes_error_column():
+    """#95: V16 은 status·started_at·finished_at·result 를 지웠고 photoselect 에 UPDATE (error, updated_at) 만 준다."""
+    from categorize import jobs
+
+    assert not hasattr(jobs, "start") and not hasattr(jobs, "finish")   # 옛 계약은 사라졌다
+    conn = _JobConn()
+    jobs.fail(conn, 3, "RuntimeError: boom")
+
+    sql, params = conn.executed[0]
+    assert sql == "UPDATE ai_analysis_jobs SET error = %s, updated_at = now() WHERE id = %s"
+    assert params == ("RuntimeError: boom", 3)
+    assert conn.rollbacks == 1 and conn.commits == 1
+    for banned in ("status", "started_at", "finished_at", "result", "version"):
+        assert banned not in sql
+
+
+def test_job_run_does_not_open_or_close_the_job(monkeypatch, tmp_path):
+    """성공 경로는 잡 테이블을 건드리지 않는다 — 여는 것도 닫는 것도 wes."""
+    from categorize import job as job_mod
+
+    conn = _JobConn()
+    monkeypatch.setattr(job_mod.db, "connect", lambda s: conn)
+    monkeypatch.setattr(job_mod, "load_db", lambda *a, **k: [PhotoRef(photo_id="1", path=None)])
+    monkeypatch.setattr(job_mod, "DbStore", lambda settings, connection: "STORE")
+    monkeypatch.setattr(job_mod.pipeline, "run", lambda *a, **k: {"gallery": "7"})
+
+    result = job_mod.run(7, settings=Settings(out_root=tmp_path, dataset_root=tmp_path, work_dir=tmp_path), job_id=3, llm="LLM")
+
+    assert result["gallery"] == "7" and "elapsedSeconds" in result
+    assert conn.executed == []                                          # 잡 테이블 접근 0
+
+
+def test_job_run_writes_error_when_pipeline_fails(monkeypatch, tmp_path):
+    from categorize import job as job_mod
+
+    conn = _JobConn()
+    monkeypatch.setattr(job_mod.db, "connect", lambda s: conn)
+    monkeypatch.setattr(job_mod, "load_db", lambda *a, **k: [PhotoRef(photo_id="1", path=None)])
+    monkeypatch.setattr(job_mod, "DbStore", lambda settings, connection: "STORE")
+
+    def boom(*a, **k):
+        raise RuntimeError("no vectors")
+
+    monkeypatch.setattr(job_mod.pipeline, "run", boom)
+
+    with pytest.raises(RuntimeError):
+        job_mod.run(7, settings=Settings(out_root=tmp_path, dataset_root=tmp_path, work_dir=tmp_path), job_id=3, llm="LLM")
+
+    sql, params = conn.executed[0]
+    assert "SET error = %s" in sql and params == ("RuntimeError: no vectors", 3)

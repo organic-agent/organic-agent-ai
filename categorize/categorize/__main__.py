@@ -21,7 +21,7 @@ from categorize import job, llm as llm_mod
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="categorize")
     ap.add_argument("--gallery-id", type=int, help="photos.gallery_id (DB 모드)")
-    ap.add_argument("--job-id", type=int, help="ai_analysis_jobs.id — RUNNING→DONE/FAILED 를 여기서 기록")
+    ap.add_argument("--job-id", type=int, help="ai_analysis_jobs.id — 배정 행에 남기고, 실패하면 error 를 쓴다(상태 전이는 wes)")
     ap.add_argument("--llm", action="store_true", help="naming 까지 Bedrock 으로 (--job-id 면 자동)")
     ap.add_argument("--limit", type=int, help="앞에서 N장만 (빠른 확인용)")
     ap.add_argument("--local", metavar="GALLERY", help="로컬 데이터셋 갤러리 이름 (DB 없이 out/ 에서 읽고 쓴다)")

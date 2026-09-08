@@ -1,8 +1,9 @@
 """갤러리 잡 — Lambda handler 와 로컬 CLI 가 같은 `run()` 을 부른다.
 
-    (잡이면 RUNNING) → 미리보기 있는 사진 목록(다운로드 없음) → pipeline.run(그룹 → naming) → 잡 DONE / FAILED
+    미리보기 있는 사진 목록(다운로드 없음) → pipeline.run(그룹 → naming) → (실패면 잡에 error)
 
-체인의 끝이다: FULL 잡은 score 가 열어 둔 RUNNING 잡을 이어받고, NAMING 잡은 여기서 연다. 잡(job_id)은
+잡 상태는 건드리지 않는다(#95, wes V16): wes 가 CATEGORIZING 으로 옮기며 부르고, 배정 행·백분위를 보고 DONE 을 찍는다.
+이 함수가 잡 테이블에 쓰는 것은 실패했을 때의 `error` 하나다. 잡(job_id)은
 naming(Bedrock)까지가 산출물이라 llm 없이는 시작하지 않는다 — 잡 없는 CLI 실행만 그룹화만으로 끝낼 수 있다.
 갤러리 전체를 매번 다시 계산하므로(수 초 + Bedrock 몇 번) 데드라인·잠금이 없다.
 """
@@ -29,10 +30,6 @@ def run(gallery_id: int, settings: Settings | None = None, job_id: int | None = 
 
     connection = db.connect(settings)
     try:
-        if job_id is not None:
-            status = jobs.start(connection, job_id)
-            if status != "RUNNING":
-                raise RuntimeError(f"잡 {job_id} 은 실행할 수 없는 상태다: {status}")
         try:
             refs = load_db(connection, None, gallery_id, settings.work_dir, limit=limit, download=False)
             if not refs:
@@ -43,8 +40,6 @@ def run(gallery_id: int, settings: Settings | None = None, job_id: int | None = 
             if job_id is not None:
                 jobs.fail(connection, job_id, f"{type(exc).__name__}: {exc}")
             raise
-        if job_id is not None:
-            jobs.finish(connection, job_id, {"categorize": result})
         result["elapsedSeconds"] = round(time.monotonic() - started, 1)
         log.info("완료: %s", result)
         return result
