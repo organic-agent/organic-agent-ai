@@ -9,6 +9,8 @@
 - AI repo 몫(E1 · S1 · X1 · S2 · #81) 머지·검증 완료. GPU 워커 실측 장당 0.033s, 유휴 30s 자기 정지(SageMaker 로만 검증).
 - **wes V15(#164) 가 2026-09-08 13:26 KST 운영 배포됨** — `photos.status` 두 값, `photo_analysis.error`, embedder 역할의 status UPDATE 권한 제거.
   같은 날 AI 쪽 대응 배포: **#84**(embedder status 안 씀) · **#86**(score 집기 `error IS NULL`, PREVIEW_MISSING/SCORE_FAILED, key=value 로그).
+- **#94 categorize 운영 복구** — V15 가 EMBEDDED 를 없앴는데 `load_db` 가 그 값으로 대상을 골라 모든 갤러리 0장 → 잡 FAILED 였다. 13:26~15:0x 사이 분석은 전부 실패했을 것.
+  배포 뒤 갤러리 하나로 확인 필요. (오늘 V15 대응에서 categorize 를 빠뜨렸다 — v2 계획이 "categorize 변경 없음"으로 분류한 탓)
 - DB 비밀번호는 `--env-file` 하나로 결정(#91, `DB_PASSWORD_SSM_PARAM` 삭제). 인프라에 넘길 전달본 **#88** `score/deploy/gpu-worker/`(유닛·env·run 스크립트·권한 표·검증 절차). CPU 비트 동일 검사 **#90** `score/scripts/compare_local.py`.
 - wes 는 지금 **PR-B(잡 층, V16)** 작업 중(브랜치 `feat/166-pipeline-v2-job-layer`). V16 은 photoselect 의 `ai_analysis_jobs` 권한을 `UPDATE (error, updated_at)` 만 남긴다.
 - 아직 **실제 인스턴스에서 워커를 켜 본 적은 없다**. 인프라 PR-3b/3c 가 나오면 §1-B.
@@ -18,7 +20,10 @@
 ### A. ⚠️ wes V16(PR-B) 배포 **전에** 끝내야 하는 것 — 잡 테이블 계약
 V16 이 적용되면 score Lambda 갤러리 경로(`jobs.start/record/record_shard/shard_done`)와 categorize(`jobs.py` 의 status DONE·result 쓰기)가
 permission denied 로 깨진다. wes PR-B 머지 시점을 확인하고 **같은 날** 배포한다(오늘 V15 와 같은 방식).
-- [ ] `[categorize] fix`: 잡 4상태 계약 — `status`·`result` 쓰기 삭제, 실패 시 `UPDATE ai_analysis_jobs SET error=…, updated_at=now()` 만. `jobs.py` 축소. 테스트 23 유지
+- [ ] **C1** `[categorize] fix`: 잡 4상태 계약 — `jobs.start/finish/fail` 의 `status`·`started_at`·`finished_at`·`result` 쓰기 삭제(V16 이 컬럼을 지우고 CHECK 를
+  ANALYZING·CATEGORIZING·DONE·FAILED 로 바꾸며 photoselect 에 `UPDATE (error, updated_at)` 만 남긴다), 실패 시 `error` 만. `job.run` 의 "RUNNING 이어야 한다" 검사 삭제
+  (wes 가 CATEGORIZING 상태로 넘긴다). 잡을 닫는 것은 wes. **지금 먼저 넣으면 안 된다** — 현재 wes 는 categorize 가 DONE 을 찍어야 잡을 닫는다.
+  wes PR-B 머지 확인 → 같은 날 배포. 테스트 24 유지
 - [ ] `[score] chore`: 갤러리 샤딩·조정자·자기 재호출·categorize 체인·`jobs.*` 삭제. Lambda 는 `photoIds` 폴백만. `worker.py`(잡 폴링 로컬 워커) 삭제.
   `handler.py` 가 옛 갤러리 페이로드를 받으면 명확한 에러. README 샤딩 절 삭제
 - [ ] `[embedder] chore`: 갤러리 페이로드 경로·조정자·fan-out·advisory lock·`EMBED_SET_STATUS` 손잡이·`quality.py`·관리자 품질 잡·`technical_quality_*` 삭제.
