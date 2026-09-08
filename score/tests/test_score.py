@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from score import chain, handler, job, pipeline
+from score import handler, job, pipeline
 from score.config import MODEL_VERSION, MODULE_ROOT, PARENTS, Knobs, Settings
 from score.gallery import PhotoRef
 from score.store import LocalStore, PhotoAnalysis
@@ -301,74 +301,6 @@ def test_classical_measure_same_for_path_and_decoded_image(tmp_path):
     assert classical.measure(str(path)) == classical.measure(images.load_image(str(path)))
 
 
-# ── 샤딩(#54) ─────────────────────────────────────────────────────────────────
-def test_shard_select_partitions_in_fixed_order_and_validates():
-    refs = list(range(10))
-    parts = [job.Shard(i, 4).select(refs) for i in range(4)]
-    assert parts == [[0, 4, 8], [1, 5, 9], [2, 6], [3, 7]]
-    assert sorted(sum(parts, [])) == refs                       # 빠짐·겹침 없음
-    assert job.Shard(0, 1).select(refs) == refs
-    with pytest.raises(ValueError):
-        job.Shard(4, 4)
-    assert job.Shard.from_payload({"index": "2", "total": "4"}) == job.Shard(2, 4)
-    assert job.Shard.from_payload(None) is None
-
-
-def test_plan_shards_by_photo_count_with_cap():
-    s = Settings(out_root=Path("o"), dataset_root=Path("d"), shard_photos=250, max_shards=8)
-    assert [job.plan_shards(n, s) for n in (0, 1, 250, 251, 822, 5000)] == [1, 1, 1, 2, 4, 8]
-    assert job.plan_shards(822, Settings(out_root=Path("o"), dataset_root=Path("d"), shard_photos=0)) == 1
-
-
-def test_handler_coordinator_fans_out_shards_and_does_not_chain(fake_handler):
-    fake_handler["make_run"](coordinator=True, shards=3, targets=700)
-
-    result = handler.handler({"galleryId": 7, "jobId": 3, "force": True}, _Context())
-
-    payloads = fake_handler["invoked"]
-    assert [p["shard"] for p in payloads] == [{"index": i, "total": 3} for i in range(3)]
-    assert all(p["galleryId"] == 7 and p["jobId"] == 3 and p["force"] is True and p["runStartedAt"] for p in payloads)
-    assert len({p["runStartedAt"] for p in payloads}) == 1     # 샤드 셋이 같은 시작 시각
-    assert result["fannedOut"] is True and fake_handler["chained"] == [] and fake_handler["reinvoked"] == []
-
-
-def test_handler_shard_run_chains_only_when_last(fake_handler):
-    fake_handler["make_run"](processed=5, stopped=False, remaining=0, lastShard=False)
-    handler.handler({"galleryId": 7, "jobId": 3, "shard": {"index": 0, "total": 2}, "runStartedAt": "2026-09-06T00:00:00+00:00"},
-                    _Context())
-    run = fake_handler["run"][0]
-    assert run["shard"] == job.Shard(0, 2) and run["fan_out"] is None and run["run_started_at"] == "2026-09-06T00:00:00+00:00"
-    assert fake_handler["chained"] == []
-
-    fake_handler["make_run"](processed=5, stopped=False, remaining=0, lastShard=True)
-    result = handler.handler({"galleryId": 7, "jobId": 3, "shard": {"index": 1, "total": 2}}, _Context())
-    assert fake_handler["chained"] == [(7, 3)] and result["chained"] is True
-
-
-def test_reinvoke_payload_keeps_shard_and_run_started_at_but_not_force():
-    p = handler._payload(7, 3, force=False, shard=job.Shard(1, 4), run_started_at="2026-09-06T00:00:00+00:00")
-    assert p == {"galleryId": 7, "jobId": 3, "force": False, "shard": {"index": 1, "total": 4},
-                 "runStartedAt": "2026-09-06T00:00:00+00:00"}
-    assert handler._payload(7, None, force=False, shard=None, run_started_at=None) == {"galleryId": 7, "force": False}
-
-
-def test_since_rescoring_skips_only_rows_written_after_run_start(tmp_path, fake_runners):
-    """force 실행의 시작 시각(since) 이후에 쓴 점수만 '있음' — 재호출이 force 를 잃어도 옛 점수는 다시 계산한다."""
-    from datetime import datetime, timedelta, timezone
-
-    store, refs, scored, settings = _world(tmp_path, n=8)   # 앞 4장은 옛 점수 (_world 가 지금 막 썼다)
-    since = datetime.now(timezone.utc)                        # 이 시각 이후 점수만 "있음"
-
-    first = pipeline.run(store, "g", refs, settings, since=since)      # 옛 점수 4장도 대상
-    assert first["processed"] == 8 and first["skipped"] == 0
-
-    again = pipeline.run(store, "g", refs, settings, since=since)      # 방금 쓴 8장은 since 이후 → 전부 건너뜀
-    assert again["skipped"] == 8 and again["processed"] == 0
-
-    later = pipeline.run(store, "g", refs, settings, since=datetime.now(timezone.utc) + timedelta(seconds=5))
-    assert later["processed"] == 8                                      # 미래 시각 기준이면 다시 전부
-
-
 # ── categorize 와의 계약 ───────────────────────────────────────────────────────
 def _literal(path: Path, name: str):
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -385,26 +317,6 @@ def test_model_version_and_parents_match_categorize_module():
     assert _literal(other, "PARENTS") == PARENTS
 
 
-# ── chain ─────────────────────────────────────────────────────────────────────
-def test_chain_without_executor_returns_false(tmp_path):
-    settings = Settings(out_root=tmp_path, dataset_root=tmp_path)
-    assert settings.chain_configured is False
-    assert chain.invoke_categorize(settings, 7, 3) is False
-
-
-def test_chain_subprocess_passes_gallery_and_job(tmp_path, monkeypatch):
-    calls = []
-
-    class _Proc:
-        pid = 42
-
-    monkeypatch.setattr(chain.subprocess, "Popen", lambda argv: calls.append(argv) or _Proc())
-    settings = Settings(out_root=tmp_path, dataset_root=tmp_path, categorize_command="python -m categorize")
-
-    assert chain.invoke_categorize(settings, 7, 3) is True
-    assert calls == [["python", "-m", "categorize", "--gallery-id", "7", "--job-id", "3"]]
-
-
 # ── handler ───────────────────────────────────────────────────────────────────
 class _Context:
     function_name = "wes-score"
@@ -418,102 +330,27 @@ class _Context:
 
 @pytest.fixture
 def fake_handler(monkeypatch):
-    calls = {"run": [], "reinvoked": [], "chained": [], "failed": [], "invoked": []}
+    """handler 는 이제 photoIds 하나만 받는다(#98) — job.run 을 가짜로 두고 인자만 본다."""
+    calls = {"run": []}
 
-    def make_run(**result):
-        def run(gallery_id, force, settings, job_id, remaining_seconds, shard=None, run_started_at=None, fan_out=None):
-            calls["run"].append({"gallery_id": gallery_id, "force": force, "job_id": job_id,
-                                 "remaining": remaining_seconds() if remaining_seconds else None,
-                                 "shard": shard, "run_started_at": run_started_at, "fan_out": fan_out})
-            if result.get("coordinator"):
-                result["fannedOut"] = fan_out(result["shards"], run_started_at)
-            return {"gallery": str(gallery_id), **result}
-        monkeypatch.setattr(handler.job, "run", run)
+    def run(gallery_id, settings, remaining_seconds, photo_ids):
+        calls["run"].append({"gallery_id": gallery_id, "photo_ids": photo_ids,
+                             "remaining": remaining_seconds() if remaining_seconds else None})
+        return {"gallery": str(gallery_id), "processed": len(photo_ids)}
 
-    monkeypatch.setattr(handler, "reinvoke",
-                        lambda ctx, g, j, shard=None, run_started_at=None: calls["reinvoked"].append((g, j)) or True)
-    monkeypatch.setattr(handler, "_invoke_self", lambda ctx, g, payload: calls["invoked"].append(payload) or True)
-    monkeypatch.setattr(handler.chain, "invoke_categorize", lambda s, g, j: calls["chained"].append((g, j)) or True)
-    monkeypatch.setattr(handler, "_fail_job", lambda j, e: calls["failed"].append(j))
-    calls["make_run"] = make_run
+    monkeypatch.setattr(handler.job, "run", run)
     return calls
 
 
-def test_handler_passes_job_and_deadline_then_chains(fake_handler):
-    fake_handler["make_run"](processed=3, stopped=False, remaining=0)
-
-    result = handler.handler({"galleryId": "7", "jobId": "3", "force": True}, _Context(123_000))
-
-    run = fake_handler["run"][0]
-    assert (run["gallery_id"], run["force"], run["job_id"], run["remaining"], run["shard"]) == (7, True, 3, 123.0, None)
-    assert run["run_started_at"] and run["fan_out"] is not None     # force → 시작 시각, wes 호출 → 조정자 가능
-    assert fake_handler["chained"] == [(7, 3)] and result["chained"] is True
-    assert fake_handler["reinvoked"] == []
-
-
-def test_handler_reinvokes_when_stopped_with_progress(fake_handler):
-    fake_handler["make_run"](processed=8, stopped=True, remaining=40)
-
-    result = handler.handler({"galleryId": 7, "jobId": 3}, _Context())
-
-    assert fake_handler["reinvoked"] == [(7, 3)] and result["reinvoked"] is True
-    assert fake_handler["chained"] == []          # 아직 끝나지 않았다 — 체인은 마지막 호출이
-
-
-def test_handler_does_not_reinvoke_without_progress(fake_handler):
-    fake_handler["make_run"](processed=0, stopped=True, remaining=40, failed=["a"])
-
-    result = handler.handler({"galleryId": 7}, _Context())
-
-    assert fake_handler["reinvoked"] == [] and "reinvoked" not in result
-
-
-def test_handler_without_job_does_not_chain(fake_handler):
-    fake_handler["make_run"](processed=1, stopped=False, remaining=0)
-
-    result = handler.handler({"galleryId": 7}, None)
-
-    assert fake_handler["chained"] == [] and "chained" not in result
-    assert fake_handler["run"][0]["remaining"] is None
-
-
-def test_handler_fails_job_when_chain_fails(fake_handler, monkeypatch):
-    fake_handler["make_run"](processed=1, stopped=False, remaining=0)
-    monkeypatch.setattr(handler.chain, "invoke_categorize", lambda s, g, j: False)
-
-    result = handler.handler({"galleryId": 7, "jobId": 3}, _Context())
-
-    assert result["chained"] is False and fake_handler["failed"] == [3]
-
-
-def test_reinvoke_without_function_name_returns_false():
-    assert handler.reinvoke(SimpleNamespace(), 7, 3) is False
-
-
-def test_was_skipped_distinguishes_lock_skip_from_all_photos_skipped():
-    # 잠금 건너뜀은 문자열, 정상 실행은 "건너뛴 사진 수"(int)다. 전부 건너뛴 재실행(processed 0, skipped N)은
-    # 끝난 실행이라 체인이 열려야 한다 — 진위 검사로 오판하던 회귀를 막는다.
-    assert job.was_skipped({"skipped": job.ALREADY_RUNNING, "processed": 0})
-    assert not job.was_skipped({"skipped": 822, "processed": 0, "stopped": False})
-    assert not job.was_skipped({"skipped": 0, "processed": 822})
-    assert not job.was_skipped({})
-
-
-def test_handler_chains_when_all_photos_already_scored(fake_handler):
-    # 재실행: 822장 전부 이미 점수가 있어 processed 0, skipped 822. 끝난 실행이므로 categorize 를 이어 불러야 한다.
-    fake_handler["make_run"](processed=0, skipped=822, stopped=False, remaining=0)
-
-    result = handler.handler({"galleryId": 7, "jobId": 3}, _Context())
-
-    assert fake_handler["chained"] == [(7, 3)] and result["chained"] is True
-
-
-def test_handler_returns_early_on_lock_skip(fake_handler):
-    fake_handler["make_run"](processed=0, skipped=job.ALREADY_RUNNING, stopped=False, remaining=0)
-
-    result = handler.handler({"galleryId": 7, "jobId": 3}, _Context())
-
-    assert fake_handler["chained"] == [] and "chained" not in result
+def test_handler_rejects_legacy_gallery_payload(fake_handler):
+    """옛 갤러리 페이로드(#54 조정자)는 조용히 전수 스캔하지 않고 에러다(#98)."""
+    with pytest.raises(ValueError, match="photoIds"):
+        handler.handler({"galleryId": 7}, _Context())
+    with pytest.raises(ValueError, match="photoIds"):
+        handler.handler({"galleryId": 7, "jobId": 3, "force": True}, _Context())
+    with pytest.raises(ValueError, match="galleryId"):
+        handler.handler({"photoIds": [1]}, _Context())
+    assert fake_handler["run"] == []
 
 
 # ── v2 (#75): Scorer 재사용 · claim_batch · GPU 워커 루프 · photoIds 폴백 ─────────────────────────────
@@ -767,29 +604,19 @@ def test_gpu_worker_once_returns_after_one_batch(fake_worker):
     assert summary["batches"] == 1 and w["stopped"] == 0 and w["runs"] == [["1"]] and w["rollbacks"] >= 1
 
 
-def test_handler_photo_ids_scores_only_without_job_or_chain(fake_handler, monkeypatch):
-    calls = []
+def test_handler_photo_ids_scores_only(fake_handler):
+    """운영 계약: photoIds 만 처리하고 끝난다 — 잡·체인·재호출 없음."""
+    result = handler.handler({"galleryId": 7, "photoIds": ["5", 6]}, _Context())
 
-    def run(gallery_id, settings, remaining_seconds=None, photo_ids=None, **kw):
-        calls.append({"gallery_id": gallery_id, "photo_ids": photo_ids, "kw": kw})
-        return {"gallery": str(gallery_id), "processed": len(photo_ids), "photoIds": len(photo_ids), "stopped": True}
-    monkeypatch.setattr(handler.job, "run", run)
-
-    result = handler.handler({"galleryId": 7, "jobId": 3, "photoIds": ["5", 6]}, None)
-
-    assert calls == [{"gallery_id": 7, "photo_ids": [5, 6], "kw": {}}]
-    assert fake_handler["chained"] == [] and fake_handler["reinvoked"] == [] and "chained" not in result
+    assert fake_handler["run"] == [{"gallery_id": 7, "photo_ids": [5, 6], "remaining": 600.0}]
+    assert result["processed"] == 2 and "chained" not in result
 
 
-def test_job_photo_ids_path_downloads_scores_and_skips_lock_and_jobs(monkeypatch, tmp_path):
-    from score import gallery as gallery_mod
-
+def test_job_photo_ids_path_downloads_and_scores(monkeypatch, tmp_path):
     conn = _Conn()
     monkeypatch.setattr(job.db, "connect", lambda s: conn)
-    monkeypatch.setattr(job, "try_lock_gallery", lambda *a, **k: (_ for _ in ()).throw(AssertionError("잠금 없음")))
-    monkeypatch.setattr(job.jobs, "start", lambda *a, **k: (_ for _ in ()).throw(AssertionError("잡 없음")))
     monkeypatch.setattr(job, "PreviewStorage", lambda bucket: None)
-    monkeypatch.setattr(gallery_mod, "load_by_ids", lambda c, ids: _refs(*ids))
+    monkeypatch.setattr(job, "load_by_ids", lambda c, ids: _refs(*ids))
     monkeypatch.setattr(job, "download_previews", lambda storage, refs, d, workers=8, missing=None: refs)
     seen = {}
     monkeypatch.setattr(job.pipeline, "run", lambda store, g, refs, settings, force=False, **kw: seen.update(
@@ -805,12 +632,10 @@ def test_job_photo_ids_path_downloads_scores_and_skips_lock_and_jobs(monkeypatch
 
 def test_job_photo_ids_path_writes_errors_for_missing_and_failed(monkeypatch, tmp_path):
     """Lambda 폴백도 워커와 같은 표시(#85): 404 는 PREVIEW_MISSING, 점수 실패는 SCORE_FAILED."""
-    from score import gallery as gallery_mod
-
     conn = _Conn()
     monkeypatch.setattr(job.db, "connect", lambda s: conn)
     monkeypatch.setattr(job, "PreviewStorage", lambda bucket: None)
-    monkeypatch.setattr(gallery_mod, "load_by_ids", lambda c, ids: _refs(*ids))
+    monkeypatch.setattr(job, "load_by_ids", lambda c, ids: _refs(*ids))
 
     def download(storage, refs, d, workers=8, missing=None):
         missing.append("5")

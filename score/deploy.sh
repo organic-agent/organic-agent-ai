@@ -95,5 +95,5 @@ echo
 echo "완료. $FUNCTION_NAME 이 ${DIGEST#sha256:} 을 실행한다."
 echo
 echo "  * 가중치(CLIP·LAION MLP·ARNIQA)는 이미지에 구워져 있다. 러너 버전을 올렸으면 MODEL_VERSION 도 올릴 것."
-echo "  * 끝에서 categorize 를 EVENT 호출한다(CATEGORIZE_FUNCTION_NAME). 실행 역할에 그 함수와 자기 함수의"
-echo "    lambda:InvokeFunction, NAT 없는 서브넷이므로 Lambda 인터페이스 VPC 엔드포인트가 있어야 한다."
+echo "  * 페이로드는 {galleryId, photoIds} 하나다(#98). 잡·체인·자기 재호출이 없어 lambda:InvokeFunction 은 더 필요 없다"
+echo "    — 인프라에 score 롤의 그 권한 제거를 요청할 것."

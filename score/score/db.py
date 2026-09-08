@@ -1,7 +1,7 @@
 """wes 공유 Postgres 접속. embedder/db.py의 connect()와 같은 모양이다.
 
-여기엔 SQL이 없다 — 테이블을 읽고 쓰는 SQL은 전부 `store.DbStore`(파이프라인 데이터)와
-`jobs`(잡 상태)에 있다. 두 모듈이 한 커넥션을 나눠 쓰므로 트랜잭션 경계는 호출자가 잡는다.
+여기엔 SQL이 없다 — 테이블을 읽고 쓰는 SQL은 전부 `store.DbStore`(파이프라인 데이터)와 `gallery`(대상 조회)에 있다.
+잡 테이블은 건드리지 않는다(#98, wes 소유).
 """
 
 from __future__ import annotations

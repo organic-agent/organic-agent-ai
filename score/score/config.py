@@ -71,7 +71,7 @@ class Knobs:
 
 @dataclass(frozen=True)
 class Settings:
-    """환경(DB·S3·경로·체인) + 손잡이."""
+    """환경(DB·S3·경로) + 손잡이."""
 
     #: 로컬 모드의 출력 루트. 갤러리마다 하위 폴더가 생긴다.
     out_root: Path
@@ -107,35 +107,15 @@ class Settings:
     #: 미리보기를 S3 에서 동시에 내려받는 스레드 수(#68). 장당 왕복이 병목이라 8 이면 한 프로세스가 7,000장을 1분대에 받는다.
     download_workers: int = 8
 
-    #: 갤러리 샤딩(#54). 사진 수 / shard_photos 를 올림한 만큼(최대 max_shards) 같은 함수를 동시에 띄운다.
-    #: 1 이면 지금처럼 한 실행. 150 이면 822장 → 6 샤드(각 ~137장 ≈ 3.5분). 250(4 샤드)에서 150 으로 낮춘 이유(#58):
-    #: 벽시계는 가장 긴 샤드가 정하는데 Lambda 호스트 편차로 한 샤드가 1.7배 느린 일이 있었다 — 샤드가 짧을수록 그 피해 폭이 준다.
-    shard_photos: int = 150
-    #: 샤드 상한 32(#62)의 근거는 RDS 커넥션 — 샤드는 세션 advisory lock 으로 커넥션 1개를 끝까지 붙들고, db.t4g.micro(79)에서
-    #: 평상시 24 + 32 = 56 이 여유 20 의 한계다. 인프라 예약 동시성(score_reserved_concurrent_executions)도 같은 값이어야 한다.
-    max_shards: int = 32
-
     #: Lambda 타임아웃 앞에서 멈출 여유(초). "지금까지 가장 오래 걸린 쓰기 배치 + 이 값"보다 남은 시간이
     #: 적으면 배치 경계에서 멈추고 commit 한다(embedder 와 같은 규칙). 로컬 CLI 에는 데드라인이 없다.
     stop_margin_seconds: int = 60
-
-    # ── 체인: 잡(job_id)이 끝나면 categorize 를 깨운다. 둘 중 하나. ──
-    #: Lambda 함수 이름 — EVENT 호출. 운영.
-    categorize_function_name: str | None = None
-    #: 로컬 대용 — 서브프로세스로 띄울 명령 (쉘 분리 없이 공백으로 나눈다). 예:
-    #:   CATEGORIZE_COMMAND="/path/.venv/bin/python -m categorize"
-    #: 여기에 `--gallery-id N --job-id M` 이 붙는다.
-    categorize_command: str | None = None
 
     knobs: Knobs = field(default_factory=Knobs)
 
     @property
     def db_enabled(self) -> bool:
         return bool(self.db_host and self.db_name and self.db_user)
-
-    @property
-    def chain_configured(self) -> bool:
-        return bool(self.categorize_function_name or self.categorize_command)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -159,10 +139,6 @@ class Settings:
             worker_max_consecutive_failures=int(os.environ.get("WORKER_MAX_CONSECUTIVE_FAILURES", "5")),
             worker_max_batches=int(os.environ.get("WORKER_MAX_BATCHES", "0")),
             stop_margin_seconds=int(os.environ.get("STOP_MARGIN_SECONDS", "60")),
-            shard_photos=int(os.environ.get("SHARD_PHOTOS", "150")),
-            max_shards=int(os.environ.get("MAX_SHARDS", "32")),
-            categorize_function_name=os.environ.get("CATEGORIZE_FUNCTION_NAME") or None,
-            categorize_command=os.environ.get("CATEGORIZE_COMMAND") or None,
             knobs=Knobs(
                 clip_batch=int(os.environ.get("CLIP_BATCH", Knobs.clip_batch)),
                 arniqa_long_edge=int(os.environ.get("ARNIQA_LONG_EDGE", Knobs.arniqa_long_edge)),

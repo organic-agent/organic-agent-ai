@@ -5,9 +5,11 @@
 그룹·이름은 다음 칸인 [`categorize/`](../categorize/README.md), 미리보기·DINOv3 는 앞 칸인 [`embedder/`](../embedder/README.md).
 
 ```
-wes "AI 분석"(FULL) ──▶ ai_analysis_jobs PENDING ──EVENT {galleryId, jobId}──▶ [score] ──EVENT──▶ [categorize] ──▶ DONE
-                                                                              사진마다        갤러리 한 번
+[GPU 워커]  photo_analysis SKIP LOCKED 32장 집기 → 점수 → commit          ← 운영 기본 (인스턴스가 있을 때)
+[Lambda ]  wes ──EVENT {galleryId, photoIds}──▶ [score]                   ← 폴백 (워커가 없거나 못 따라갈 때)
 ```
+
+잡 상태·categorize 호출·재시도는 **wes 가 소유한다**(#98, wes V16). score 는 어느 경로로 불려도 점수만 쓴다.
 
 ## 무엇을 계산하나 (`pipeline.py`)
 
@@ -29,15 +31,12 @@ categorize 의 컬럼이라 UPSERT 의 SET 절에 없다 — 이 경계가 곧 �
 
 | | |
 |---|---|
-| 진입점 | `handler.py`(Lambda EVENT `{"galleryId", "jobId"?, "force"?}`) / `__main__.py`(CLI) → `job.run()` |
+| 진입점 | `handler.py`(Lambda EVENT `{"galleryId", "photoIds"}` — 다른 페이로드는 에러) / `__main__.py`(CLI, 갤러리 전체 가능) → `job.run()` |
 | 단위 · 재개 | 사진. 같은 `MODEL_VERSION` 이고 CLIP 이 저장된 사진은 건너뛴다. `write_batch`(32)장마다 commit |
 | 속도 손잡이 | 한 장은 한 번만 디코드해 세 러너에 넘긴다. CLIP 은 `CLIP_BATCH`(8)장씩 한 forward, ARNIQA 입력 긴 변은 `ARNIQA_LONG_EDGE`(1024 — 1600 대비 연산 1/2.4, 순위 상관 0.93) (#51) |
-| 데드라인 | 15분 앞에서 배치 경계에서 멈추고(`STOP_MARGIN_SECONDS`) 처리분이 있으면 **자기 재호출** |
-| 샤딩 (#54) | wes 호출은 **조정자** — 사진 수 / `SHARD_PHOTOS`(150, #58 — 짧은 샤드가 느린 호스트 편차를 줄인다) 만큼(최대 `MAX_SHARDS` 32, #62 — 상한은 RDS 커넥션이 정한다) 자기 함수를 `shard:{index,total}` 로 동시에 띄우고 끝난다. 샤드는 `index % total` 인 사진만, 잠금은 (갤러리, 샤드). `result.scoreShards.done` 카운터가 total 에 닿은 마지막 샤드가 categorize 를 연다. 로컬은 `--shards N` 순차. **전제: Lambda 예약 동시성 ≥ `MAX_SHARDS`**(인프라 `score_reserved_concurrent_executions`, 2026-09-06 부터 32) — 낮으면 샤드가 스로틀돼 라운드가 늘어난다 |
-| force | `runStartedAt`(시작 시각) 을 샤드·재호출에 넘겨 그 이후 점수만 "있음" — 재호출이 force 를 잃어도 옛 점수가 남지 않는다 |
-| 잠금 | 갤러리 advisory lock (`pg_try_advisory_lock(0x53434F, gallery_id)`) — 연타·재호출 겹침 방지 |
-| 잡 | `ai_analysis_jobs` 를 RUNNING 으로 열고 `result.score` 를 기록. **DONE 은 categorize 가 찍는다** |
-| 체인 | 끝나면 categorize 를 깨운다 — `CATEGORIZE_FUNCTION_NAME`(Lambda EVENT) 또는 `CATEGORIZE_COMMAND`(로컬 서브프로세스). 잡인데 둘 다 없으면 시작 전에 FAILED |
+| 데드라인 | 15분 앞에서 배치 경계에서 멈추고(`STOP_MARGIN_SECONDS`) commit 한다. 남은 사진은 wes 스윕이 다시 보낸다 |
+| 실패 | 사진 단위 결정적 실패는 `photo_analysis.error` — 미리보기 없음(S3 404) `PREVIEW_MISSING`, 점수 실패 `SCORE_FAILED`(#85). wes 가 기대 장수에서 뺀다 |
+| 잡·체인·샤딩 | **없다**(#98). wes 가 `ai_analysis_jobs` 를 소유하고 categorize 를 직접 부른다. 갤러리 advisory lock·자기 재호출·조정자도 함께 사라졌다 |
 | 접속 | `DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD/DB_SSLMODE`, `S3_BUCKET`(미리보기), Lambda 는 `/tmp` 만 쓴다(`SCORE_WORK`) |
 
 ## 구조
@@ -45,13 +44,11 @@ categorize 의 컬럼이라 UPSERT 의 SET 절에 없다 — 이 경계가 곧 �
 ```
 score/
 ├── score/
-│   ├── handler.py      Lambda: 데드라인 → 자기 재호출 / 끝나면 chain / 체인 실패면 잡 FAILED
+│   ├── handler.py      Lambda: {galleryId, photoIds} 하나. 데드라인 앞 배치 경계 정지
 │   ├── __main__.py     CLI: --gallery-id N [--job-id J] [--force] | --local "갤러리" | --list | worker
 │   ├── job.py          갤러리 잡: lock → 잡 RUNNING → EMBEDDED 사진 + 미리보기 다운로드 → pipeline → result 기록
 │   ├── pipeline.py     SCORE 본체 (위 그림). Scorer(러너 1회 로드, #75) · 디코드 1회 · CLIP/ARNIQA 배치 · 배치 쓰기 · 데드라인 정지
 │   ├── images.py       이미지 로드 (torch 없음) — load_image · fit_long_edge · as_image
-│   ├── chain.py        categorize 호출 — Lambda EVENT | 서브프로세스
-│   ├── worker.py       로컬 폴링 워커 (운영 없음 — wes 에 invoker 가 생기면 삭제)
 │   ├── subjects.py     CLIP zero-shot — SubjectsTagger · ParentTagger
 │   ├── classical.py    Laplacian 선명도 · 노출 클립
 │   ├── runners/        ArniqaRunner(torch.hub, SHA 고정, score_batch) · LaionRunner(open_clip + MLP) — torch 는 여기만
@@ -61,8 +58,8 @@ score/
 │   ├── config.py       Settings · Knobs · MODEL_VERSION · PARENTS · PARENT_PROMPTS
 │   ├── store.py        LocalStore(out/v3/) · DbStore — write_scores 하나
 │   ├── gallery.py      PhotoRef — 로컬 폴더 / DB(EMBEDDED + preview_key)
-│   ├── storage.py      S3 미리보기 다운로드    ├── db.py  접속    ├── jobs.py  start · record · fail · claim_next
-├── tests/test_score.py   pytest 38 — 재개 · 컬럼 경계 · 배치/데드라인 · CLIP/ARNIQA 배치·실패 격리 · 프리페치 · 샤딩(분배·조정자·마지막 체인·since) · chain · handler · categorize 와의 상수 일치
+│   ├── storage.py      S3 미리보기 다운로드    ├── db.py  접속    ├── device.py  cuda|mps|cpu
+├── tests/test_score.py   pytest 29 — 재개 · 컬럼 경계 · 배치/데드라인 · CLIP/ARNIQA 배치·실패 격리 · 프리페치 · 집기(SKIP LOCKED·error) · GPU 워커 루프 · photoIds 폴백 · handler 계약 · categorize 와의 상수 일치
 ├── Dockerfile · deploy.sh   컨테이너 Lambda (가중치 빌드 시 번들) · ECR 푸시 + update-function-code
 ├── Dockerfile.gpu           GPU 워커·벤치마크 이미지 (cu121 torch). main 의 score/** 변경마다 CI 가 ECR :gpu(이동) + :gpu-<sha>(불변) 로 민다(#77)
 ├── scripts/sagemaker_benchmark.py   SageMaker training job 제출·대기·로그 요약 · ec2_benchmark.py  EC2 stop/start 실측 · snapshot_scores.py  점수 스냅샷·비교(fp16 검증)
@@ -83,14 +80,14 @@ uv pip install --python .venv/bin/python --no-deps -e . -e ../categorize   # 한
 .venv/bin/python -m score --local "dataset1/데이터셋1" [--limit 50]  # out/v3/<갤러리>/ 에 점수 (categorize --local 이 이어 읽는다)
 
 export DB_HOST=localhost DB_PORT=5432 DB_NAME=wes DB_USER=wes DB_PASSWORD=wes DB_SSLMODE=disable S3_BUCKET=<버킷>
-.venv/bin/python -m score --gallery-id 12 [--force]                # 점수만 (잡 계약 밖)
-CATEGORIZE_COMMAND=".venv/bin/python -m categorize" .venv/bin/python -m score --gallery-id 12 --job-id 34   # 잡 + 체인
-.venv/bin/python -m score worker [--once]                          # 웹 "AI 분석" 버튼의 잡을 폴링 (로컬 대용)
+.venv/bin/python -m score --gallery-id 12 [--force] [--limit N]     # 갤러리 전체 (로컬·벤치마크)
+.venv/bin/python -m score --gallery-id 12 --photo-ids 1,2,3        # 그 목록만 (운영 Lambda 와 같은 경로)
+.venv/bin/python -m score worker --gpu --once --no-idle-stop       # GPU 집기 워커 한 배치
 ```
 
-wes 쪽 스크립트가 이걸 감싼다: `../organic-agent-server/wes/scripts/local-worker.sh`(워커), `local-ai.sh <galleryId>`(임베딩 → 점수 → 카테고리).
+wes 쪽 스크립트가 이걸 감싼다: `../organic-agent-server/wes/scripts/local-ai.sh <galleryId>`(임베딩 → 점수 → 카테고리), `scripts/gpu/score-worker.sh`(GPU 워커 대역).
 
-- **embedder 가 먼저다.** `gallery.load_db` 는 `status='EMBEDDED'` 이고 `preview_key` 가 있는 사진만 고른다.
+- **embedder 가 먼저다.** `gallery.load_db` 는 `preview_key` 가 있는 사진만 고른다(#75 — v2 에서 `status` 는 보지 않는다).
 - **`MODEL_VERSION` 이 재개 키다.** 러너·전처리를 바꾸면 올린다 — 전 갤러리가 재점수 대상이 된다. categorize 의
   같은 상수와 값이 같아야 하며 테스트가 고정한다.
 - `photo_ratings` · `photo_selection_items` 는 읽지 않는다(정책).
