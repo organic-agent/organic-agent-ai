@@ -4,7 +4,8 @@
     python -m score --local "dataset1/데이터셋1" [--limit 50] [--force]     # 로컬 데이터셋 → out/v3/
     python -m score --list                                                   # 로컬 데이터셋 갤러리 목록
     python -m score --gallery-id 12 --photo-ids 1,2,3                      # 그 목록만 (운영 Lambda 와 같은 경로)
-    python -m score worker --gpu [--once] [--no-idle-stop]                 # GPU 집기 워커 (운영 인스턴스의 기본 CMD)
+    python -m score worker --gpu                                            # GPU 집기 워커 (운영 인스턴스의 기본 CMD)
+    python -m score worker --gpu --no-idle-stop                            # 로컬: 큐를 다 비우고 유휴 30s 뒤 종료 (EC2 정지 안 함)
 
 DB 모드 접속은 DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD/DB_SSLMODE, 미리보기는 S3_BUCKET
 (wes scripts/local-ai.sh 참조). 잡 테이블·categorize 체인은 wes 가 소유한다 — 이 CLI 는 점수만 쓴다(#98).
@@ -25,7 +26,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("cmd", nargs="?", choices=["worker", "train"],
                     help="worker --gpu: GPU 집기 워커(#75). train: SageMaker 벤치마크 진입점")
     ap.add_argument("--gpu", action="store_true", help="worker: GPU 집기 루프 (photo_analysis SKIP LOCKED 32장씩, 유휴면 자기 정지)")
-    ap.add_argument("--no-idle-stop", action="store_true", help="worker --gpu: 유휴여도 인스턴스를 정지하지 않는다(로컬)")
+    ap.add_argument("--no-idle-stop", action="store_true",
+                    help="worker --gpu: 유휴가 되면 EC2 를 정지하지 않고 그냥 종료한다(로컬·EC2 밖). 큐는 끝까지 비운다")
     ap.add_argument("--photo-ids", metavar="ID,ID,…", help="v2 폴백(#75): 이 사진 id 목록만 점수. 잡·체인 없음")
     ap.add_argument("--gallery-id", type=int, help="photos.gallery_id (DB 모드)")
     ap.add_argument("--force", action="store_true", help="이미 점수가 있는 사진도 다시")

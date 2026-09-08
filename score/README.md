@@ -82,7 +82,7 @@ uv pip install --python .venv/bin/python --no-deps -e . -e ../categorize   # 한
 export DB_HOST=localhost DB_PORT=5432 DB_NAME=wes DB_USER=wes DB_PASSWORD=wes DB_SSLMODE=disable S3_BUCKET=<버킷>
 .venv/bin/python -m score --gallery-id 12 [--force] [--limit N]     # 갤러리 전체 (로컬·벤치마크)
 .venv/bin/python -m score --gallery-id 12 --photo-ids 1,2,3        # 그 목록만 (운영 Lambda 와 같은 경로)
-.venv/bin/python -m score worker --gpu --once --no-idle-stop       # GPU 집기 워커 한 배치
+.venv/bin/python -m score worker --gpu --no-idle-stop               # GPU 집기 워커: 큐를 다 비우고 유휴 30s 뒤 종료(EC2 정지 안 함)
 ```
 
 wes 쪽 스크립트가 이걸 감싼다: `../organic-agent-server/wes/scripts/local-ai.sh <galleryId>`(임베딩 → 점수 → 카테고리), `scripts/gpu/score-worker.sh`(GPU 워커 대역).
@@ -97,13 +97,17 @@ wes 쪽 스크립트가 이걸 감싼다: `../organic-agent-server/wes/scripts/l
 Lambda 32 샤드 대신 GPU 인스턴스 한 대(또는 몇 대)가 **사진 단위로 집어서** 점수를 낸다. 갤러리를 배정받지 않는다.
 
 ```bash
-python -m score worker --gpu [--once] [--no-idle-stop]     # 컨테이너 기본 CMD. 로컬에서는 --no-idle-stop
+python -m score worker --gpu                               # 컨테이너 기본 CMD (운영)
+python -m score worker --gpu --no-idle-stop                # 로컬: 같은 루프인데 EC2 를 정지하지 않고 종료
+python -m score worker --gpu --once                        # 배치 하나만 (디버깅)
 ```
 
 - 집기: `photo_analysis.embedding IS NOT NULL AND clip_embedding IS NULL AND error IS NULL`(+ 미리보기 있음·휴지통 아님) 32장을 `FOR UPDATE OF photo_analysis SKIP LOCKED`
   로 잠근 채 미리보기 다운로드(16 스레드) → CLIP·ARNIQA·classical → `write_scores`(UPSERT + commit = 잠금 해제). 워커가 죽으면 롤백으로 행이 자동 반환된다.
   여러 대가 같은 사진을 집을 수 없고(RDS 에서 확인), 한 갤러리를 나눠 먹어도 된다. status 는 보지 않는다(v2 에서 EMBEDDED 가 사라진다).
-- 유휴: 집을 게 없으면 `WORKER_POLL_SECONDS`(3) 대기, 연속 `WORKER_IDLE_STOP_SECONDS`(**30**, 다중 사용자 운영이면 600) 를 넘기면 IMDSv2 로 자기 인스턴스를 `StopInstances`. 켜는 것·폴백은 wes.
+- 유휴: 집을 게 없으면 `WORKER_POLL_SECONDS`(3) 대기, 연속 `WORKER_IDLE_STOP_SECONDS`(**30**, 다중 사용자 운영이면 600) 를 넘기면 **루프가 끝난다**.
+  그때 인스턴스를 정지할지는 별개다(#103) — 기본은 IMDSv2 로 자기 id 를 얻어 `StopInstances`, `--no-idle-stop` 이면 정지 없이 종료(EC2 밖).
+  `WORKER_IDLE_STOP_SECONDS=0` 이면 끝나지 않는다. 켜는 것·폴백은 wes.
 - 실패: 배치가 `WORKER_MAX_CONSECUTIVE_FAILURES`(5)회 연속 실패하면 루프를 끝내고 exit 1 — 같은 오류로 헛돌지 않는다(#81).
 - 잡 테이블은 건드리지 않는다 — 완료는 wes 가 데이터로 관측.
 - 사진 단위 결정적 실패(#85, wes V15): 미리보기가 S3 에 없으면(404) 그 장만 빼고 `photo_analysis.error='PREVIEW_MISSING'`, 점수 계산에서

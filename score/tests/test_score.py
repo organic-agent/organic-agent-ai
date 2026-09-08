@@ -596,6 +596,42 @@ def test_gpu_worker_marks_missing_previews_and_keeps_going(fake_worker, monkeypa
     assert summary["processed"] == 2 and summary["failed"] == 2 and summary["batches"] == 2
 
 
+def test_no_idle_stop_drains_the_queue_then_exits_without_stopping_the_instance(fake_worker, monkeypatch):
+    """#103: `--no-idle-stop` 은 EC2 정지만 막는다 — 큐를 끝까지 비우고 유휴가 되면 종료한다.
+    옛 동작(종료까지 막아 영원히 도는 것) 때문에 wes 로컬 스크립트가 --once 를 붙여야 했다."""
+    w = fake_worker
+    w["queue"] = [_refs(1, 2), _refs(3)]
+    clock = {"t": 0.0}
+    monkeypatch.setattr(w["module"].time, "monotonic", lambda: clock.__setitem__("t", clock["t"] + 0.6) or clock["t"])
+
+    summary = w["module"].loop(w["settings"], stop_on_idle=False)
+
+    assert w["runs"] == [["1", "2"], ["3"]]          # 한 배치가 아니라 큐 전체
+    assert summary["processed"] == 3
+    assert w["stopped"] == 0                         # StopInstances 는 부르지 않는다
+    assert summary["idleStopped"] is False
+
+
+def test_idle_stop_seconds_zero_keeps_looping(fake_worker, monkeypatch):
+    """0 은 "유휴여도 끝나지 않는다" — 종료를 원치 않는 실행의 명시적 손잡이다."""
+    w = fake_worker
+    w["queue"] = [_refs(1)]
+    w["settings"] = Settings(out_root=w["settings"].out_root, dataset_root=w["settings"].dataset_root, s3_bucket="b",
+                             work_dir=w["settings"].work_dir, worker_poll_seconds=0.0, worker_idle_stop_seconds=0)
+    polls = {"n": 0}
+
+    def sleep(_):
+        polls["n"] += 1
+        if polls["n"] >= 3:
+            raise KeyboardInterrupt                  # 무한 루프를 밖에서 끊는다
+    monkeypatch.setattr(w["module"].time, "sleep", sleep)
+
+    with pytest.raises(KeyboardInterrupt):
+        w["module"].loop(w["settings"], stop_on_idle=True)
+
+    assert w["stopped"] == 0                         # 0 이면 정지도 종료도 하지 않는다
+
+
 def test_gpu_worker_once_returns_after_one_batch(fake_worker):
     w = fake_worker
     w["queue"] = [_refs(1), _refs(2)]

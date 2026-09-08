@@ -52,7 +52,7 @@
 
 - 워커는 **켜지면 일하고 없으면 끈다**. 갤러리를 배정받지 않는다 — `photo_analysis.embedding IS NOT NULL AND clip_embedding IS NULL AND error IS NULL`
   이면 누구 것이든 32장씩 `FOR UPDATE OF photo_analysis SKIP LOCKED` 로 집는다. 2대가 한 갤러리를 나눠 먹어도 중복 0(RDS 에서 확인).
-- 유휴 30초(`WORKER_IDLE_STOP_SECONDS`) → IMDSv2 로 자기 id → `StopInstances` → exit 0. StopInstances 가 실패하면 로그만 남기고 exit 0 — 유닛은
+- 유휴 30초(`WORKER_IDLE_STOP_SECONDS`) → 루프 종료. 운영은 그 전에 IMDSv2 로 자기 id 를 얻어 `StopInstances`(#103: 종료와 정지는 별개 — `--no-idle-stop` 은 정지만 건너뛴다) → exit 0. StopInstances 가 실패하면 로그만 남기고 exit 0 — 유닛은
   재시작하지 않고, wes `GpuController`(`idle-stop-after: PT2M`)·CloudWatch 알람(CPU 30분 < 5%)이 끈다.
 - wes 쪽 실제 값(#168 머지, `application-variable.yml`): `gpu.enabled`(운영은 SSM `/wes/prod/app.analysis.gpu.enabled`, **지금 false**) ·
   `tag: wes-score-gpu` · `start-grace: PT5M`(이 안에는 유휴로 안 본다) · `idle-stop-after: PT2M` · `fallback-after: PT10M` · `fallback-interval: PT10M`.

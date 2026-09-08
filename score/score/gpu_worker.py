@@ -3,7 +3,8 @@
     부팅 → 러너 1회 로드(Scorer) → 루프:
         claim_batch(32)  ← photo_analysis 를 FOR UPDATE SKIP LOCKED 로 잠근 채
         미리보기 다운로드(16 스레드) → CLIP·ARNIQA·classical → write_scores(commit = 잠금 해제)
-        집을 게 없으면 poll 초 대기. 연속 유휴가 idle_stop 초를 넘기면 자기 인스턴스를 StopInstances 하고 끝난다.
+        집을 게 없으면 poll 초 대기. 연속 유휴가 idle_stop 초를 넘기면 **끝난다** — `stop_on_idle` 이면 그 전에
+        자기 인스턴스를 StopInstances 한다(#103: 종료와 정지는 별개다). `WORKER_IDLE_STOP_SECONDS=0` 이면 끝나지 않는다.
 
 갤러리를 배정받지 않는다 — 임베딩이 끝난 사진이면 누구 것이든 집는다. 그래서 인스턴스 2대가 한 갤러리를 나눠 먹어도,
 한 대가 두 갤러리를 섞어 먹어도 된다. 켜는 것·폴백 결정은 wes 의 몫이고, 워커는 켜지면 일하고 없으면 끈다.
@@ -169,9 +170,14 @@ def loop(settings: Settings, *, once: bool = False, stop_on_idle: bool = True, m
                 idle = now - idle_since
                 if once:
                     return summary
-                if stop_on_idle and settings.worker_idle_stop_seconds > 0 and idle >= settings.worker_idle_stop_seconds:
-                    log.info("[worker] %.0fs 동안 집을 사진이 없다 — 정지", idle)
-                    summary["idleStopped"] = stop_self()
+                # 유휴 상한에 닿으면 **항상 끝난다**(#103). 인스턴스를 정지할지만 stop_on_idle 이 정한다 —
+                # 옛 코드는 둘을 한 조건에 묶어 `--no-idle-stop` 이 종료까지 막았고, 그래서 로컬에서 큐를 비우고
+                # 끝나는 실행이 불가능했다(EC2 가 아닌 곳에서 프로세스가 영원히 돈다).
+                if settings.worker_idle_stop_seconds > 0 and idle >= settings.worker_idle_stop_seconds:
+                    log.info("[worker] %.0fs 동안 집을 사진이 없다 — 종료%s", idle,
+                             "" if stop_on_idle else " (인스턴스 정지 안 함)")
+                    if stop_on_idle:
+                        summary["idleStopped"] = stop_self()
                     return summary
                 time.sleep(settings.worker_poll_seconds)
                 continue
