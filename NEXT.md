@@ -1,4 +1,4 @@
-# NEXT — 파이프라인 v2, 다음 할 일 (2026-09-08 오후 기준)
+# NEXT — 파이프라인 v2, 다음 할 일 (2026-09-08 15:00 KST 기준)
 
 > 배경·결정·실측은 `docs/`(로컬): `pipeline-v2-dev-plan-2026-09-07.md`(전체) · `ai-pipeline-v2-plan-2026-09-07.md`(AI 몫) ·
 > `progress-2026-09-08.md`(진행) · `gpu-benchmark-summary-2026-09-07.md`(벤치마크) · `embedder-photoselect-architecture.md` §0.1(v2 실행 모양).
@@ -17,20 +17,28 @@
 
 ## 1. 순서
 
-### A. ⚠️ wes V16(PR-B) 배포 **전에** 끝내야 하는 것 — 잡 테이블 계약
-V16 이 적용되면 score Lambda 갤러리 경로(`jobs.start/record/record_shard/shard_done`)와 categorize(`jobs.py` 의 status DONE·result 쓰기)가
-permission denied 로 깨진다. wes PR-B 머지 시점을 확인하고 **같은 날** 배포한다(오늘 V15 와 같은 방식).
-- [ ] **C1** `[categorize] fix`: 잡 4상태 계약 — `jobs.start/finish/fail` 의 `status`·`started_at`·`finished_at`·`result` 쓰기 삭제(V16 이 컬럼을 지우고 CHECK 를
-  ANALYZING·CATEGORIZING·DONE·FAILED 로 바꾸며 photoselect 에 `UPDATE (error, updated_at)` 만 남긴다), 실패 시 `error` 만. `job.run` 의 "RUNNING 이어야 한다" 검사 삭제
-  (wes 가 CATEGORIZING 상태로 넘긴다). 잡을 닫는 것은 wes. **지금 먼저 넣으면 안 된다** — 현재 wes 는 categorize 가 DONE 을 찍어야 잡을 닫는다.
-  wes PR-B 머지 확인 → 같은 날 배포. 테스트 24 유지
-- [ ] `[score] chore`: 갤러리 샤딩·조정자·자기 재호출·categorize 체인·`jobs.*` 삭제. Lambda 는 `photoIds` 폴백만. `worker.py`(잡 폴링 로컬 워커) 삭제.
-  `handler.py` 가 옛 갤러리 페이로드를 받으면 명확한 에러. README 샤딩 절 삭제
-- [ ] `[embedder] chore`: 갤러리 페이로드 경로·조정자·fan-out·advisory lock·`EMBED_SET_STATUS` 손잡이·`quality.py`·관리자 품질 잡·`technical_quality_*` 삭제.
-  **추가 계약**(wes §7 E1): 결정적 실패(디코드 불가) → `photo_analysis.error` UPSERT, 일시 실패 → `UPDATE photos SET dispatched_at = NULL`(V15 가 embedder 에
-  `dispatched_at` UPDATE 권한을 줬다). 완료 로그 `embedder gallery=G photos=N ok=K failed=F seconds=S`
-- [ ] 인프라에 회신: embedder 갤러리 경로가 사라지면 `ReinvokeSelf`·score `InvokeFunction`(자기·categorize) 권한 제거 가능(결정 K). wes 가 categorize 를 직접 부른다
+### A. 세 repo 싱크 — AI repo 쪽은 끝났다(2026-09-08 15:00)
+V15·V16 이 같은 날 운영에 올라갔고 AI repo 는 따라잡았다: #84(embedder status) · #86(score error 계약) · #94(categorize 대상) · #95(categorize 잡 계약).
+남은 것은 **급하지 않은 정리**와 **다른 repo 대기**다.
+
+- [ ] `[score] chore`: 갤러리 샤딩·조정자·자기 재호출·categorize 체인·`jobs.py` 삭제. Lambda 는 `photoIds` 폴백만. `worker.py`(잡 폴링 로컬 워커) 삭제.
+  **지금 깨지지는 않는다** — wes V16 은 score 를 `{galleryId, photoIds}` 로만 부르고 그 경로는 잡을 건드리지 않는다. 죽은 코드 정리다
+- [ ] `[embedder] chore`: 갤러리 페이로드 경로·조정자·fan-out·advisory lock·`EMBED_SET_STATUS`·`quality.py`·관리자 품질 잡 삭제.
+  `complete_admin_quality` 는 V15 가 지운 컬럼에 쓴다 — wes 가 QUALITY_ANALYSIS 잡을 못 만들어 도달 불가지만 같이 지운다.
+  **추가 계약**(wes §7 E1, 지금 없어도 동작): 결정적 실패 → `photo_analysis.error`, 일시 실패 → `dispatched_at = NULL`.
+  없으면 wes 스위퍼가 10분 타임아웃으로 재배정하고 3회 뒤 `EMBED_ATTEMPTS_EXCEEDED` 를 직접 쓴다 — 느릴 뿐 멈추지 않는다.
+  완료 로그 `embedder gallery=G photos=N ok=K failed=F seconds=S`
+- [ ] **wes 와 합의 필요** — 로컬 GPU 워커 스크립트(`wes/scripts/gpu/score-worker.sh`, PR-C #169 미머지)가 `worker --gpu --once --no-idle-stop` 을 쓰며
+  주석에 "쌓인 것을 다 처리하면 끝난다"고 적었는데, 우리 `--once` 는 **배치 하나(32장)만** 처리하고 끝난다. 큐를 비우고 끝나는 `--drain` 을 새로 주거나
+  wes 가 재시작을 반복하는 것 중 하나로 정한다(로컬 전용, 운영 영향 없음)
+- [ ] `score/deploy/gpu-worker/README.md` 의 "wes W6 30분 유휴 강제 정지"를 wes PR-C 실제 값으로 정정(`idle-stop-after: PT2M`, `start-grace: PT5M`, `fallback-after: PT10M`)
 - [ ] `docs/embedder-photoselect-architecture.md` §2~§4 를 v2 기준으로 다시 쓰기(지금은 §0.1 만 v2)
+
+### A2. 다른 repo 대기 (AI repo 가 할 일 없음)
+- **인프라 PR #44 열림** — wes V16 이 읽는 SSM 키 `app.analysis.embedder-function-name` 이 아직 없다(옛 이름 `app.embedding.function-name`).
+  그래서 **지금 운영 파이프라인은 임베딩 배정 단계에서 멈춰 있다**(`isEmbedderConfigured` false). 이게 머지되면 우리 Lambda 셋이 곧바로 쓰인다
+- **인프라 PR-3c 미착수** — GPU 인스턴스 2대·워커 롤·SG·유휴 알람·앱 롤 EC2 제어. PR-3a(#40)·PR-3b(#42, AMI 파이프라인)는 머지됨
+- **wes PR-C(#169) 열림** — `GpuController`·`Ec2ScoreWorkerPool`(태그 `Name=wes-score-gpu` 확인 ✅)·score Lambda 폴백
 
 ### B. 워커를 실제 인스턴스에서 (인프라 I2 가 나온 날) — 절차는 `score/deploy/gpu-worker/README.md` §검증
 - [ ] 콜드(Start → 첫 배치) ≤ 40s · 배치 로그 `score worker batch=32 …` · 유휴 30s 뒤 자기 정지 · env 파일 삭제 확인
