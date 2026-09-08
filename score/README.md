@@ -66,6 +66,7 @@ score/
 ├── Dockerfile · deploy.sh   컨테이너 Lambda (가중치 빌드 시 번들) · ECR 푸시 + update-function-code
 ├── Dockerfile.gpu           GPU 워커·벤치마크 이미지 (cu121 torch). main 의 score/** 변경마다 CI 가 ECR :gpu(이동) + :gpu-<sha>(불변) 로 민다(#77)
 ├── scripts/sagemaker_benchmark.py   SageMaker training job 제출·대기·로그 요약 · ec2_benchmark.py  EC2 stop/start 실측 · snapshot_scores.py  점수 스냅샷·비교(fp16 검증)
+├── scripts/compare_local.py         CPU 경로 회귀(#89): 두 커밋을 같은 venv 로 로컬 데이터셋 N장 돌려 점수·CLIP 벡터 비트 동일 검사 — `check "dataset1/데이터셋1" --rev main --limit 16`
 └── requirements.txt · pyproject.toml
 ```
 
