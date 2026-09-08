@@ -85,8 +85,7 @@ def _connect(settings):
 db_module.connect = _connect
 db_module.verify_admin_photo_event = lambda connection, event: True
 db_module.complete_admin_derivative = lambda connection, event, preview, meta: _completed.append("DERIVATIVE")
-db_module.complete_admin_embedding = lambda connection, event, vector, model_id, set_status=None: _completed.append("EMBEDDING")
-db_module.complete_admin_quality = lambda connection, event, result: _completed.append("QUALITY_ANALYSIS")
+db_module.complete_admin_embedding = lambda connection, event, vector, model_id: _completed.append("EMBEDDING")
 db_module.fail_admin_photo_job = lambda connection, event, code: (_failed.append(code) or 1)
 
 images_module = types.ModuleType("embedder.images")
@@ -180,7 +179,7 @@ class AdminPhotoJobTest(unittest.TestCase):
     def test_explicit_processing_error_is_persisted_as_failed(self) -> None:
         _Storage.fail_read = True
 
-        result = admin_job.run(self.event("QUALITY_ANALYSIS"), self.settings())
+        result = admin_job.run(self.event("EMBEDDING"), self.settings())
 
         self.assertEqual("FAILED", result["status"])
         self.assertEqual(["RUNTIMEERROR"], _failed)
@@ -188,14 +187,14 @@ class AdminPhotoJobTest(unittest.TestCase):
         self.assertEqual(1, _connections[1].commits)
 
     def test_result_cas_loss_marks_still_current_job_failed(self) -> None:
-        original = admin_job.db.complete_admin_quality
-        admin_job.db.complete_admin_quality = lambda connection, event, result: (_ for _ in ()).throw(
+        original = admin_job.db.complete_admin_embedding
+        admin_job.db.complete_admin_embedding = lambda connection, event, vector, model_id: (_ for _ in ()).throw(
             _ClaimLost("PHOTO_REVISION_MISMATCH")
         )
         try:
-            result = admin_job.run(self.event("QUALITY_ANALYSIS"), self.settings())
+            result = admin_job.run(self.event("EMBEDDING"), self.settings())
         finally:
-            admin_job.db.complete_admin_quality = original
+            admin_job.db.complete_admin_embedding = original
 
         self.assertEqual("FAILED", result["status"])
         self.assertEqual(["PHOTO_REVISION_MISMATCH"], _failed)
@@ -204,16 +203,16 @@ class AdminPhotoJobTest(unittest.TestCase):
         self.assertEqual(1, _connections[2].commits)
 
     def test_late_previous_attempt_is_ignored_when_terminal_cas_is_lost(self) -> None:
-        original_complete = admin_job.db.complete_admin_quality
+        original_complete = admin_job.db.complete_admin_embedding
         original_fail = admin_job.db.fail_admin_photo_job
-        admin_job.db.complete_admin_quality = lambda connection, event, result: (_ for _ in ()).throw(
+        admin_job.db.complete_admin_embedding = lambda connection, event, vector, model_id: (_ for _ in ()).throw(
             _ClaimLost("JOB_ATTEMPT_MISMATCH")
         )
         admin_job.db.fail_admin_photo_job = lambda connection, event, code: 0
         try:
-            result = admin_job.run(self.event("QUALITY_ANALYSIS"), self.settings())
+            result = admin_job.run(self.event("EMBEDDING"), self.settings())
         finally:
-            admin_job.db.complete_admin_quality = original_complete
+            admin_job.db.complete_admin_embedding = original_complete
             admin_job.db.fail_admin_photo_job = original_fail
 
         self.assertEqual("IGNORED", result["status"])

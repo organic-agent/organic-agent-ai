@@ -16,7 +16,7 @@ class AdminPhotoEventTest(unittest.TestCase):
         value = {
             "jobId": 11,
             "attemptCount": 2,
-            "jobType": "QUALITY_ANALYSIS",
+            "jobType": "EMBEDDING",
             "photoId": 31,
             "galleryId": 41,
             "storageKey": "galleries/41/revisions/photo.jpg",
@@ -30,10 +30,10 @@ class AdminPhotoEventTest(unittest.TestCase):
 
         self.assertEqual(11, event.job_id)
         self.assertEqual(2, event.attempt_count)
-        self.assertEqual("QUALITY_ANALYSIS", event.job_type)
+        self.assertEqual("EMBEDDING", event.job_type)
         self.assertEqual("galleries/41/revisions/photo.jpg", event.storage_key)
 
-    def test_only_three_external_job_types_are_allowed(self) -> None:
+    def test_only_two_external_job_types_are_allowed(self) -> None:
         with self.assertRaisesRegex(InvalidAdminPhotoEvent, "UNSUPPORTED_JOB_TYPE"):
             AdminPhotoEvent.from_payload(self.payload(jobType="MOCK_RECALCULATION"))
 

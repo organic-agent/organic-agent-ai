@@ -82,19 +82,6 @@ class Settings:
 
     #: 빌드 시 내려받은 모델 snapshot과 런타임 로드를 같은 immutable commit으로 묶는다.
     model_revision: str = "5931719e67bbdb9737e363e781fb0c67687896bc"
-    #: 갤러리 샤딩(#56). wes 가 부른 실행(조정자)은 대상 사진 수를 이 값으로 나눈 만큼(최대 max_shards)
-    #: 자기 함수를 동시에 띄우고 끝난다. 장당 0.78s 라 150장 = 약 2분. 250 에서 150 으로 낮춘 이유(#59): 벽시계는 가장 긴
-    #: 샤드가 정하는데 Lambda 호스트 편차로 한 샤드가 1.7배 느린 일이 있었다 — 샤드가 짧을수록 그 피해 폭이 준다(콜드 스타트 +2회).
-    #: 0 이면 샤딩하지 않는다. Lambda 예약 동시성이 max_shards 이상이어야 샤드가 스로틀되지 않는다.
-    shard_photos: int = 150
-    #: 샤드 상한 32(#63)의 근거는 RDS 커넥션 — 샤드는 세션 advisory lock 으로 커넥션 1개를 끝까지 붙들고, db.t4g.micro(79)에서
-    #: 평상시 24 + 32 = 56 이 여유 20 의 한계다. 인프라 예약 동시성(embedder_reserved_concurrent_executions)도 같은 값이어야 한다.
-    max_shards: int = 32
-    #: 벡터·미리보기를 적재할 때 `photos.status` 에 찍을 값(#73). 기본 None(#83) — wes V15(2026-09-08) 부터 status 는
-    #: PENDING·UPLOADED 둘뿐이고 embedder 역할에 status UPDATE 권한이 없다(진행은 photo_analysis 컬럼으로). 옛 wes(V15 전)에
-    #: 붙여야 하면 `EMBED_SET_STATUS=EMBEDDED`.
-    set_status: str | None = None
-
     @staticmethod
     def from_env() -> "Settings":
         db_host = _required("DB_HOST")
@@ -120,9 +107,6 @@ class Settings:
                 "EMBED_MODEL_REVISION",
                 "5931719e67bbdb9737e363e781fb0c67687896bc",
             ),
-            shard_photos=int(os.environ.get("SHARD_PHOTOS", "150")),
-            max_shards=int(os.environ.get("MAX_SHARDS", "32")),
-            set_status=os.environ.get("EMBED_SET_STATUS") or None,
         )
 
 

@@ -6,8 +6,8 @@ DINOv3 벡터를 본다.
 Lambda로 배포되지만 **로컬에서도 같은 코드가 그대로 돈다** — 진입점만 다르다.
 
 ```
-handler.py    Lambda      event {"galleryId": 1, "force": false} | v2 {"galleryId": 1, "photoIds": [101, …]} (#73)
-__main__.py   로컬 CLI    python -m embedder --gallery-id 1              # --force, --shards N(샤드 N개를 한 프로세스에서 순차, #56)
+handler.py    Lambda      {"galleryId": 1, "photoIds": [101, …]} (#73) | 관리자 사진 교체 {"jobId": …}
+__main__.py   로컬 CLI    python -m embedder --gallery-id 1 [--photo-ids 1,2,3]
      └─────── 둘 다 job.run() 하나를 부른다
 ```
 
@@ -22,16 +22,17 @@ WHERE gallery_id = ? AND status <> 'PENDING'
   → S3 PUT previews/{원본키}.jpg                                  ← ① 먼저 올린다
   → 올린 JPEG 바이트를 다시 열어 DINOv3(L2 정규화)                    ← ② 그 파일로 임베딩
   → INSERT INTO photo_analysis (photo_id, embedding, embedding_model) ... ON CONFLICT DO UPDATE
-    UPDATE photos SET preview_key = ?, taken_at = ?, ... , status = 'EMBEDDED'   (같은 트랜잭션, 8장 배치마다 commit)
+    UPDATE photos SET preview_key = ?, taken_at = ?, ...          (같은 트랜잭션, 8장 배치마다 commit — status 는 쓰지 않는다)
 ```
 
 **순서가 계약이다(#24).** 벡터는 메모리의 중간 이미지가 아니라 **S3에 실제로 올라간 미리보기
 파일**에서 계산한다. 그래서 "미리보기는 없는데 벡터는 있는" 사진이 구조적으로 생길 수 없고,
-**v2 스트리밍(#73)**: wes 스위퍼가 `{"galleryId", "photoIds": [50장]}` 으로 부르면 그 목록만 처리한다 — 잠금·대상 조회·샤딩·재호출 없음
-(배정은 wes 의 `photos.dispatched_at` 이 원자적으로). CLI 는 `--photo-ids 1,2,3`. 갤러리 페이로드 경로는 wes 가 전환할 때까지 그대로다.
+**운영은 이 경로 하나다(#73·#100)**: wes 스위퍼가 `{"galleryId", "photoIds": [50장]}` 으로 부르면 그 목록만 처리한다 —
+대상 조회·잠금·샤딩·재호출 없음(배정은 wes 의 `photos.dispatched_at` 이 원자적으로). 위 SELECT 는 로컬 CLI 가 목록 없이
+부를 때만 돈다(wes `scripts/local-ai.sh`). `photos.status` 는 쓰지 않는다 — V15 부터 그 값은 PENDING·UPLOADED 뿐이고
+임베딩 여부는 `photo_analysis.embedding` 이 말한다(embedder 역할에 status UPDATE 권한도 없다).
 
-`status = 'EMBEDDED'`는 곧 "벡터와 미리보기가 둘 다 있다"는 뜻이다. photoselect가 보는 픽셀과
-벡터가 같은 파일이라는 점도 따라온다. 대가는 1024px JPEG를 한 번 더 디코드하는 장당 수십 ms다.
+photoselect가 보는 픽셀과 벡터가 같은 파일이라는 점도 따라온다. 대가는 1024px JPEG를 한 번 더 디코드하는 장당 수십 ms다.
 
 **속도는 원본 GET이 정한다.** 5~13MB 원본을 한 장씩 받고 다듬기를 번갈아 하면 네트워크와 CPU가 서로를
 기다린다 -- 2026-09-05 로컬 E2E(822장)에서 장당 1.7초의 대부분이 이 대기였다(`docs/local-e2e-2026-09-05.md`).
@@ -50,26 +51,11 @@ WHERE gallery_id = ? AND status <> 'PENDING'
   아니라 권한을 봐야 한다.
 - **타임아웃 앞에서 스스로 멈춘다.** Lambda는 다음 배치를 시작하기 전에 남은 시간이
   "지금까지 가장 오래 걸린 배치 + `STOP_MARGIN_SECONDS`"보다 적으면 배치 경계에서 멈추고
-  commit한다. 결과에 `stopped: true, remaining: N`이 실리고, 이번 실행에서 한 장이라도 처리했으면
-  같은 갤러리·샤드로 **자기 자신을 EVENT 재호출**한다(`force`는 넘기지 않고 `runStartedAt` 만 넘긴다 — 이미 끝난 사진은
-  건너뛰므로 재호출이 곧 재개). 처리 0장이면 재호출하지 않는다 — 같은 사진이 계속 실패하는
-  갤러리에서 무한히 돌지 않게. 재호출은 best-effort라 실패해도 `reinvoked: false`로만 드러나고,
-  진행분은 이미 commit돼 있어 앱이 다시 부르면 이어서 한다. 하드 킬을 당하면 진행 중이던 배치만
-  롤백된다. 로컬 CLI에는 데드라인이 없다.
-- **같은 갤러리(·샤드)는 한 번에 하나만 돈다.** (갤러리 × 64 + 샤드) 키로 세션 수준 advisory lock을 잡고, 이미 잡혀
-  있으면 `{"skipped": "already running"}`으로 즉시 끝난다. 버튼 연타와 자기 재호출이 겹쳐도 같은
-  사진을 두 번 처리하지 않는다. 잠금은 연결이 닫히면(타임아웃 포함) 풀린다.
-- **갤러리를 샤드로 나눠 동시에 돈다(#56).** 장당 0.72s 는 원본 GET·디코드·DINOv3 의 합이라 같은 연산량으로는
-  더 못 줄인다 — 병렬은 Lambda 호출을 나누는 것뿐이다. wes 가 부른 실행(`shard` 없음)은 **조정자**가 되어 잠금 →
-  대상 조회까지만 하고, 대상이 `SHARD_PHOTOS`(150, #59)를 넘으면 모델을 올리지 않은 채 자기 함수를
-  N = ceil(대상 / 150)(최대 `MAX_SHARDS` 32, #63)번 `{"shard": {"index": i, "total": N}, "force", "runStartedAt"}` 으로
-  EVENT 하고 `coordinator: true` 로 끝난다. 샤드는 같은 `ORDER BY p.id` 목록에서 위치 % N == index 인 사진만 맡는다.
-  score 와 달리 카운터·체인은 없다 — embedder 는 잡을 모르고 wes 가 `photo_analysis` 를 세어 EMBED 단계를 닫으므로
-  샤드는 각자 끝나면 그만이다. **전제: Lambda 예약 동시성 ≥ `MAX_SHARDS`**(인프라 `embedder_reserved_concurrent_executions`) —
-  낮으면 샤드가 스로틀돼 라운드가 늘어난다. 822장 실측: 1회 실행 10.1분 → 4 샤드(250장) 2.8분(GB-초 +7.5%). 로컬은 `--shards N` 순차.
-- **force 는 시작 시각을 나른다.** force 실행은 `runStartedAt` 을 샤드·데드라인 재호출에 넘기고, 대상 조회는 "벡터 있음"이
-  아니라 "그 시각 이후 적재된 벡터 있음"(`photo_analysis.updated_at >= runStartedAt`, wes 의 EMBED 진행 관측과 같은 컬럼)을
-  건너뛴다. 재호출이 force 를 잃어도 이번 실행 전의 벡터는 다시 계산된다.
+  commit한다. 결과에 `stopped: true, remaining: N`이 실린다. **자기 재호출은 하지 않는다(#100)** —
+  남은 사진은 wes 스위퍼가 `dispatched_at` 을 되돌려 다시 배정한다. 50장 배치는 이 지점에 가지 않는다.
+  하드 킬을 당하면 진행 중이던 배치만 롤백된다. 로컬 CLI에는 데드라인이 없다.
+- **잠금·샤딩·조정자가 없다(#100).** wes 의 배정(`dispatched_at`)이 원자적이라 같은 사진이 두 번 배정되지 않는다.
+  병렬은 wes 가 배치를 동시에 여러 개 띄우는 것으로 얻는다(`embed-max-in-flight` 32, 인프라 예약 동시성과 같은 값).
 - **미리보기 파생본도 여기서 만든다.** 임베딩을 하려면 어차피 HEIC를 디코딩하고 EXIF 회전을
   굽고 크기를 줄여야 하는데, 그 결과가 그대로 브라우저가 그릴 수 있는 이미지다. 남은 일은
   JPEG 인코딩과 PUT 하나뿐이라 별도 잡으로 뺄 이유가 없다 — 빼면 같은 이미지를 두 번 받아
@@ -83,7 +69,7 @@ WHERE gallery_id = ? AND status <> 'PENDING'
 - **EXIF 추출 실패는 임베딩을 죽이지 않는다.** 실패한 키만 `metadataFailed`로 나온다. 상세
   화면에 정보가 덜 나올 뿐 사진은 보이고 벡터·미리보기는 적재된다. EXIF 컬럼만 `COALESCE`로
   이전 값을 지킨다(`preview_key`는 이번에 올린 파일이 곧 벡터의 원본이라 그냥 덮어쓴다).
-- **`--force`는 이미 채워진 것까지 다시 계산한다.** 모델이나 전처리를 바꿔 전량 재계산할 때만.
+- **재계산은 플래그가 아니다(#100).** 모델·전처리를 바꿔 다시 돌리려면 `photo_analysis` 행을 지운다(관리자 재처리) — 그러면 대상 조회에 다시 걸린다.
 - **`PENDING`은 건너뛴다.** 업로드 URL만 발급되고 S3에 객체가 없을 수 있는 상태다.
 
 ## 접속: 원래는 비밀번호가 없었다
@@ -117,8 +103,7 @@ GRANT SELECT (id, gallery_id, storage_key, status, deleted_at, preview_key,
     taken_at, camera_make, camera_model, exposure_time, f_number, iso, width, height,
     byte_size, version) ON photos TO embedder;
 GRANT UPDATE (status, preview_key, taken_at, camera_make, camera_model,
-    exposure_time, f_number, iso, width, height, byte_size, technical_quality_score,
-    technical_quality_signals, quality_analyzed_at, version, updated_at) ON photos TO embedder;
+    exposure_time, f_number, iso, width, height, byte_size, dispatched_at, version, updated_at) ON photos TO embedder;
 GRANT SELECT, INSERT, UPDATE ON photo_analysis TO embedder;
 GRANT SELECT (id, attempt_count, job_type, target_type, target_id, revision_id, status, payload)
     ON admin_processing_jobs TO embedder;
@@ -267,7 +252,4 @@ python -m embedder --gallery-id 1
 | `EMBED_MODEL_ID` | `facebook/dinov3-vitb16-pretrain-lvd1689m` | 바꾸면 이미지를 다시 빌드해야 한다(가중치가 구워져 있다). 차원이 다른 모델(ViT-S 384, ViT-L 1024)은 `EMBED_DIM`·`vector(n)`·`EMBEDDING_DIMENSION`도 같이 바꿔야 한다 |
 | `RESIZE_LONG_EDGE` | `1024` | 디코딩 직후 메모리를 누르는 용도. 미리보기 파생본도 이 크기로 나간다 |
 | `PREVIEW_QUALITY` | `82` | 파생본 JPEG 품질. 1024px에서 장당 200KB 안팎 |
-| `STOP_MARGIN_SECONDS` | `60` | 타임아웃 앞에서 멈출 여유. 남은 시간 < (가장 긴 배치 + 이 값)이면 배치 경계에서 멈추고 자기 재호출 |
-| `SHARD_PHOTOS` | `150` | 샤드 하나가 맡는 사진 수(#56 · #59 — 짧은 샤드가 느린 호스트 편차를 줄인다). 조정자가 대상 / 이 값 만큼 샤드를 띄운다. `0` 이면 샤딩 없음 |
-| `MAX_SHARDS` | `32` | 샤드 수 상한(#63). Lambda 예약 동시성이 이 값 이상이어야 하고, 상한은 RDS 커넥션(샤드당 1개)이 정한다 |
-| `EMBED_SET_STATUS` | (빈 값) | 적재 시 `photos.status` 에 찍을 값(#73·#83). 기본은 안 씀 — wes V15(2026-09-08) 부터 status 는 PENDING·UPLOADED 둘뿐이고 임베딩 여부는 `photo_analysis.embedding` 이 말한다. V15 전 wes 에 붙일 때만 `EMBEDDED` |
+| `STOP_MARGIN_SECONDS` | `60` | 타임아웃 앞에서 멈출 여유. 남은 시간 < (가장 긴 배치 + 이 값)이면 배치 경계에서 멈추고 commit — 남은 장은 wes 가 재배정 |

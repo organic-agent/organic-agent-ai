@@ -35,7 +35,6 @@ from embedder.metadata import PhotoMetadata
 
 if TYPE_CHECKING:
     from embedder.admin_event import AdminPhotoEvent
-    from embedder.quality import TechnicalQuality
 
 log = logging.getLogger(__name__)
 
@@ -82,52 +81,32 @@ def connect(settings: Settings) -> psycopg.Connection:
     return connection
 
 
-def fetch_targets(
-    connection: psycopg.Connection, gallery_id: int, force: bool, since: str | None = None,
-) -> list[PhotoRef]:
-    """이번 실행이 처리할 사진.
+def fetch_targets(connection: psycopg.Connection, gallery_id: int) -> list[PhotoRef]:
+    """갤러리에서 아직 벡터가 없는 사진(로컬 CLI 전용, #100).
 
-    기본값은 아직 임베딩이 없는 것만 고른다. 그래서 중간에 죽은 실행을 다시 부르면 남은 것만
-    이어서 처리하고, 재시도 로직을 따로 짤 필요가 없다. force는 모델이나 전처리를 바꿔 전량
-    다시 계산할 때만 쓴다.
+    운영은 wes 스위퍼가 목록을 배정해 `fetch_by_ids` 로 온다 — 이 경로는 `python -m embedder --gallery-id N`
+    (wes `scripts/local-ai.sh`)이 갤러리 하나를 통째로 밀어 볼 때만 쓴다. 다시 부르면 남은 것만 이어서 한다.
+    재계산이 필요하면 `photo_analysis` 행을 지운다(관리자 재처리) — force 플래그는 v2 에 없다.
 
-    `since`(ISO 시각)가 있으면 "벡터 있음"을 "그 시각 이후 적재된 벡터 있음"으로 좁힌다(#56). force 실행이
-    시작 시각을 샤드·데드라인 재호출에 넘기는 값이라, 재호출이 force 를 잃어도 이번 실행 전의 벡터는
-    다시 계산되고 이번 실행이 적은 벡터만 건너뛴다. 보는 컬럼은 store_embeddings 가 ON CONFLICT 에서
-    갱신하는 `photo_analysis.updated_at` — wes 의 EMBED 진행 관측과 같은 기준이다. since 가 있으면 force 는 뜻이 없다.
-
-    PENDING은 건너뛴다 -- 업로드 URL만 발급되고 S3에 객체가 아직 없을 수 있는 상태다.
-
-    휴지통(deleted_at)에 있는 사진과 갤러리도 건너뛴다. 앱은 @SQLRestriction으로 그 행을
-    아예 보지 않으므로, 여기서 계산해 봐야 쓰이지 않고 purge 때 원본과 함께 사라진다.
-    갤러리가 없거나 휴지통이면 대상이 0장이라 잡은 아무것도 하지 않고 끝난다.
+    PENDING 은 건너뛴다: 업로드 URL 만 발급되고 S3 에 객체가 아직 없을 수 있는 상태다.
+    휴지통(deleted_at)의 사진·갤러리도 건너뛴다 — 앱이 보지 않고 purge 때 원본과 함께 사라진다.
     """
-    sql = """
-        SELECT p.id, p.storage_key
-        FROM photos p
-        JOIN galleries g ON g.id = p.gallery_id
-        WHERE p.gallery_id = %s
-          AND p.status <> 'PENDING'
-          AND p.deleted_at IS NULL
-          AND g.deleted_at IS NULL
-    """
-    params: tuple = (gallery_id,)
-    if since is not None:
-        sql += (
-            " AND NOT EXISTS (SELECT 1 FROM photo_analysis a"
-            " WHERE a.photo_id = p.id AND a.embedding IS NOT NULL AND a.updated_at >= %s)"
-        )
-        params = (gallery_id, since)
-    elif not force:
-        sql += (
-            " AND NOT EXISTS (SELECT 1 FROM photo_analysis a"
-            " WHERE a.photo_id = p.id AND a.embedding IS NOT NULL)"
-        )
-    # 순서가 계약이다 — 샤드가 같은 목록에서 위치 % total 로 자기 몫을 고른다(job.Shard).
-    sql += " ORDER BY p.id"
-
     with connection.cursor() as cursor:
-        cursor.execute(sql, params)
+        cursor.execute(
+            """
+            SELECT p.id, p.storage_key
+            FROM photos p
+            JOIN galleries g ON g.id = p.gallery_id
+            WHERE p.gallery_id = %s
+              AND p.status <> 'PENDING'
+              AND p.deleted_at IS NULL
+              AND g.deleted_at IS NULL
+              AND NOT EXISTS (SELECT 1 FROM photo_analysis a
+                              WHERE a.photo_id = p.id AND a.embedding IS NOT NULL)
+            ORDER BY p.id
+            """,
+            (gallery_id,),
+        )
         return [PhotoRef(photo_id=row[0], storage_key=row[1]) for row in cursor.fetchall()]
 
 
@@ -160,7 +139,6 @@ def store_embeddings(
     connection: psycopg.Connection,
     results: Iterable[tuple[PhotoRef, np.ndarray, str, PhotoMetadata | None]],
     model_id: str,
-    set_status: str | None = None,
 ) -> int:
     """계산된 벡터와 파생본 위치, 촬영 정보를 배치로 적재한다.
 
@@ -175,9 +153,8 @@ def store_embeddings(
     AI 분석 배치가 태그·점수를 채워 둔 행일 수도 있다 -- 그 컬럼은 건드리지 않고 벡터 둘만
     갈아 끼운다. 분석 배치는 model_version으로 재분석 대상을 판별하므로 여기서 지울 것이 없다.
 
-    **status 는 기본으로 건드리지 않는다(#83).** wes V15 부터 `photos.status` 는 "S3 에 있나"(PENDING·UPLOADED)만 답하고
-    임베딩 여부는 `photo_analysis.embedding` 이 말한다 — embedder 역할에 status UPDATE 권한도 없다. 옛 계약(EMBEDDED)이
-    필요하면 set_status 로 켠다; 그때도 벡터와 미리보기가 둘 다 있는 행에만 찍힌다. 벡터는 S3에 올라간
+    **status 는 건드리지 않는다(#83·#100).** wes V15 부터 `photos.status` 는 "S3 에 있나"(PENDING·UPLOADED)만 답하고
+    임베딩 여부는 `photo_analysis.embedding` 이 말한다 — embedder 역할에 그 컬럼 UPDATE 권한도 없다. 벡터는 S3에 올라간
     미리보기 JPEG에서 계산하므로(job.py) 여기 도착한 사진은 반드시 preview_key를 갖는다.
     그래서 preview_key는 COALESCE 없이 덮어쓴다 -- 이번 실행이 올린 파일이 곧 벡터의 원본이라
     이전 실행의 키를 지킬 이유가 없다.
@@ -220,7 +197,6 @@ def store_embeddings(
             """,
             analysis_rows,
         )
-        status_clause = _status_clause(set_status)
         cursor.executemany(
             f"""
             UPDATE photos
@@ -234,7 +210,6 @@ def store_embeddings(
                 width = COALESCE(%s, width),
                 height = COALESCE(%s, height),
                 byte_size = COALESCE(%s, byte_size),
-                {status_clause}
                 version = version + 1,
                 updated_at = now()
             WHERE id = %s AND storage_key = %s AND deleted_at IS NULL
@@ -249,31 +224,6 @@ def store_embeddings(
         # 결과를 새 사진에 쓰지 않는다. executemany rowcount는 실제 갱신 합계이므로 stale
         # 행은 processed에서 빠지고, 다음 현재 작업이 새 storage_key를 처리한다.
         return max(cursor.rowcount, 0)
-
-
-#: 갤러리 잡 advisory lock의 앞쪽 키. 같은 DB를 쓰는 다른 프로세스(wes·photoselect)와
-#: 키 공간이 겹치지 않게 이 모듈만의 상수를 쓴다. 뒤쪽 키가 gallery_id다.
-GALLERY_LOCK_NAMESPACE = 0x454D42  # 'EMB'
-#: 뒤쪽 키 = gallery_id * LOCK_STRIDE + shard_index (#56). 샤드가 최대 8 이라 여유 있게 64 — score 와 같은 모양.
-#: 샤드 없는 실행(조정자·N=1)은 샤드 0 과 같은 키라 둘이 겹쳐 돌지 않는다.
-LOCK_STRIDE = 64
-
-
-def try_lock_gallery(connection: psycopg.Connection, gallery_id: int, shard_index: int = 0) -> bool:
-    """같은 갤러리(·샤드)의 임베딩 잡이 이미 돌고 있으면 False.
-
-    세션 수준 advisory lock이라 배치마다 commit해도 유지되고, 연결이 닫히면 풀린다 -- Lambda가
-    타임아웃으로 죽어도 잠금이 남지 않는다. 버튼 연타와 타임아웃 뒤 자기 재호출이 겹칠 때
-    같은 사진을 두 번 처리하지 않게 한다. UPSERT라 두 번 해도 결과는 같지만 시간과 S3 PUT이
-    낭비된다.
-    """
-    with connection.cursor() as cursor:
-        cursor.execute(
-            "SELECT pg_try_advisory_lock(%s, %s)",
-            (GALLERY_LOCK_NAMESPACE, gallery_id * LOCK_STRIDE + shard_index),
-        )
-        row = cursor.fetchone()
-    return bool(row and row[0])
 
 
 def verify_admin_photo_event(connection: psycopg.Connection, event: "AdminPhotoEvent") -> bool:
@@ -346,31 +296,22 @@ def complete_admin_derivative(
     )
 
 
-def _status_clause(set_status: str | None) -> str:
-    """`status = 'X',` 또는 빈 문자열(#73·#83). 값은 파라미터가 아니라 상수로 넣는다 — psycopg 가 status 를 문자열로
-    바인딩해도 동작하지만, 문장 자체를 갈라 두는 편이 "무엇을 쓰는지"가 SQL 에 그대로 보인다. 그래서 값을 검사한다."""
-    if set_status is not None and not re.fullmatch(r"[A-Z_]{1,32}", set_status):
-        raise ValueError(f"EMBED_SET_STATUS 값이 이상하다: {set_status!r}")
-    return f"status = '{set_status}'," if set_status else ""
-
-
 def complete_admin_embedding(
     connection: psycopg.Connection,
     event: "AdminPhotoEvent",
     vector: np.ndarray,
     model_id: str,
-    set_status: str | None = None,
 ) -> None:
     # 벡터는 photo_analysis에 산다(V45). CTE 한 문장인 이유 -- _complete_admin_photo_job이
     # rowcount 1로 CAS 성공을 판정하므로, 사진 CAS가 빗나가면 벡터 upsert도 0행이어야 한다.
-    # status 는 store_embeddings 와 같은 규칙(#83): 기본은 안 쓰고(version 만 올려 CAS), set_status 가 있을 때만 찍는다.
+    # status 는 쓰지 않는다(#100) — V15 부터 embedder 역할에 그 컬럼 UPDATE 권한이 없다. version 만 올려 CAS 한다.
     _complete_admin_photo_job(
         connection,
         event,
-        f"""
+        """
         WITH target AS (
             UPDATE photos p
-            SET {_status_clause(set_status)} version = version + 1, updated_at = now()
+            SET version = version + 1, updated_at = now()
             WHERE p.id = %s AND p.gallery_id = %s AND p.storage_key = %s AND p.deleted_at IS NULL
               AND EXISTS (
                   SELECT 1 FROM admin_photo_revisions r
@@ -387,31 +328,6 @@ def complete_admin_embedding(
             updated_at = now()
         """,
         (*_photo_identity_params(event), vector, model_id),
-    )
-
-
-def complete_admin_quality(
-    connection: psycopg.Connection,
-    event: "AdminPhotoEvent",
-    result: "TechnicalQuality",
-) -> None:
-    _complete_admin_photo_job(
-        connection,
-        event,
-        """
-        UPDATE photos p
-        SET technical_quality_score = %s,
-            technical_quality_signals = CAST(%s AS JSONB),
-            quality_analyzed_at = now(),
-            version = version + 1,
-            updated_at = now()
-        WHERE p.id = %s AND p.gallery_id = %s AND p.storage_key = %s AND p.deleted_at IS NULL
-          AND EXISTS (
-              SELECT 1 FROM admin_photo_revisions r
-              WHERE r.id = %s AND r.photo_id = p.id AND r.storage_key = p.storage_key
-          )
-        """,
-        (result.score, json.dumps(result.signals, separators=(",", ":")), *_photo_identity_params(event)),
     )
 
 

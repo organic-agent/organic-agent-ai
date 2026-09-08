@@ -2,6 +2,11 @@
 
 컨테이너를 빌드해 ECR에 밀고 배포하는 사이클을 돌기 전에, 실제 S3와 실제 RDS를 상대로 로직을
 검증하는 용도다. 자세한 절차는 README의 "로컬 실행" 절에 있다.
+
+    python -m embedder --gallery-id 1                    # 갤러리에서 벡터 없는 사진 전체 (wes scripts/local-ai.sh)
+    python -m embedder --gallery-id 1 --photo-ids 1,2,3  # 그 목록만 (운영 Lambda 와 같은 경로)
+
+재계산은 플래그가 아니라 `photo_analysis` 행 삭제다(관리자 재처리) — v2 에 --force 는 없다(#100).
 """
 
 from __future__ import annotations
@@ -17,17 +22,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(prog="embedder")
     parser.add_argument("--gallery-id", type=int, required=True)
     parser.add_argument(
-        "--force",
-        action="store_true",
-        help="이미 임베딩이 있는 사진까지 다시 계산한다. 모델·전처리를 바꿨을 때만.",
-    )
-    parser.add_argument(
-        "--shards", type=int, default=1,
-        help="갤러리를 N개 샤드로 나눠 한 프로세스에서 순차로 돈다(#56). Lambda 의 동시 샤드와 같은 분배·잠금 키.",
-    )
-    parser.add_argument(
         "--photo-ids", metavar="ID,ID,…",
-        help="v2 스트리밍(#73): 이 사진 id 목록만 임베딩한다. 잠금·샤딩 없음. --force·--shards 와 함께 쓰지 않는다.",
+        help="이 사진 id 목록만 임베딩한다(#73, 운영 Lambda 와 같은 경로). 없으면 갤러리에서 벡터 없는 사진 전체.",
     )
     args = parser.parse_args()
 
@@ -36,19 +32,8 @@ def main() -> None:
         format="%(asctime)s %(levelname)-5s %(name)s | %(message)s",
     )
 
-    if args.photo_ids:
-        ids = [int(x) for x in args.photo_ids.split(",") if x.strip()]
-        result = job.run(gallery_id=args.gallery_id, photo_ids=ids)
-    elif args.shards <= 1:
-        result = job.run(gallery_id=args.gallery_id, force=args.force)
-    else:
-        # force 의 시작 시각을 샤드가 공유해야 뒤 샤드가 앞 샤드의 벡터를 "이번 실행 것"으로 본다.
-        run_started_at = job.now_iso() if args.force else None
-        result = [
-            job.run(gallery_id=args.gallery_id, force=args.force, shard=job.Shard(i, args.shards),
-                    run_started_at=run_started_at)
-            for i in range(args.shards)
-        ]
+    ids = [int(x) for x in args.photo_ids.split(",") if x.strip()] if args.photo_ids else None
+    result = job.run(gallery_id=args.gallery_id, photo_ids=ids)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
