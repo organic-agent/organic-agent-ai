@@ -45,8 +45,8 @@
 필요 **없는** 것: `lambda:GetFunctionConfiguration`(벤치마크 시절 env 복사 — 폐기), `ecr:DescribeRepositories`, `ec2:Describe*`, S3 쓰기.
 `sts:GetCallerIdentity` 는 항상 허용된다.
 
-컨테이너의 DB 비밀번호는 `--env-file` 로 받는다(인프라 계획 §8). 코드는 `DB_PASSWORD_SSM_PARAM` 으로 SSM 을 직접 읽는 경로(#75)도 갖고 있지만
-이 전달본은 쓰지 않는다 — 인스턴스 역할 정책을 한 곳(env 스크립트)으로 좁히기 위해.
+컨테이너의 DB 비밀번호는 `--env-file` 로 받는다(인프라 계획 §8). 컨테이너가 SSM 을 직접 읽는 경로(#75 의 `DB_PASSWORD_SSM_PARAM`)는 #91 에서
+지웠다 — 비밀을 읽는 주체는 호스트 env 스크립트 한 곳이고, 컨테이너 env 모양은 Lambda 와 같다(`DB_PASSWORD`).
 
 ## 켜고 끄는 책임 (인프라 계획 §4.5 네 층 중 이 repo 몫)
 

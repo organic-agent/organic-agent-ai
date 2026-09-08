@@ -9,7 +9,7 @@
 - AI repo 몫(E1 · S1 · X1 · S2 · #81) 머지·검증 완료. GPU 워커 실측 장당 0.033s, 유휴 30s 자기 정지(SageMaker 로만 검증).
 - **wes V15(#164) 가 2026-09-08 13:26 KST 운영 배포됨** — `photos.status` 두 값, `photo_analysis.error`, embedder 역할의 status UPDATE 권한 제거.
   같은 날 AI 쪽 대응 배포: **#84**(embedder status 안 씀) · **#86**(score 집기 `error IS NULL`, PREVIEW_MISSING/SCORE_FAILED, key=value 로그).
-- 인프라에 넘길 전달본 **#88** `score/deploy/gpu-worker/`(유닛·env·run 스크립트·권한 표·검증 절차). CPU 비트 동일 검사 **#90** `score/scripts/compare_local.py`.
+- DB 비밀번호는 `--env-file` 하나로 결정(#91, `DB_PASSWORD_SSM_PARAM` 삭제). 인프라에 넘길 전달본 **#88** `score/deploy/gpu-worker/`(유닛·env·run 스크립트·권한 표·검증 절차). CPU 비트 동일 검사 **#90** `score/scripts/compare_local.py`.
 - wes 는 지금 **PR-B(잡 층, V16)** 작업 중(브랜치 `feat/166-pipeline-v2-job-layer`). V16 은 photoselect 의 `ai_analysis_jobs` 권한을 `UPDATE (error, updated_at)` 만 남긴다.
 - 아직 **실제 인스턴스에서 워커를 켜 본 적은 없다**. 인프라 PR-3b/3c 가 나오면 §1-B.
 
@@ -42,7 +42,6 @@ permission denied 로 깨진다. wes PR-B 머지 시점을 확인하고 **같은
 - 갤러리 8 GPU fp16 점수 원복 여부(스냅샷 `docs/gpu-benchmark-2026-09-07/cpu-g8.json`).
 - 벤치마크 IAM 역할 2개 삭제 시점(인프라 PR-0a 가 지운다고 함).
 - 다중 사용자 운영 시 유휴 정지 600s 로 올릴 시점(인스턴스 `WORKER_IDLE_STOP_SECONDS` 한 줄, AMI 재빌드 불필요).
-- 워커 컨테이너의 DB 비밀번호 전달 방식: 전달본은 인프라 계획대로 `--env-file`(호스트 env 스크립트가 SSM 읽음). 컨테이너가 직접 읽는 `DB_PASSWORD_SSM_PARAM` 경로는 코드에 남아 있음 — 둘 중 하나로 정리.
 
 ## 3. 자주 쓰는 명령
 

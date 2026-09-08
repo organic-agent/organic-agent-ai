@@ -113,7 +113,7 @@ python -m score worker --gpu [--once] [--no-idle-stop]     # 컨테이너 기본
   한 장이 실패하면 `'SCORE_FAILED'`. wes 는 그 장을 기대 장수에서 빼고, 집기가 `error IS NULL` 이라 다시 안 집는다(부분 인덱스
   `idx_photo_analysis_unscored` 와 같은 조건). 그 외 다운로드 오류(접속·스로틀)는 배치 rollback 뒤 재시도. Lambda `photoIds` 폴백도 같은 표시.
 - 로그: 배치마다 `score worker batch=32 photos=N failed=F seconds=S` 한 줄(wes 합의 key=value 형식).
-- 비밀번호: `DB_PASSWORD` 가 없고 `DB_PASSWORD_SSM_PARAM` 이 있으면 SSM SecureString 에서(인스턴스 역할).
+- 비밀번호: `DB_PASSWORD` env 하나(#91). 인스턴스에서는 호스트의 `deploy/gpu-worker/wes-score-env.sh` 가 SSM 에서 읽어 `--env-file` 로 넘긴다 — 컨테이너는 SSM 을 읽지 않는다.
 - Lambda 폴백: `{"galleryId", "photoIds": [...]}` 페이로드는 점수만 쓰고 끝난다(잡·재호출·체인 없음). CLI `--photo-ids 1,2,3`.
 
 ## GPU 벤치마크 (#68, 운영 경로 아님)
