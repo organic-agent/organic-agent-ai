@@ -1,4 +1,4 @@
-# NEXT — 파이프라인 v2, 다음 할 일 (2026-09-08 15:00 KST 기준)
+# NEXT — 파이프라인 v2, 다음 할 일 (2026-09-08 14:35 KST 기준)
 
 > 배경·결정·실측은 `docs/`(로컬): `pipeline-v2-dev-plan-2026-09-07.md`(전체) · `ai-pipeline-v2-plan-2026-09-07.md`(AI 몫) ·
 > `progress-2026-09-08.md`(진행) · `gpu-benchmark-summary-2026-09-07.md`(벤치마크) · `embedder-photoselect-architecture.md` §0.1(v2 실행 모양).
@@ -34,11 +34,21 @@ V15·V16 이 같은 날 운영에 올라갔고 AI repo 는 따라잡았다: #84(
 - [ ] `score/deploy/gpu-worker/README.md` 의 "wes W6 30분 유휴 강제 정지"를 wes PR-C 실제 값으로 정정(`idle-stop-after: PT2M`, `start-grace: PT5M`, `fallback-after: PT10M`)
 - [ ] `docs/embedder-photoselect-architecture.md` §2~§4 를 v2 기준으로 다시 쓰기(지금은 §0.1 만 v2)
 
-### A2. 다른 repo 대기 (AI repo 가 할 일 없음)
-- **인프라 PR #44 열림** — wes V16 이 읽는 SSM 키 `app.analysis.embedder-function-name` 이 아직 없다(옛 이름 `app.embedding.function-name`).
-  그래서 **지금 운영 파이프라인은 임베딩 배정 단계에서 멈춰 있다**(`isEmbedderConfigured` false). 이게 머지되면 우리 Lambda 셋이 곧바로 쓰인다
-- **인프라 PR-3c 미착수** — GPU 인스턴스 2대·워커 롤·SG·유휴 알람·앱 롤 EC2 제어. PR-3a(#40)·PR-3b(#42, AMI 파이프라인)는 머지됨
-- **wes PR-C(#169) 열림** — `GpuController`·`Ec2ScoreWorkerPool`(태그 `Name=wes-score-gpu` 확인 ✅)·score Lambda 폴백
+### A2. 다른 repo 상태 (2026-09-08 14:35 확인)
+
+**wes 는 v2 네 단계를 하루에 다 올렸다** — V15 사진 층(#164, 13:26) · V16 잡 층(#166, 14:10) · PR-C GPU 제어(#168) · V17 정리(#170, 배포 중).
+V17 은 `categorization_jobs`·`categorization_job_photos` DROP 인데 **AI repo 는 그 테이블을 쓰지 않는다 — 영향 없음**(grep 확인).
+
+**지금 운영에서 도는 경로**(`/wes/prod/app.analysis.gpu.enabled` = **false**): wes 스위퍼 → embedder Lambda `{galleryId, photoIds}` 50장 →
+**score Lambda 폴백** `{galleryId, photoIds}`(GPU 가 없으면 `GpuController.isFallbackDue` 가 유예 없이 바로 보낸다) → categorize Lambda `{galleryId, jobId}`.
+셋 다 오늘 맞춘 계약이다(#84 · #86 · #94 · #95). GPU 워커는 인프라가 인스턴스를 만들 때까지 안 쓴다.
+
+- [ ] **아직 아무 잡도 안 돌았다** — 세 Lambda 의 마지막 로그가 2026-09-07 02:00 이다. 오늘 고친 것들은 전부 **실측 미검증**.
+  갤러리 하나로 업로드 → 분석을 돌려 embedder → score 폴백 → categorize → 폴더까지 확인하는 것이 다음 순서(로그 형식 `key=value` 도 같이 확인)
+- ⚠️ **인프라 apply 가 main 에서 실패 중**(#41·#43 두 번). 원인은 `modules/score-gpu` 의 서비스 연결 역할 `description` 이 한글이라
+  IAM 이 거부(`[\u0020-\u007E\u00A1-\u00FF]` 만 허용). SLR 둘 다 미생성 → **AMI 파이프라인 리소스가 안 만들어졌다**. 고칠 PR 도 아직 없다.
+  다만 SSM 키(`app.analysis.embedder-function-name` · `gpu.enabled`)는 같은 apply 에서 **생성됐다**(독립 리소스라 통과) — 그래서 파이프라인은 흐를 수 있다.
+- [ ] 인프라 PR-3c(GPU 인스턴스 2대·워커 롤·SG·유휴 알람·앱 롤 EC2 제어) 미착수. apply 가 빨간 상태라 그것부터 고쳐야 한다
 
 ### B. 워커를 실제 인스턴스에서 (인프라 I2 가 나온 날) — 절차는 `score/deploy/gpu-worker/README.md` §검증
 - [ ] 콜드(Start → 첫 배치) ≤ 40s · 배치 로그 `score worker batch=32 …` · 유휴 30s 뒤 자기 정지 · env 파일 삭제 확인
