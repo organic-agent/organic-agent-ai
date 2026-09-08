@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 
-from embedder import db, images, metadata, model, quality
+from embedder import db, images, metadata, model
 from embedder.admin_event import AdminPhotoEvent
 from embedder.config import Settings
 from embedder.storage import PhotoStorage
@@ -41,13 +41,10 @@ def run(event: AdminPhotoEvent, settings: Settings) -> dict:
                 photo_metadata = None
             result = {"previewKey": preview_key}
         elif event.job_type == "EMBEDDING":
-            # DERIVATIVE/QUALITY 경로는 이 줄을 지나지 않는다. 모델은 첫 EMBEDDING에서만
+            # DERIVATIVE 경로는 이 줄을 지나지 않는다. 모델은 첫 EMBEDDING에서만
             # 올라가고 웜 스타트에서는 model.get_embedder 캐시를 재사용한다.
             vector = model.load_from(settings).encode([prepared])[0]
             result = {"embeddingDimension": len(vector)}
-        elif event.job_type == "QUALITY_ANALYSIS":
-            analyzed = quality.analyze(prepared, original.size)
-            result = {"technicalQualityScore": analyzed.score, "signals": analyzed.signals}
         else:  # AdminPhotoEvent가 막지만 타입 계약을 이 함수에도 남긴다.
             raise AdminPhotoProcessingError("UNSUPPORTED_JOB_TYPE")
 
@@ -56,11 +53,8 @@ def run(event: AdminPhotoEvent, settings: Settings) -> dict:
         with db.connect(settings) as final_connection:
             if event.job_type == "DERIVATIVE":
                 db.complete_admin_derivative(final_connection, event, preview_key, photo_metadata)
-            elif event.job_type == "EMBEDDING":
-                db.complete_admin_embedding(final_connection, event, vector, settings.model_id,
-                                            set_status=getattr(settings, "set_status", None))
             else:
-                db.complete_admin_quality(final_connection, event, analyzed)
+                db.complete_admin_embedding(final_connection, event, vector, settings.model_id)
             final_connection.commit()
         return _response(event, "SUCCEEDED", result)
     except db.AdminJobClaimLost as error:

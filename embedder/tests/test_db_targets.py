@@ -90,7 +90,7 @@ class FetchTargetsTest(unittest.TestCase):
     def test_skips_pending_and_trashed_rows(self) -> None:
         connection = _Connection(rows=[(1, "galleries/7/a.jpg"), (2, "galleries/7/b.jpg")])
 
-        targets = db.fetch_targets(connection, gallery_id=7, force=False)
+        targets = db.fetch_targets(connection, gallery_id=7)
 
         sql, params = connection.executed[0]
         self.assertEqual((7,), params)
@@ -109,7 +109,7 @@ class FetchTargetsTest(unittest.TestCase):
         # 컬럼이 없어 전량 실패한다.
         connection = _Connection(rows=[])
 
-        db.fetch_targets(connection, gallery_id=7, force=False)
+        db.fetch_targets(connection, gallery_id=7)
 
         sql, _ = connection.executed[0]
         self.assertNotIn("p.embedding", sql)
@@ -118,29 +118,6 @@ class FetchTargetsTest(unittest.TestCase):
             sql,
         )
         self.assertTrue(sql.endswith("ORDER BY p.id"))
-
-    def test_since_skips_only_vectors_stored_in_this_run(self) -> None:
-        """force 의 시작 시각(runStartedAt)이 오면 그 이후 적재된 벡터만 건너뛴다 — 재호출이 force 를 잃어도 옛 벡터는 재계산(#56)."""
-        connection = _Connection(rows=[])
-
-        db.fetch_targets(connection, gallery_id=7, force=False, since="2026-09-06T00:00:00+00:00")
-
-        sql, params = connection.executed[0]
-        self.assertIn(
-            "NOT EXISTS (SELECT 1 FROM photo_analysis a WHERE a.photo_id = p.id"
-            " AND a.embedding IS NOT NULL AND a.updated_at >= %s)",
-            sql,
-        )
-        self.assertEqual((7, "2026-09-06T00:00:00+00:00"), params)
-        self.assertTrue(sql.endswith("ORDER BY p.id"))
-
-    def test_force_recomputes_everything(self) -> None:
-        connection = _Connection(rows=[])
-
-        db.fetch_targets(connection, gallery_id=7, force=True)
-
-        sql, _ = connection.executed[0]
-        self.assertNotIn("photo_analysis", sql)
 
 
 class _ManyCursor(_Cursor):
@@ -223,33 +200,6 @@ class StoreEmbeddingsTest(unittest.TestCase):
         self.assertEqual(0, stored)
 
 
-class GalleryLockTest(unittest.TestCase):
-    def test_uses_session_advisory_lock_with_module_namespace(self) -> None:
-        connection = _Connection(rows=[(True,)])
-
-        self.assertTrue(db.try_lock_gallery(connection, 7))
-
-        sql, params = connection.executed[0]
-        self.assertIn("pg_try_advisory_lock(%s, %s)", sql)
-        self.assertNotIn("xact", sql)   # 세션 수준이어야 배치 commit을 넘어 유지된다
-        # 뒤쪽 키 = 갤러리 × LOCK_STRIDE + 샤드(#56). 샤드 없는 실행은 샤드 0 과 같은 키다.
-        self.assertEqual((db.GALLERY_LOCK_NAMESPACE, 7 * db.LOCK_STRIDE), params)
-
-    def test_shard_lock_key_is_gallery_times_stride_plus_index(self) -> None:
-        connection = _Connection(rows=[(True,)])
-
-        self.assertTrue(db.try_lock_gallery(connection, 7, shard_index=3))
-
-        _, params = connection.executed[0]
-        self.assertEqual((db.GALLERY_LOCK_NAMESPACE, 7 * db.LOCK_STRIDE + 3), params)
-        self.assertNotEqual(7 * db.LOCK_STRIDE + 3, 8 * db.LOCK_STRIDE)   # 옆 갤러리와 겹치지 않는다
-
-    def test_held_lock_returns_false(self) -> None:
-        connection = _Connection(rows=[(False,)])
-
-        self.assertFalse(db.try_lock_gallery(connection, 7))
-
-
 class AdminPhotoJobDatabaseContractTest(unittest.TestCase):
     def event(self) -> AdminPhotoEvent:
         return AdminPhotoEvent(11, 2, "QUALITY_ANALYSIS", 31, 41, "galleries/41/photo.jpg", 51)
@@ -268,14 +218,14 @@ class AdminPhotoJobDatabaseContractTest(unittest.TestCase):
         self.assertEqual(2, params[1])
 
     def test_photo_result_and_job_success_are_both_required_before_commit(self) -> None:
+        """사진 결과 CAS 는 맞았는데 잡 terminal CAS 가 빗나가면 둘 다 버린다(rowcount 1 → 0)."""
         connection = _Connection(rows=[], rowcounts=[1, 0])
-        result = type("Quality", (), {"score": 82.5, "signals": {"algorithmVersion": "technical-v1"}})()
 
         with self.assertRaises(db.AdminJobClaimLost):
-            db.complete_admin_quality(connection, self.event(), result)
+            db.complete_admin_embedding(connection, self.event(), "VECTOR", "m")
 
         self.assertEqual(2, len(connection.executed))
-        self.assertIn("technical_quality_score", connection.executed[0][0])
+        self.assertIn("INSERT INTO photo_analysis", connection.executed[0][0])
         self.assertIn("status = 'SUCCEEDED'", connection.executed[1][0])
 
     def test_explicit_failure_only_updates_matching_exact_attempt(self) -> None:
@@ -316,29 +266,21 @@ class FetchByIdsTest(unittest.TestCase):
         self.assertEqual([], connection.executed)
 
 
-class StoreEmbeddingsStatusSwitchTest(unittest.TestCase):
-    """v2(#73·#83): 기본(set_status=None)은 photos.status 를 건드리지 않는다 — wes V15 부터 embedder 역할에 status UPDATE
-    권한이 없다. 옛 계약은 set_status='EMBEDDED' 로만 켜진다. 값은 대문자·밑줄만."""
+class NeverWritesPhotoStatusTest(unittest.TestCase):
+    """wes V15(#100): photos.status 는 PENDING·UPLOADED 뿐이고 embedder 역할에 그 컬럼 UPDATE 권한이 없다.
+    적재 경로 어디에서도 status 를 쓰지 않는다."""
 
     def _ref(self):
         return db.PhotoRef(photo_id=1, storage_key="galleries/7/a.jpg")
 
-    def test_default_leaves_status_alone(self) -> None:
+    def test_store_embeddings_never_touches_status(self) -> None:
         connection = _Connection(rows=[])
         db.store_embeddings(connection, [(self._ref(), "VECTOR", "previews/galleries/7/a.jpg", None)], model_id="m")
         photos_sql, _ = connection.executed[1]
         self.assertNotIn("status", photos_sql)
         self.assertIn("preview_key = %s", photos_sql)
 
-    def test_legacy_value_writes_embedded(self) -> None:
-        connection = _Connection(rows=[])
-        db.store_embeddings(connection, [(self._ref(), "VECTOR", "previews/galleries/7/a.jpg", None)], model_id="m",
-                            set_status="EMBEDDED")
-        photos_sql, _ = connection.executed[1]
-        self.assertIn("status = 'EMBEDDED'", photos_sql)
-
-    def test_admin_embedding_follows_same_rule(self) -> None:
-        """관리자 사진 교체의 EMBEDDING 잡(#83): CAS 문장도 기본은 status 없이 version 만 올린다."""
+    def test_admin_embedding_cas_never_touches_status(self) -> None:
         event = types.SimpleNamespace(job_id=1, attempt_count=1, job_type="EMBEDDING", photo_id=1, revision_id=1,
                                       gallery_id=7, storage_key="galleries/7/a.jpg")
         connection = _Connection(rows=[], rowcounts=[1, 1])
@@ -348,12 +290,6 @@ class StoreEmbeddingsStatusSwitchTest(unittest.TestCase):
         self.assertNotIn("status", photo_sql)
         self.assertIn("SET version = version + 1", photo_sql)
 
-        connection = _Connection(rows=[], rowcounts=[1, 1])
-        db.complete_admin_embedding(connection, event, "VECTOR", "m", set_status="EMBEDDED")
-        photo_sql, _ = connection.executed[0]
-        self.assertIn("SET status = 'EMBEDDED', version = version + 1", photo_sql)
 
-    def test_rejects_odd_status_value(self) -> None:
-        connection = _Connection(rows=[])
-        with self.assertRaises(ValueError):
-            db.store_embeddings(connection, [(self._ref(), "VECTOR", "p.jpg", None)], model_id="m", set_status="x'; --")
+if __name__ == "__main__":
+    unittest.main()

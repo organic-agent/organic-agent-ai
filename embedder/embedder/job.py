@@ -1,7 +1,7 @@
 """갤러리 하나의 미리보기 파생본을 만들어 올리고, 그 파일로 임베딩을 계산해 적재한다. 촬영 정보도 같이.
 
 순서가 계약이다: **① 원본을 열어 EXIF를 읽고 1024px로 다듬는다 → ② JPEG로 인코딩해 S3에 PUT →
-③ PUT이 성공한 그 JPEG 바이트를 다시 열어 DINOv3에 넣는다 → ④ 벡터·preview_key·EXIF·status를 한
+③ PUT이 성공한 그 JPEG 바이트를 다시 열어 DINOv3에 넣는다 → ④ 벡터·preview_key·EXIF를 한
 트랜잭션으로 적재.** 벡터가 S3에 실제로 올라간 파일에서 나오므로 "미리보기 없는 벡터"는 구조적으로
 생길 수 없고, PUT 실패는 그 사진의 실패가 되어 다음 호출에서 fetch_targets가 자연히 다시 집어 온다.
 photoselect가 읽는 픽셀과 벡터가 같은 파일이라는 점도 따라온다. (#24)
@@ -19,12 +19,12 @@ photoselect가 읽는 픽셀과 벡터가 같은 파일이라는 점도 따라�
 받고 다듬기를 번갈아 하면 네트워크와 CPU가 서로를 기다린다 -- 2026-09-05 로컬 E2E의 장당 1.7초는
 대부분 이 대기였다. 처리·PUT·commit 순서는 그대로 메인 스레드가 한 장씩 밟는다.
 
-갤러리 샤딩(#56): wes 가 부른 실행(shard 없음)은 **조정자**다 — 잠금 → 대상 조회까지만 하고 대상이 `shard_photos`
-를 넘으면 모델을 올리지 않은 채 자기 함수를 N번(`shard:{index,total}`) EVENT 하고 끝난다(`fan_out`). 샤드는 같은
-순서의 목록에서 위치 % total == index 인 사진만 맡고, 잠금 키도 (갤러리, 샤드)다. score 와 달리 카운터·체인이 없다 —
-embedder 는 잡을 모르고 wes 가 `photo_analysis` 를 세어 EMBED 단계를 닫으므로 샤드는 각자 끝나면 그만이다.
-force 는 시작 시각(`run_started_at`)을 샤드·재호출에 넘겨 그 이후 벡터만 "있음"으로 본다 — 재호출이 force 를 잃어도
-옛 벡터가 남지 않는다.
+**운영은 `photo_ids` 하나다**(#100): wes 스위퍼가 UPLOADED·벡터 없음인 사진을 50장씩 배정해(`photos.dispatched_at`)
+`{galleryId, photoIds}` 로 부른다. 배정 자체가 원자적이라 갤러리 잠금이 필요 없고, 샤딩·조정자·자기 재호출도 없다 —
+남거나 실패한 장은 wes 가 `dispatched_at` 을 되돌려 다시 배정한다. `photos.status` 는 쓰지 않는다(V15 부터 권한도 없다).
+
+갤러리 전체 경로는 **로컬 전용**으로 남는다: wes `scripts/local-ai.sh` 가 사진 목록 없이 CLI 를 부른다.
+재계산은 플래그가 아니라 `photo_analysis` 행 삭제(관리자 재처리)다.
 
 끊김에 대한 태도: 배치(8장)마다 commit하므로 어디서 죽어도 그때까지는 남는다. Lambda에서는 남은
 시간(`remaining_seconds`)을 보고 하드 킬 전에 배치 경계에서 스스로 멈춘다 -- 결과에 `stopped`와
@@ -34,11 +34,9 @@ force 는 시작 시각(`run_started_at`)을 샤드·재호출에 넘겨 그 이
 from __future__ import annotations
 
 import logging
-import math
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from typing import Callable
 
 from PIL import Image
@@ -49,48 +47,9 @@ from embedder.storage import PhotoStorage
 
 log = logging.getLogger(__name__)
 
-#: 다른 실행이 같은 갤러리를 잡고 있을 때 결과의 skipped 값.
-ALREADY_RUNNING = "already running"
-
 #: 지금 처리하는 배치보다 몇 배치 앞까지 원본 GET을 미리 걸어 두는가. 2면 메모리에 원본이 최대
 #: 세 배치(24장, 13MB 원본이면 ~300MB) 올라간다. Lambda 3GB에서 모델과 함께 두어도 남는다.
 PREFETCH_BATCHES = 2
-
-
-@dataclass(frozen=True)
-class Shard:
-    """N 개 중 index 번째. 사진 목록(고정 순서 `ORDER BY p.id`)에서 위치 % total == index 인 것만 맡는다."""
-
-    index: int
-    total: int
-
-    def __post_init__(self) -> None:
-        if not (self.total >= 1 and 0 <= self.index < self.total):
-            raise ValueError(f"잘못된 샤드 {self.index}/{self.total}")
-
-    def select(self, refs: list) -> list:
-        return [r for i, r in enumerate(refs) if i % self.total == self.index]
-
-    def to_payload(self) -> dict:
-        return {"index": self.index, "total": self.total}
-
-    @classmethod
-    def from_payload(cls, value) -> "Shard | None":
-        if not value:
-            return None
-        return cls(index=int(value["index"]), total=int(value["total"]))
-
-
-def plan_shards(n_photos: int, settings: Settings) -> int:
-    """사진 수로 샤드 수. ceil(n / shard_photos) 를 [1, max_shards] 로 자른다. shard_photos 0 이면 샤딩 없음."""
-    shard_photos = getattr(settings, "shard_photos", 0)
-    if shard_photos <= 0 or n_photos <= 0:
-        return 1
-    return max(1, min(getattr(settings, "max_shards", 1), math.ceil(n_photos / shard_photos)))
-
-
-def now_iso() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 @dataclass
@@ -107,20 +66,11 @@ class RunResult:
     #: 벡터·미리보기는 나왔지만 촬영 정보만 읽지 못한 사진. 상세 화면에 정보가 덜 나올 뿐
     #: 사진은 멀쩡히 보이고 임베딩도 끝나 있다.
     metadata_failed: list[str] = field(default_factory=list)
-    #: 데드라인 때문에 배치 경계에서 멈췄다. 남은 사진은 remaining.
+    #: 데드라인 때문에 배치 경계에서 멈췄다. 남은 사진은 remaining — wes 가 다시 배정한다.
     stopped: bool = False
-    #: 다른 실행이 갤러리를 잡고 있어 아무것도 하지 않았다.
-    skipped: str | None = None
     elapsed_seconds: float = 0.0
-    #: 이 실행이 맡은 샤드. 없으면 갤러리 전체.
-    shard: Shard | None = None
-    #: v2(#73) 사진 목록 호출이면 요청 장수. 갤러리 호출이면 None.
+    #: 사진 목록 호출이면 요청 장수(#73). 갤러리 호출(로컬 CLI)이면 None.
     photo_ids: int | None = None
-    #: 조정자로 끝났다 — 샤드를 띄우기만 하고 사진은 처리하지 않았다. targets 는 갤러리 전체 대상 수.
-    coordinator: bool = False
-    shards: int = 0
-    fanned_out: bool = False
-    run_started_at: str | None = None
 
     @property
     def remaining(self) -> int:
@@ -137,90 +87,43 @@ class RunResult:
             "remaining": self.remaining,
             "elapsedSeconds": round(self.elapsed_seconds, 1),
         }
-        if self.skipped is not None:
-            out["skipped"] = self.skipped
-        if self.shard is not None:
-            out["shard"] = self.shard.to_payload()
         if self.photo_ids is not None:
             out["photoIds"] = self.photo_ids
-        if self.coordinator:
-            out.update({"coordinator": True, "shards": self.shards, "fannedOut": self.fanned_out})
-        if self.run_started_at:
-            out["runStartedAt"] = self.run_started_at
         return out
 
 
 def run(
     gallery_id: int,
-    force: bool = False,
     settings: Settings | None = None,
     remaining_seconds: Callable[[], float] | None = None,
-    shard: Shard | None = None,
-    run_started_at: str | None = None,
-    fan_out: Callable[[int, str | None], bool] | None = None,
     photo_ids: list[int] | None = None,
 ) -> dict:
-    """갤러리 하나(또는 그 샤드 하나), 또는 사진 id 목록(v2, #73)을 처리한다.
+    """사진 id 목록(운영), 또는 갤러리에서 아직 벡터가 없는 사진 전체(로컬 CLI).
 
-    `photo_ids` 가 있으면 **그 목록만** 임베딩한다 — wes 스위퍼가 UPLOADED 사진을 50장씩 배정해 부르는 스트리밍 경로.
-    갤러리 잠금·대상 조회·조정자·fan-out 을 전부 건너뛴다(배정 자체가 wes 의 `dispatched_at` 로 원자적이라 잠금이 필요 없다).
-    force 는 뜻이 없다(목록에 있으면 계산한다). 데드라인 정지는 그대로 — 50장이면 발동하지 않지만 코드 경로는 같다.
+    `photo_ids` 가 있으면 **그 목록만** 임베딩한다 — wes 스위퍼가 배정해 부르는 스트리밍 경로(#73). 대상 조회·잠금이 없다.
+    없으면 `db.fetch_targets` 로 갤러리를 훑는다(로컬 `local-ai.sh`).
 
     `remaining_seconds`는 실행 환경이 남은 시간을 알려 주는 함수다. Lambda handler가
     `context.get_remaining_time_in_millis`를 감싸 넘기고, 로컬 CLI는 None이다(멈추지 않는다).
-
-    `shard` 가 없고 `fan_out` 이 있으면 조정자다: 대상이 샤드 2개 이상이면 fan_out(N, run_started_at) 을 부르고
-    `coordinator: true` 로 끝난다(모델을 올리지 않는다). `run_started_at`(ISO) 은 force 실행의 시작 시각 —
-    그 이후 적재된 벡터만 "있음"으로 친다. force 인데 없으면 지금 시각으로 만든다.
     """
     started = time.monotonic()
     settings = settings or Settings.from_env()
-    if force and run_started_at is None:
-        run_started_at = now_iso()
-    result = RunResult(gallery_id=gallery_id, shard=shard, run_started_at=run_started_at)
+    result = RunResult(gallery_id=gallery_id)
     if photo_ids is not None:
         result.photo_ids = len(photo_ids)
-    tag = f"갤러리 {gallery_id}" + (f" 샤드 {shard.index}/{shard.total}" if shard else "") + (
-        f" 사진 {len(photo_ids)}장" if photo_ids is not None else "")
+    tag = f"갤러리 {gallery_id}" + (f" 사진 {len(photo_ids)}장" if photo_ids is not None else "")
 
     storage = PhotoStorage(settings.s3_bucket, max_concurrency=settings.download_workers)
 
     with db.connect(settings) as connection:
         if photo_ids is not None:
-            # v2 스트리밍 경로 — 잠금·조정자 없음. 배정한 쪽이 겹치지 않게 했다.
-            all_targets = db.fetch_by_ids(connection, photo_ids)
-            result.targets = len(all_targets)
-            fan_out = None
-            shard = None
+            # v2 스트리밍 경로 — 잠금·조정자 없음. 배정한 쪽(wes)이 겹치지 않게 했다.
+            targets = db.fetch_by_ids(connection, photo_ids)
         else:
-            # 모델을 올리기 전에 잠금부터 본다. 겹친 실행이 수 초짜리 모델 로드를 치르고 나서야
-            # 물러나는 것보다 낫다. 잠금은 연결이 닫힐 때(with 블록 끝, 또는 프로세스 종료) 풀린다.
-            if not db.try_lock_gallery(connection, gallery_id, shard.index if shard else 0):
-                result.skipped = ALREADY_RUNNING
-                result.elapsed_seconds = time.monotonic() - started
-                log.info("%s: 다른 실행이 진행 중 -- 건너뜀", tag)
-                return result.to_dict()
+            targets = db.fetch_targets(connection, gallery_id)
 
-            # 대상은 갤러리 전체를 같은 순서로 읽는다 — 샤드는 그 목록에서 자기 몫만 고른다. run_started_at 이 있으면
-            # (force 이거나 그 재호출) 그 이후 벡터만 건너뛴다.
-            all_targets = db.fetch_targets(connection, gallery_id, force, run_started_at)
-            result.targets = len(all_targets)
-
-        if shard is None and fan_out is not None:
-            n = plan_shards(len(all_targets), settings)
-            if n > 1:
-                result.coordinator = True
-                result.shards = n
-                result.fanned_out = fan_out(n, run_started_at)
-                result.elapsed_seconds = time.monotonic() - started
-                if not result.fanned_out:
-                    raise RuntimeError(f"{tag}: 샤드 {n}개 호출 실패")
-                log.info("%s: 조정자 -- %s장을 샤드 %s개로 (runStartedAt=%s)", tag, len(all_targets), n, run_started_at)
-                return result.to_dict()
-
-        targets = shard.select(all_targets) if shard else all_targets
         result.targets = len(targets)
-        log.info("%s: 대상 %s장 (force=%s, runStartedAt=%s)", tag, len(targets), force, run_started_at)
+        log.info("%s: 대상 %s장", tag, len(targets))
 
         embedder = model.load_from(settings)
 
@@ -303,11 +206,10 @@ def run(
                         connection,
                         zip(loaded_refs, vectors, loaded_keys, loaded_metadata),
                         model_id=settings.model_id,
-                        set_status=getattr(settings, "set_status", None),
                     )
 
                     # ④ 배치 단위로 커밋한다. 중간에 죽어도 그때까지의 벡터·미리보기는 남고,
-                    # 다시 부르면 fetch_targets가 나머지만 집어 온다.
+                    # 남은 사진은 wes 가 다시 배정한다(로컬 CLI 면 fetch_targets 가 나머지만 집어 온다).
                     connection.commit()
                     result.processed += stored
 

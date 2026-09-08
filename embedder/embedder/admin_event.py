@@ -5,7 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-SUPPORTED_JOB_TYPES = frozenset({"DERIVATIVE", "EMBEDDING", "QUALITY_ANALYSIS"})
+#: wes V15(#100)가 QUALITY_ANALYSIS 잡과 그 점수 컬럼을 지웠다 — 관리자 사진 교체는 파생본과 벡터 둘뿐이다.
+SUPPORTED_JOB_TYPES = frozenset({"DERIVATIVE", "EMBEDDING"})
 
 
 class InvalidAdminPhotoEvent(ValueError):
