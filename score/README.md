@@ -102,12 +102,16 @@ Lambda 32 샤드 대신 GPU 인스턴스 한 대(또는 몇 대)가 **사진 단
 python -m score worker --gpu [--once] [--no-idle-stop]     # 컨테이너 기본 CMD. 로컬에서는 --no-idle-stop
 ```
 
-- 집기: `photo_analysis.embedding IS NOT NULL AND clip_embedding IS NULL`(+ 미리보기 있음·휴지통 아님) 32장을 `FOR UPDATE OF photo_analysis SKIP LOCKED`
+- 집기: `photo_analysis.embedding IS NOT NULL AND clip_embedding IS NULL AND error IS NULL`(+ 미리보기 있음·휴지통 아님) 32장을 `FOR UPDATE OF photo_analysis SKIP LOCKED`
   로 잠근 채 미리보기 다운로드(16 스레드) → CLIP·ARNIQA·classical → `write_scores`(UPSERT + commit = 잠금 해제). 워커가 죽으면 롤백으로 행이 자동 반환된다.
   여러 대가 같은 사진을 집을 수 없고(RDS 에서 확인), 한 갤러리를 나눠 먹어도 된다. status 는 보지 않는다(v2 에서 EMBEDDED 가 사라진다).
 - 유휴: 집을 게 없으면 `WORKER_POLL_SECONDS`(3) 대기, 연속 `WORKER_IDLE_STOP_SECONDS`(**30**, 다중 사용자 운영이면 600) 를 넘기면 IMDSv2 로 자기 인스턴스를 `StopInstances`. 켜는 것·폴백은 wes.
 - 실패: 배치가 `WORKER_MAX_CONSECUTIVE_FAILURES`(5)회 연속 실패하면 루프를 끝내고 exit 1 — 같은 오류로 헛돌지 않는다(#81).
-- 잡 테이블은 건드리지 않는다 — 완료는 wes 가 데이터로 관측. 계속 실패하는 사진은 이 프로세스에서 더 집지 않는다(재시작하면 다시).
+- 잡 테이블은 건드리지 않는다 — 완료는 wes 가 데이터로 관측.
+- 사진 단위 결정적 실패(#85, wes V15): 미리보기가 S3 에 없으면(404) 그 장만 빼고 `photo_analysis.error='PREVIEW_MISSING'`, 점수 계산에서
+  한 장이 실패하면 `'SCORE_FAILED'`. wes 는 그 장을 기대 장수에서 빼고, 집기가 `error IS NULL` 이라 다시 안 집는다(부분 인덱스
+  `idx_photo_analysis_unscored` 와 같은 조건). 그 외 다운로드 오류(접속·스로틀)는 배치 rollback 뒤 재시도. Lambda `photoIds` 폴백도 같은 표시.
+- 로그: 배치마다 `score worker batch=32 photos=N failed=F seconds=S` 한 줄(wes 합의 key=value 형식).
 - 비밀번호: `DB_PASSWORD` 가 없고 `DB_PASSWORD_SSM_PARAM` 이 있으면 SSM SecureString 에서(인스턴스 역할).
 - Lambda 폴백: `{"galleryId", "photoIds": [...]}` 페이로드는 점수만 쓰고 끝난다(잡·재호출·체인 없음). CLI `--photo-ids 1,2,3`.
 
