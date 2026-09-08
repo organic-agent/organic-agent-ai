@@ -49,9 +49,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 경계는 **"갤러리 전수에 torch 모델 추론이 필요한가"**다. 그렇다면 이 repo, 아니면 wes
 (wes `docs/plans/ai-feature-migration-to-wes.md`, 2026-09-04). wes도 미리보기를 읽어 Bedrock에 보낸다.
 
-- wes 백엔드가 실행 조건을 검증하고 트리거한다. 배치는 `InvocationType.EVENT`, 이벤트는
-  `{"galleryId": N, "jobId": M}`. 분석 체인은 score 가 끝에서 categorize 를 EVENT 로 부른다(FULL);
-  NAMING 은 wes 가 categorize 를 직접 부른다. `ai_analysis_jobs` 는 score 가 열고 categorize 가 닫는다.
+- wes 백엔드가 스윕(5초)으로 배정하고 트리거한다. 배치는 `InvocationType.EVENT`. 페이로드는 두 모양뿐이다 —
+  embedder·score `{"galleryId": N, "photoIds": [...]}`, categorize `{"galleryId": N, "jobId": M}`.
+  **`ai_analysis_jobs` 는 wes 가 소유한다**(V16): 상태 4개(ANALYZING·CATEGORIZING·DONE·FAILED)를 wes 가 옮기고,
+  Lambda 는 실패 시 `error` 한 컬럼만 쓴다. 체인·샤딩·자기 재호출은 없다(#95·#98·#100).
+- 운영의 점수는 **GPU 워커**(EC2 g6.xlarge, `python -m score worker --gpu`)가 `photo_analysis` 를 32장씩
+  SKIP LOCKED 로 집어 낸다. 워커가 없거나 못 따라가면 wes 가 score Lambda 를 폴백으로 부른다.
 - **공유 Postgres(RDS)를 직접 읽고 쓴다.** HTTP payload로 데이터를 나르지 않는다.
 - 이미지는 원본이 아니라 embedder가 만든 **미리보기 파생본**(`photos.preview_key`, EXIF
   회전·리사이즈 JPEG)을 S3에서 읽는다. HEIC 디코드는 이 서버의 일이 아니다.
@@ -88,23 +91,23 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 # embedder — 갤러리당 1회: 미리보기 PUT → DINOv3 → photo_analysis
 cd embedder && python -m venv .venv && .venv/bin/pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu \
   && .venv/bin/pip install -r requirements.txt
-.venv/bin/python -m embedder --gallery-id 1 [--force]
-.venv/bin/python -m pytest tests -q                         # 63
+.venv/bin/python -m embedder --gallery-id 1 [--photo-ids 1,2,3]   # 목록 없으면 벡터 없는 사진 전체(로컬)
+.venv/bin/python -m pytest tests -q                         # 47
 
-# score — 사진별 점수 (CLIP · ARNIQA · 미학, torch). 끝나면 categorize 를 깨운다. Python 3.12 (torch 2.4.1 핀)
+# score — 사진별 점수 (CLIP · ARNIQA · 미학, torch). Python 3.12 (torch 2.4.1 핀)
 cd score && uv venv --python 3.12 .venv && uv pip install --python .venv/bin/python \
   -r requirements.txt -r ../categorize/requirements.txt --no-deps -e . -e ../categorize   # 한 venv 에 둘 다
-.venv/bin/python -m score --gallery-id 12 [--job-id J] [--force]   # CATEGORIZE_COMMAND=".venv/bin/python -m categorize"
-.venv/bin/python -m score worker                                   # 로컬 폴링 워커 (wes 에 invoker 가 생기기 전 대용)
-.venv/bin/python -m pytest -q                                      # 21
+.venv/bin/python -m score --gallery-id 12 [--photo-ids 1,2,3] [--force]   # 목록 없으면 갤러리 전체(로컬·벤치마크)
+.venv/bin/python -m score worker --gpu --once --no-idle-stop       # GPU 집기 워커 한 배치 (운영 인스턴스의 기본 CMD)
+.venv/bin/python -m pytest -q                                      # 29
 
 # categorize — 그룹 · 이름 (numpy · scipy · Bedrock, torch 없음)
-cd categorize && ../score/.venv/bin/python -m categorize --gallery-id 12 --job-id J   # wes NAMING 잡과 같음 (Bedrock). score/.venv 공용
-../score/.venv/bin/python -m pytest -q                                              # 23
+cd categorize && ../score/.venv/bin/python -m categorize --gallery-id 12 --job-id J   # wes 가 부르는 것과 같음 (Bedrock). score/.venv 공용
+../score/.venv/bin/python -m pytest -q                                              # 27
 ```
 
-로컬 E2E는 wes 쪽 스크립트가 감싼다: `../organic-agent-server/wes/scripts/local-worker.sh`(워커),
-`local-ai.sh <galleryId>`(임베딩 → 점수 → 카테고리 한 번에). RDS는 퍼블릭 접근이 없다. 직접 붙을 때는 wes의
+로컬 E2E는 wes 쪽 스크립트가 감싼다: `../organic-agent-server/wes/scripts/local-ai.sh <galleryId>`(임베딩 → 점수 → 카테고리 한 번에),
+`scripts/gpu/score-worker.sh`(GPU 워커 대역). 정식 경로는 웹 버튼이다 — wes local 프로필이 스윕으로 배정한다. RDS는 퍼블릭 접근이 없다. 직접 붙을 때는 wes의
 `scripts/db-tunnel.sh`로 SSM 포트 포워딩을 연다(기본 15432).
 
 ## 구현 순서와 리스크
