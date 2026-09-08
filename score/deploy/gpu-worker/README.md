@@ -53,9 +53,13 @@
 - 워커는 **켜지면 일하고 없으면 끈다**. 갤러리를 배정받지 않는다 — `photo_analysis.embedding IS NOT NULL AND clip_embedding IS NULL AND error IS NULL`
   이면 누구 것이든 32장씩 `FOR UPDATE OF photo_analysis SKIP LOCKED` 로 집는다. 2대가 한 갤러리를 나눠 먹어도 중복 0(RDS 에서 확인).
 - 유휴 30초(`WORKER_IDLE_STOP_SECONDS`) → IMDSv2 로 자기 id → `StopInstances` → exit 0. StopInstances 가 실패하면 로그만 남기고 exit 0 — 유닛은
-  재시작하지 않고, wes W6(30분 유휴 강제 정지)·CloudWatch 알람(CPU 30분 < 5%)이 끈다.
+  재시작하지 않고, wes `GpuController`(`idle-stop-after: PT2M`)·CloudWatch 알람(CPU 30분 < 5%)이 끈다.
+- wes 쪽 실제 값(#168 머지, `application-variable.yml`): `gpu.enabled`(운영은 SSM `/wes/prod/app.analysis.gpu.enabled`, **지금 false**) ·
+  `tag: wes-score-gpu` · `start-grace: PT5M`(이 안에는 유휴로 안 본다) · `idle-stop-after: PT2M` · `fallback-after: PT10M` · `fallback-interval: PT10M`.
+  wes 주석도 "워커의 유휴 30초 자기 정지가 1차"로 우리 기본값을 전제한다 — 이 값을 바꾸면 wes 에 알린다.
 - 연속 5배치 실패(#81) → exit 1 → 유닛이 30초 뒤 재시작, 10분 3회면 포기. 그 뒤는 알람 몫.
-- 켜는 것(`StartInstances`)·폴백(Lambda `{galleryId, photoIds}`) 결정은 wes.
+- 켜는 것(`StartInstances`)·폴백(Lambda `{galleryId, photoIds}`) 결정은 wes. **`gpu.enabled=false` 면 워커를 켜지 않고 폴백만 돈다** —
+  GPU 배포 전인 지금이 그 상태다(`GpuController.isFallbackDue`: GPU 가 없으면 유예 없이 바로 폴백).
 
 ## 검증 절차 (인프라 I2 인스턴스가 나온 날, NEXT.md §1-B)
 
