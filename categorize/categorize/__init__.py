@@ -8,7 +8,7 @@ embedder·score 와 같은 평탄 구조: handler(Lambda) / __main__(CLI) → jo
     cluster      연사(burst) union-find — 카메라 파티션 ∧ 순서 창 ∧ 코사인 임계
     concept      임베딩 그룹 경계 — 평균연결 계층 클러스터, 적응 임계
     llm          BedrockClient.complete_json (JSON 스키마 강제, 이미지 블록)
-    job          잡: ai_analysis_jobs RUNNING → DONE/FAILED (체인의 끝)
+    job          갤러리 하나: 대상 조회 → pipeline → (실패면 ai_analysis_jobs.error). 상태 전이는 wes(#95)
     handler      Lambda: {galleryId, jobId} — score 가 체인으로(FULL), wes 가 직접(NAMING)
     config · db · store · gallery · storage · jobs
 

@@ -7,8 +7,8 @@ numpy · scipy · Bedrock 만으로 돌고 torch 가 없다(테스트가 고정)
 `photo_category_assignments`)는 wes 가 배정을 읽어 만든다(`POST /concept-folders/ai`).
 
 ```
-FULL:   [score] ──EVENT {galleryId, jobId}──▶ [categorize] ──▶ ai_analysis_jobs DONE
-NAMING: wes ────EVENT {galleryId, jobId}──▶ [categorize] ──▶ DONE      (점수는 저장된 것을 쓴다)
+wes ──EVENT {galleryId, jobId}──▶ [categorize] ──▶ ai_concept_assignments · photo_analysis 백분위·그룹
+                                                   실패하면 ai_analysis_jobs.error 한 컬럼만 (#95)
 ```
 
 ## 무엇을 계산하나 (`pipeline.py` → `naming.py`)
@@ -37,7 +37,7 @@ Bedrock 이미지 호출 수 ≤ ⌈대표 수/15⌉ + 1 로 비용 상한이 �
 |---|---|
 | 진입점 | `handler.py`(Lambda EVENT `{"galleryId", "jobId"?}`) / `__main__.py`(CLI) → `job.run()` |
 | 단위 | 갤러리. 데드라인·잠금 없음 (수 초 + Bedrock 몇 번) |
-| 잡 | FULL 은 score 가 열어 둔 RUNNING 잡을 이어받아 DONE/FAILED, NAMING 은 여기서 PENDING→RUNNING→DONE. `result` 는 score 의 것과 합쳐진다 |
+| 잡 | **상태를 쓰지 않는다**(#95, wes V16). wes 가 ANALYZING→CATEGORIZING 으로 옮기며 부르고, 배정 행·백분위를 관측해 DONE 을 찍는다. 여기서 쓰는 것은 실패 시 `error` 하나 — photoselect 역할에도 `UPDATE (error, updated_at)` 만 있다 |
 | LLM | 잡(job_id)은 naming 까지가 산출물이라 Bedrock 없이 시작하지 않는다. `BEDROCK_REGION`·`BEDROCK_MODEL_ID`(기본 `global.anthropic.claude-sonnet-4-6`) |
 | 접속 | `DB_*`, `S3_BUCKET`(대표 사진 몇 장만 내려받는다), `CATEGORIZE_WORK`(Lambda 는 `/tmp`) |
 
@@ -72,7 +72,7 @@ cd categorize && uv venv --python 3.12 .venv && uv pip install --python .venv/bi
 .venv/bin/python -m categorize --local "dataset1/데이터셋1" [--llm]     # score --local 뒤에. 임베더가 없어 CLIP 이 E 를 겸한다(embeddingsSource: clip)
 
 export DB_HOST=localhost DB_PORT=5432 DB_NAME=wes DB_USER=wes DB_PASSWORD=wes DB_SSLMODE=disable S3_BUCKET=<버킷>
-.venv/bin/python -m categorize --gallery-id 12 --job-id 34             # wes NAMING 잡과 같음 (Bedrock 필수)
+.venv/bin/python -m categorize --gallery-id 12 --job-id 34             # wes 가 부르는 것과 같음 (Bedrock 필수)
 .venv/bin/python -m categorize --gallery-id 12 [--llm]                 # 잡 없이 그룹화 확인 (배정은 저장 안 함)
 ```
 
