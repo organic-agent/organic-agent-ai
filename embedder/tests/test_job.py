@@ -420,13 +420,13 @@ class PhotoIdsJobTest(GalleryJobTest):
     def test_set_status_from_settings_reaches_store(self) -> None:
         fake_db = self._install_db([_Ref(1, "galleries/7/a.jpg")])
         settings = _settings(batch_size=1)
-        settings.set_status = None
+        settings.set_status = "EMBEDDED"                                # 옛 계약은 설정으로만 켜진다(#83)
         job.run(7, settings=settings, photo_ids=[1])
-        self.assertIsNone(fake_db.set_status)
+        self.assertEqual("EMBEDDED", fake_db.set_status)
 
         fake_db = self._install_db([_Ref(1, "galleries/7/a.jpg")])
-        job.run(7, settings=_settings(batch_size=1), photo_ids=[1])   # 설정에 없으면 옛 계약 EMBEDDED
-        self.assertEqual("EMBEDDED", fake_db.set_status)
+        job.run(7, settings=_settings(batch_size=1), photo_ids=[1])   # 설정에 없으면 V15 계약 — status 안 씀
+        self.assertIsNone(fake_db.set_status)
 
     def test_empty_photo_ids_does_nothing(self) -> None:
         fake_db = self._install_db([_Ref(1, "galleries/7/a.jpg")])
