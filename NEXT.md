@@ -21,13 +21,13 @@
 계약 수정 #84 · #86 · #94 · #95, 그리고 **죽은 코드 정리 #98(score) · #100(embedder) · #102(categorize 문서)** 까지 머지·배포 완료.
 지운 것: score `jobs.py`·`chain.py`·`worker.py`·샤딩·조정자·잠금(약 250줄), embedder `quality.py`·관리자 품질 잡·샤딩·조정자·잠금·`EMBED_SET_STATUS`·`force`(약 200줄).
 남긴 것: 갤러리 CLI 경로(wes `local-ai.sh` 가 쓴다) · `--local` 데이터셋 모드(`compare_local.py`) · 관리자 DERIVATIVE·EMBEDDING · 벤치마크 진입점.
-테스트 embedder 47 · score 29 · categorize 27. CPU 경로 비트 동일 재확인.
+테스트 embedder 47 · score 31 · categorize 27. CPU 경로 비트 동일 재확인.
 
 - [ ] **인프라에 회신할 것(결정 K)**: embedder 롤의 `ReinvokeSelf`, score 롤의 `lambda:InvokeFunction`(자기 + categorize) **둘 다 제거 가능**.
   갤러리 fan-out·자기 재호출·체인이 코드에서 사라졌다. Lambda 인터페이스 VPC 엔드포인트는 categorize 의 Bedrock 때문에 남는다
 - [ ] `docs/embedder-photoselect-architecture.md` §2~§4 를 v2 기준으로 다시 쓰기(지금은 §0.1 만 v2)
-- [ ] **wes 와 합의**: 로컬 GPU 스크립트가 `worker --gpu --once` 로 큐 전체를 비운다고 가정하나 우리 `--once` 는 배치 하나다.
-  큐를 비우고 끝나는 `--drain` 을 주거나 wes 가 재시작을 반복하는 것 중 하나로(로컬 전용, 운영 영향 없음)
+- [ ] **wes 에 요청**: `scripts/gpu/score-worker.sh` 에서 `--once` 만 빼면 된다(#104 로 우리 쪽은 고쳤다).
+  `--no-idle-stop` 이 이제 "EC2 정지만 건너뛰고 유휴가 되면 종료"라 큐를 다 비우고 끝난다 — 모델 1회 로드, 미리보기 낭비 없음
 
 ### A2. 다른 repo 상태 (2026-09-08 14:35 확인)
 
