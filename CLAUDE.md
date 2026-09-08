@@ -6,9 +6,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 구성 과정에서 작가의 업무 시간을 줄이는 AI 기능을 담당한다. AI는 초안·구조화·제안만 하고,
 최종 결정(사진 선택·제출·보정 확정)은 언제나 사람이 한다.
 
-> 제품 우선순위·아키텍처·설계는 `docs/plan.md`가 단일 소스다. **현재 구성**(모듈·잡·계약)은
-> `docs/embedder-photoselect-architecture.md`에, 세 모듈의 **구성·의존성 지도**(내부 import 그래프 · 컬럼 소유권 ·
-> 패키지 핀 · AWS 경로)는 `docs/batch-modules-dependency-map.html`에 있다. 이 문서는 요약과 작업 규칙만 담는다.
+> 제품 우선순위·아키텍처·설계는 `docs/plans/product.md`가 단일 소스다. **현재 구성**(모듈·잡·계약)은
+> `docs/architecture/embedder-score-categorize.md`에, 세 모듈의 **구성·의존성 지도**(내부 import 그래프 · 컬럼 소유권 ·
+> 패키지 핀 · AWS 경로)는 `docs/architecture/batch-modules-dependency-map.html`에 있다. 이 문서는 요약과 작업 규칙만 담는다.
 
 ## 저장소 구조 — 최상위 디렉토리 = 실행 단위
 
@@ -18,12 +18,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | `score/` | 사진별 점수 (CLIP · ARNIQA · 미학 · zero-shot), 끝나면 categorize 호출 | Lambda 컨테이너 |
 | `categorize/` | 백분위 · 연사 · 임베딩 그룹 · Bedrock naming (torch 없음) | Lambda 컨테이너 |
 | `notionchat/` | 노션 챗봇 서비스 | Vercel |
-| `docs/` | 계획(`plan.md`) · 아키텍처 · 설계 이력(`photoselect/`) · 학습 노트(`study/`) — **로컬 전용, `.gitignore`(#45)** | — |
+| `docs/` | `plans/`(앞으로) · `architecture/`(지금) · `improvements/`(한 일) · `experiments/`(측정) · `study/`(학습) — **로컬 전용, `.gitignore`(#45)**. 분류 기준·이전 경로 대조표는 `docs/README.md` | — |
 
 실행 단위가 아닌 것은 최상위에 두지 않는다. 배치 모듈 셋은 같은 모양이다 — 패키지 바로 아래 `handler.py`(Lambda) /
 `__main__.py`(CLI) → `job.run()`, 모듈마다 자기 `requirements.txt` · `Dockerfile` · `deploy.sh` · `tests/`.
 
-## 제품 우선순위 (인터뷰 3건 기반 — 근거는 docs/plan.md §1)
+## 제품 우선순위 (인터뷰 3건 기반 — 근거는 docs/plans/product.md §1)
 
 결제 주체는 작가/스튜디오이고, 결제 근거는 **작가 업무 시간 절감**이다. 이 축으로 정렬:
 
@@ -72,7 +72,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **이 repo는 마이그레이션을 만들지 않는다.** 모든 스키마 변경은 wes의 Flyway
 (`../organic-agent-server/wes/src/main/resources/db/migration/`, 규칙은 그 repo의
-`.claude/rules/migration.md`)에서 한다. 기능별 계약 테이블 목록은 `docs/plan.md` §4.
+`.claude/rules/migration.md`)에서 한다. 기능별 계약 테이블 목록은 `docs/plans/product.md` §4.
 
 지켜야 할 접근 규칙:
 
@@ -112,7 +112,7 @@ cd categorize && ../score/.venv/bin/python -m categorize --gallery-id 12 --job-i
 
 ## 구현 순서와 리스크
 
-`docs/plan.md` §6(순서)·§7(리스크)을 따른다. 최우선 확인 사항: ap-northeast-2 Bedrock 모델
+`docs/plans/product.md` §6(순서)·§7(리스크)을 따른다. 최우선 확인 사항: ap-northeast-2 Bedrock 모델
 가용성(미제공이면 크로스 리전 프로필 `apac.anthropic.…`), 배치 Lambda 15분 제한 실측.
 
 ## 참조 저장소 (sibling)

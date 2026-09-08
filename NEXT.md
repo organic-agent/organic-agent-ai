@@ -25,7 +25,7 @@
 
 - [ ] **인프라에 회신할 것(결정 K)**: embedder 롤의 `ReinvokeSelf`, score 롤의 `lambda:InvokeFunction`(자기 + categorize) **둘 다 제거 가능**.
   갤러리 fan-out·자기 재호출·체인이 코드에서 사라졌다. Lambda 인터페이스 VPC 엔드포인트는 categorize 의 Bedrock 때문에 남는다
-- [ ] `docs/embedder-photoselect-architecture.md` §2~§4 를 v2 기준으로 다시 쓰기(지금은 §0.1 만 v2)
+- [ ] `docs/architecture/embedder-score-categorize.md` §2~§4 를 v2 기준으로 다시 쓰기(지금은 §0.1 만 v2)
 - [ ] **wes 에 요청**: `scripts/gpu/score-worker.sh` 에서 `--once` 만 빼면 된다(#104 로 우리 쪽은 고쳤다).
   `--no-idle-stop` 이 이제 "EC2 정지만 건너뛰고 유휴가 되면 종료"라 큐를 다 비우고 끝난다 — 모델 1회 로드, 미리보기 낭비 없음
 
@@ -57,7 +57,7 @@ V17 은 `categorization_jobs`·`categorization_job_photos` DROP 인데 **AI repo
 - [ ] wes 에 물어볼 것: `photo_analysis.error` 값을 UI 에 그대로 보이는지(PREVIEW_MISSING · SCORE_FAILED 코드 유지 여부)
 
 ## 2. 결정 대기 (사용자)
-- 갤러리 8 GPU fp16 점수 원복 여부(스냅샷 `docs/gpu-benchmark-2026-09-07/cpu-g8.json`).
+- 갤러리 8 GPU fp16 점수 원복 여부(스냅샷 `docs/experiments/gpu-benchmark-2026-09-07-raw/cpu-g8.json`).
 - 벤치마크 IAM 역할 2개 삭제 시점(인프라 PR-0a 가 지운다고 함).
 - 다중 사용자 운영 시 유휴 정지 600s 로 올릴 시점(인스턴스 `WORKER_IDLE_STOP_SECONDS` 한 줄, AMI 재빌드 불필요).
 
@@ -77,7 +77,7 @@ cd score && .venv/bin/python scripts/sagemaker_benchmark.py run --gallery-id 8 -
 ../organic-agent-server/wes/scripts/db-tunnel.sh 15432
 # 점수 스냅샷·비교
 DB_HOST=localhost DB_PORT=15432 DB_NAME=wes_db DB_USER=photoselect DB_PASSWORD=… DB_SSLMODE=require \
-  .venv/bin/python scripts/snapshot_scores.py dump 8 now.json && .venv/bin/python scripts/snapshot_scores.py compare ../docs/gpu-benchmark-2026-09-07/cpu-g8.json now.json
+  .venv/bin/python scripts/snapshot_scores.py dump 8 now.json && .venv/bin/python scripts/snapshot_scores.py compare ../docs/experiments/gpu-benchmark-2026-09-07-raw/cpu-g8.json now.json
 # wes 배포 상태 (V16 이 올라가는지 감시)
 gh run list -R organic-agent/organic-agent-server -L 3 --workflow "[PROD] Build and Deploy"
 ```
