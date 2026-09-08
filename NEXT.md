@@ -1,4 +1,4 @@
-# NEXT — 파이프라인 v2, 다음 할 일 (2026-09-08 14:35 KST 기준)
+# NEXT — 파이프라인 v2, 다음 할 일 (2026-09-08 15:20 KST 기준)
 
 > 배경·결정·실측은 `docs/`(로컬): `pipeline-v2-dev-plan-2026-09-07.md`(전체) · `ai-pipeline-v2-plan-2026-09-07.md`(AI 몫) ·
 > `progress-2026-09-08.md`(진행) · `gpu-benchmark-summary-2026-09-07.md`(벤치마크) · `embedder-photoselect-architecture.md` §0.1(v2 실행 모양).
@@ -17,22 +17,17 @@
 
 ## 1. 순서
 
-### A. 세 repo 싱크 — AI repo 쪽은 끝났다(2026-09-08 15:00)
-V15·V16 이 같은 날 운영에 올라갔고 AI repo 는 따라잡았다: #84(embedder status) · #86(score error 계약) · #94(categorize 대상) · #95(categorize 잡 계약).
-남은 것은 **급하지 않은 정리**와 **다른 repo 대기**다.
+### A. 세 repo 싱크 — AI repo 몫 완료 (2026-09-08)
+계약 수정 #84 · #86 · #94 · #95, 그리고 **죽은 코드 정리 #98(score) · #100(embedder) · #102(categorize 문서)** 까지 머지·배포 완료.
+지운 것: score `jobs.py`·`chain.py`·`worker.py`·샤딩·조정자·잠금(약 250줄), embedder `quality.py`·관리자 품질 잡·샤딩·조정자·잠금·`EMBED_SET_STATUS`·`force`(약 200줄).
+남긴 것: 갤러리 CLI 경로(wes `local-ai.sh` 가 쓴다) · `--local` 데이터셋 모드(`compare_local.py`) · 관리자 DERIVATIVE·EMBEDDING · 벤치마크 진입점.
+테스트 embedder 47 · score 29 · categorize 27. CPU 경로 비트 동일 재확인.
 
-- [ ] `[score] chore`: 갤러리 샤딩·조정자·자기 재호출·categorize 체인·`jobs.py` 삭제. Lambda 는 `photoIds` 폴백만. `worker.py`(잡 폴링 로컬 워커) 삭제.
-  **지금 깨지지는 않는다** — wes V16 은 score 를 `{galleryId, photoIds}` 로만 부르고 그 경로는 잡을 건드리지 않는다. 죽은 코드 정리다
-- [ ] `[embedder] chore`: 갤러리 페이로드 경로·조정자·fan-out·advisory lock·`EMBED_SET_STATUS`·`quality.py`·관리자 품질 잡 삭제.
-  `complete_admin_quality` 는 V15 가 지운 컬럼에 쓴다 — wes 가 QUALITY_ANALYSIS 잡을 못 만들어 도달 불가지만 같이 지운다.
-  **추가 계약**(wes §7 E1, 지금 없어도 동작): 결정적 실패 → `photo_analysis.error`, 일시 실패 → `dispatched_at = NULL`.
-  없으면 wes 스위퍼가 10분 타임아웃으로 재배정하고 3회 뒤 `EMBED_ATTEMPTS_EXCEEDED` 를 직접 쓴다 — 느릴 뿐 멈추지 않는다.
-  완료 로그 `embedder gallery=G photos=N ok=K failed=F seconds=S`
-- [ ] **wes 와 합의 필요** — 로컬 GPU 워커 스크립트(`wes/scripts/gpu/score-worker.sh`, PR-C #169 미머지)가 `worker --gpu --once --no-idle-stop` 을 쓰며
-  주석에 "쌓인 것을 다 처리하면 끝난다"고 적었는데, 우리 `--once` 는 **배치 하나(32장)만** 처리하고 끝난다. 큐를 비우고 끝나는 `--drain` 을 새로 주거나
-  wes 가 재시작을 반복하는 것 중 하나로 정한다(로컬 전용, 운영 영향 없음)
-- [ ] `score/deploy/gpu-worker/README.md` 의 "wes W6 30분 유휴 강제 정지"를 wes PR-C 실제 값으로 정정(`idle-stop-after: PT2M`, `start-grace: PT5M`, `fallback-after: PT10M`)
+- [ ] **인프라에 회신할 것(결정 K)**: embedder 롤의 `ReinvokeSelf`, score 롤의 `lambda:InvokeFunction`(자기 + categorize) **둘 다 제거 가능**.
+  갤러리 fan-out·자기 재호출·체인이 코드에서 사라졌다. Lambda 인터페이스 VPC 엔드포인트는 categorize 의 Bedrock 때문에 남는다
 - [ ] `docs/embedder-photoselect-architecture.md` §2~§4 를 v2 기준으로 다시 쓰기(지금은 §0.1 만 v2)
+- [ ] **wes 와 합의**: 로컬 GPU 스크립트가 `worker --gpu --once` 로 큐 전체를 비운다고 가정하나 우리 `--once` 는 배치 하나다.
+  큐를 비우고 끝나는 `--drain` 을 주거나 wes 가 재시작을 반복하는 것 중 하나로(로컬 전용, 운영 영향 없음)
 
 ### A2. 다른 repo 상태 (2026-09-08 14:35 확인)
 
