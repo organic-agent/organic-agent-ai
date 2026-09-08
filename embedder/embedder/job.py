@@ -303,7 +303,7 @@ def run(
                         connection,
                         zip(loaded_refs, vectors, loaded_keys, loaded_metadata),
                         model_id=settings.model_id,
-                        set_status=getattr(settings, "set_status", "EMBEDDED"),
+                        set_status=getattr(settings, "set_status", None),
                     )
 
                     # ④ 배치 단위로 커밋한다. 중간에 죽어도 그때까지의 벡터·미리보기는 남고,

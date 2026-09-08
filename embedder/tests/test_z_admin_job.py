@@ -85,7 +85,7 @@ def _connect(settings):
 db_module.connect = _connect
 db_module.verify_admin_photo_event = lambda connection, event: True
 db_module.complete_admin_derivative = lambda connection, event, preview, meta: _completed.append("DERIVATIVE")
-db_module.complete_admin_embedding = lambda connection, event, vector, model_id: _completed.append("EMBEDDING")
+db_module.complete_admin_embedding = lambda connection, event, vector, model_id, set_status=None: _completed.append("EMBEDDING")
 db_module.complete_admin_quality = lambda connection, event, result: _completed.append("QUALITY_ANALYSIS")
 db_module.fail_admin_photo_job = lambda connection, event, code: (_failed.append(code) or 1)
 

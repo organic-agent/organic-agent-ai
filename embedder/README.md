@@ -270,4 +270,4 @@ python -m embedder --gallery-id 1
 | `STOP_MARGIN_SECONDS` | `60` | 타임아웃 앞에서 멈출 여유. 남은 시간 < (가장 긴 배치 + 이 값)이면 배치 경계에서 멈추고 자기 재호출 |
 | `SHARD_PHOTOS` | `150` | 샤드 하나가 맡는 사진 수(#56 · #59 — 짧은 샤드가 느린 호스트 편차를 줄인다). 조정자가 대상 / 이 값 만큼 샤드를 띄운다. `0` 이면 샤딩 없음 |
 | `MAX_SHARDS` | `32` | 샤드 수 상한(#63). Lambda 예약 동시성이 이 값 이상이어야 하고, 상한은 RDS 커넥션(샤드당 1개)이 정한다 |
-| `EMBED_SET_STATUS` | `EMBEDDED` | 적재 시 `photos.status` 에 찍을 값(#73). 파이프라인 v2 에서 wes 가 EMBEDDED 를 없애면 빈 값으로 — status 를 건드리지 않는다 |
+| `EMBED_SET_STATUS` | (빈 값) | 적재 시 `photos.status` 에 찍을 값(#73·#83). 기본은 안 씀 — wes V15(2026-09-08) 부터 status 는 PENDING·UPLOADED 둘뿐이고 임베딩 여부는 `photo_analysis.embedding` 이 말한다. V15 전 wes 에 붙일 때만 `EMBEDDED` |

@@ -160,7 +160,7 @@ def store_embeddings(
     connection: psycopg.Connection,
     results: Iterable[tuple[PhotoRef, np.ndarray, str, PhotoMetadata | None]],
     model_id: str,
-    set_status: str | None = "EMBEDDED",
+    set_status: str | None = None,
 ) -> int:
     """계산된 벡터와 파생본 위치, 촬영 정보를 배치로 적재한다.
 
@@ -175,7 +175,9 @@ def store_embeddings(
     AI 분석 배치가 태그·점수를 채워 둔 행일 수도 있다 -- 그 컬럼은 건드리지 않고 벡터 둘만
     갈아 끼운다. 분석 배치는 model_version으로 재분석 대상을 판별하므로 여기서 지울 것이 없다.
 
-    **status = 'EMBEDDED'는 벡터와 미리보기가 둘 다 있는 행에만 찍힌다.** 벡터는 S3에 올라간
+    **status 는 기본으로 건드리지 않는다(#83).** wes V15 부터 `photos.status` 는 "S3 에 있나"(PENDING·UPLOADED)만 답하고
+    임베딩 여부는 `photo_analysis.embedding` 이 말한다 — embedder 역할에 status UPDATE 권한도 없다. 옛 계약(EMBEDDED)이
+    필요하면 set_status 로 켠다; 그때도 벡터와 미리보기가 둘 다 있는 행에만 찍힌다. 벡터는 S3에 올라간
     미리보기 JPEG에서 계산하므로(job.py) 여기 도착한 사진은 반드시 preview_key를 갖는다.
     그래서 preview_key는 COALESCE 없이 덮어쓴다 -- 이번 실행이 올린 파일이 곧 벡터의 원본이라
     이전 실행의 키를 지킬 이유가 없다.
@@ -218,12 +220,7 @@ def store_embeddings(
             """,
             analysis_rows,
         )
-        # v2(#73): wes 가 EMBEDDED 를 없애면 set_status=None 으로 status 를 건드리지 않는다. 값은 파라미터가 아니라
-        # 상수로 넣는다 — psycopg 가 status 를 문자열로 바인딩하면 wes 의 CHECK 제약과 무관하게 동작하지만, 문장 자체를
-        # 갈라 두는 편이 "무엇을 쓰는지"가 SQL 에 그대로 보인다.
-        if set_status is not None and not re.fullmatch(r"[A-Z_]{1,32}", set_status):
-            raise ValueError(f"EMBED_SET_STATUS 값이 이상하다: {set_status!r}")
-        status_clause = f"status = '{set_status}'," if set_status else ""
+        status_clause = _status_clause(set_status)
         cursor.executemany(
             f"""
             UPDATE photos
@@ -349,21 +346,31 @@ def complete_admin_derivative(
     )
 
 
+def _status_clause(set_status: str | None) -> str:
+    """`status = 'X',` 또는 빈 문자열(#73·#83). 값은 파라미터가 아니라 상수로 넣는다 — psycopg 가 status 를 문자열로
+    바인딩해도 동작하지만, 문장 자체를 갈라 두는 편이 "무엇을 쓰는지"가 SQL 에 그대로 보인다. 그래서 값을 검사한다."""
+    if set_status is not None and not re.fullmatch(r"[A-Z_]{1,32}", set_status):
+        raise ValueError(f"EMBED_SET_STATUS 값이 이상하다: {set_status!r}")
+    return f"status = '{set_status}'," if set_status else ""
+
+
 def complete_admin_embedding(
     connection: psycopg.Connection,
     event: "AdminPhotoEvent",
     vector: np.ndarray,
     model_id: str,
+    set_status: str | None = None,
 ) -> None:
     # 벡터는 photo_analysis에 산다(V45). CTE 한 문장인 이유 -- _complete_admin_photo_job이
     # rowcount 1로 CAS 성공을 판정하므로, 사진 CAS가 빗나가면 벡터 upsert도 0행이어야 한다.
+    # status 는 store_embeddings 와 같은 규칙(#83): 기본은 안 쓰고(version 만 올려 CAS), set_status 가 있을 때만 찍는다.
     _complete_admin_photo_job(
         connection,
         event,
-        """
+        f"""
         WITH target AS (
             UPDATE photos p
-            SET status = 'EMBEDDED', version = version + 1, updated_at = now()
+            SET {_status_clause(set_status)} version = version + 1, updated_at = now()
             WHERE p.id = %s AND p.gallery_id = %s AND p.storage_key = %s AND p.deleted_at IS NULL
               AND EXISTS (
                   SELECT 1 FROM admin_photo_revisions r

@@ -177,7 +177,7 @@ class StoreEmbeddingsTest(unittest.TestCase):
         self.assertEqual([(1, "VECTOR", "facebook/dinov3-vitb16-pretrain-lvd1689m")], analysis_rows)
         self.assertIn("UPDATE photos", photos_sql)
         self.assertNotIn("embedding", photos_sql)
-        self.assertIn("status = 'EMBEDDED'", photos_sql)
+        self.assertNotIn("status", photos_sql)                     # V15 계약(#83): 기본은 status 를 안 쓴다
         self.assertEqual(1, photo_rows[0][-2])
         self.assertEqual("galleries/7/a.jpg", photo_rows[0][-1])
 
@@ -317,24 +317,41 @@ class FetchByIdsTest(unittest.TestCase):
 
 
 class StoreEmbeddingsStatusSwitchTest(unittest.TestCase):
-    """v2(#73): set_status=None 이면 photos.status 를 건드리지 않는다. 값은 대문자·밑줄만."""
+    """v2(#73·#83): 기본(set_status=None)은 photos.status 를 건드리지 않는다 — wes V15 부터 embedder 역할에 status UPDATE
+    권한이 없다. 옛 계약은 set_status='EMBEDDED' 로만 켜진다. 값은 대문자·밑줄만."""
 
     def _ref(self):
         return db.PhotoRef(photo_id=1, storage_key="galleries/7/a.jpg")
 
-    def test_default_writes_embedded(self) -> None:
+    def test_default_leaves_status_alone(self) -> None:
         connection = _Connection(rows=[])
         db.store_embeddings(connection, [(self._ref(), "VECTOR", "previews/galleries/7/a.jpg", None)], model_id="m")
         photos_sql, _ = connection.executed[1]
-        self.assertIn("status = 'EMBEDDED'", photos_sql)
-
-    def test_none_leaves_status_alone(self) -> None:
-        connection = _Connection(rows=[])
-        db.store_embeddings(connection, [(self._ref(), "VECTOR", "previews/galleries/7/a.jpg", None)], model_id="m",
-                            set_status=None)
-        photos_sql, _ = connection.executed[1]
         self.assertNotIn("status", photos_sql)
         self.assertIn("preview_key = %s", photos_sql)
+
+    def test_legacy_value_writes_embedded(self) -> None:
+        connection = _Connection(rows=[])
+        db.store_embeddings(connection, [(self._ref(), "VECTOR", "previews/galleries/7/a.jpg", None)], model_id="m",
+                            set_status="EMBEDDED")
+        photos_sql, _ = connection.executed[1]
+        self.assertIn("status = 'EMBEDDED'", photos_sql)
+
+    def test_admin_embedding_follows_same_rule(self) -> None:
+        """관리자 사진 교체의 EMBEDDING 잡(#83): CAS 문장도 기본은 status 없이 version 만 올린다."""
+        event = types.SimpleNamespace(job_id=1, attempt_count=1, job_type="EMBEDDING", photo_id=1, revision_id=1,
+                                      gallery_id=7, storage_key="galleries/7/a.jpg")
+        connection = _Connection(rows=[], rowcounts=[1, 1])
+        db.complete_admin_embedding(connection, event, "VECTOR", "m")
+        photo_sql, _ = connection.executed[0]
+        self.assertIn("UPDATE photos p", photo_sql)
+        self.assertNotIn("status", photo_sql)
+        self.assertIn("SET version = version + 1", photo_sql)
+
+        connection = _Connection(rows=[], rowcounts=[1, 1])
+        db.complete_admin_embedding(connection, event, "VECTOR", "m", set_status="EMBEDDED")
+        photo_sql, _ = connection.executed[0]
+        self.assertIn("SET status = 'EMBEDDED', version = version + 1", photo_sql)
 
     def test_rejects_odd_status_value(self) -> None:
         connection = _Connection(rows=[])
