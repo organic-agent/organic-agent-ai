@@ -48,7 +48,7 @@ categorize/
 ├── categorize/
 │   ├── handler.py      Lambda: {galleryId, jobId} → job.run (Bedrock 클라이언트 주입)
 │   ├── __main__.py     CLI: --gallery-id N --job-id J | --gallery-id N [--llm] | --local "갤러리" [--llm]
-│   ├── job.py          잡: RUNNING → EMBEDDED 사진 목록(다운로드 없음) → pipeline → DONE/FAILED
+│   ├── job.py          잡: RUNNING → 미리보기 있는 사진 목록(다운로드 없음) → pipeline → DONE/FAILED
 │   ├── pipeline.py     백분위 · 연사 · 임베딩 그룹 → write_groups → naming
 │   ├── naming.py       Bedrock 이름 · 소그룹 최근접 · clip_parent 다수결(majority) → write_assignments
 │   ├── cluster.py      연사 union-find (카메라 파티션 ∧ 순서 창 ∧ 코사인)
