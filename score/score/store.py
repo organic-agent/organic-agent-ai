@@ -159,7 +159,8 @@ class DbStore:
         잠금이 트랜잭션에 묶여 있어 워커가 죽어도 행은 자동으로 "미처리"로 돌아간다. 다른 워커가 잠근 행은 기다리지 않고
         건너뛰므로 여러 대가 같은 사진을 집을 수 없다. 갤러리는 가리지 않는다(여러 대가 한 갤러리를 나눠 먹어도 된다).
         photos 가 아니라 photo_analysis 를 잠그는 이유: photoselect 유저에게 photos UPDATE 권한이 없다.
-        `exclude` 는 이 프로세스에서 계속 실패하는 사진(독성)을 빼는 용도."""
+        `exclude` 는 이 프로세스에서 계속 실패하는 사진(독성)을 빼는 용도. `a.error IS NULL`(#85, wes V15): 실패 표시된 사진은
+        집지 않는다 — wes 의 부분 인덱스 `idx_photo_analysis_unscored` 가 같은 조건이라 이 절이 있어야 인덱스를 탄다."""
         from score.gallery import PhotoRef
 
         with self.conn.cursor() as cur:
@@ -169,7 +170,7 @@ class DbStore:
                 FROM photo_analysis a
                 JOIN photos p ON p.id = a.photo_id
                 JOIN galleries g ON g.id = p.gallery_id
-                WHERE a.embedding IS NOT NULL AND a.clip_embedding IS NULL
+                WHERE a.embedding IS NOT NULL AND a.clip_embedding IS NULL AND a.error IS NULL
                   AND p.preview_key IS NOT NULL AND p.deleted_at IS NULL AND g.deleted_at IS NULL
                   AND NOT (p.id = ANY(%s))
                 ORDER BY p.gallery_id, p.id
@@ -187,6 +188,28 @@ class DbStore:
 
     def rollback(self) -> None:
         self.conn.rollback()
+
+    def commit(self) -> None:
+        self.conn.commit()
+
+    def write_errors(self, photo_ids: list[str], error: str) -> None:
+        """사진 단위 결정적 실패 표시(#85, wes V15 `photo_analysis.error`) — 미리보기 없음·디코드 실패. wes 는 이 행을
+        기대 장수에서 빼고, 집기는 다시 안 집는다. 행이 없을 수도 있어(폴백 Lambda 가 임베딩 전 사진을 받은 경우) UPSERT.
+        commit 은 호출자가 — 워커는 배치 트랜잭션에 묶는다."""
+        ids = [int(pid) for pid in photo_ids if str(pid).isdigit()]
+        if not ids:
+            return
+        with self.conn.cursor() as cur:
+            cur.executemany(
+                """
+                INSERT INTO photo_analysis (photo_id, error, created_at, updated_at)
+                VALUES (%s, %s, now(), now())
+                ON CONFLICT (photo_id) DO UPDATE SET
+                    error = EXCLUDED.error, updated_at = now(), version = photo_analysis.version + 1
+                """,
+                [(pid, error[:80]) for pid in ids],
+            )
+        log.warning("photo_analysis.error=%s: %d장 %s", error, len(ids), ids[:10])
 
     def write_scores(self, gallery: str, rows: list[PhotoAnalysis],
                      clip_embeddings: tuple[list[str], np.ndarray]) -> None:

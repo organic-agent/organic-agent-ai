@@ -8,8 +8,10 @@
 갤러리를 배정받지 않는다 — 임베딩이 끝난 사진이면 누구 것이든 집는다. 그래서 인스턴스 2대가 한 갤러리를 나눠 먹어도,
 한 대가 두 갤러리를 섞어 먹어도 된다. 켜는 것·폴백 결정은 wes 의 몫이고, 워커는 켜지면 일하고 없으면 끈다.
 
-실패 처리: 배치 처리 중 예외 → rollback(잠금 반환) → 다음 루프. 한 장이 계속 실패하면(pipeline 의 failed) 이 프로세스에서는
-더 집지 않는다(독성 목록) — 워커가 재시작하면 다시 시도한다. 잡 테이블은 건드리지 않는다(완료는 wes 가 데이터로 관측).
+실패 처리: 배치 처리 중 예외 → rollback(잠금 반환) → 다음 루프. 사진 단위 결정적 실패 — 미리보기가 S3 에 없음(404)·
+디코드 실패(pipeline 의 failed) — 는 `photo_analysis.error` 에 쓴다(#85, wes V15): 집기가 `error IS NULL` 이라 다시 안 집고,
+wes 는 그 장을 기대 장수에서 뺀다. 독성 목록은 그 위의 이중 안전장치(같은 프로세스에서 error 쓰기 자체가 실패한 경우).
+잡 테이블은 건드리지 않는다(완료는 wes 가 데이터로 관측).
 """
 
 from __future__ import annotations
@@ -28,6 +30,9 @@ from score.store import DbStore
 log = logging.getLogger(__name__)
 
 IMDS = "http://169.254.169.254/latest"
+#: `photo_analysis.error` 값(#85). wes 는 값을 해석하지 않고 "실패했다"로만 본다 — 짧은 코드로 둔다.
+PREVIEW_MISSING = "PREVIEW_MISSING"
+SCORE_FAILED = "SCORE_FAILED"
 
 
 def instance_id() -> str | None:
@@ -70,17 +75,23 @@ class _Lane:
         self.store = DbStore(settings, self.connection)
         self.work_dir = settings.work_dir / f"worker-{index}"
         self.refs: list = []
+        #: 이번 집기에서 미리보기가 S3 에 없던 사진(#85). 잠근 트랜잭션 안에서 error 를 쓰고 배치와 함께 commit 한다.
+        self.missing: list[str] = []
 
     def claim_and_download(self, settings: Settings, storage, poison: list[int]) -> list:
         """잠그고 내려받는다. 예외는 호출자가 rollback 한다."""
+        self.missing = []
         refs = self.store.claim_batch(settings.worker_batch, exclude=poison)
         if refs:
-            refs = download_previews(storage, refs, self.work_dir, workers=settings.download_workers)
+            refs = download_previews(storage, refs, self.work_dir, workers=settings.download_workers, missing=self.missing)
+            if self.missing:
+                self.store.write_errors(self.missing, PREVIEW_MISSING)
         self.refs = refs
         return refs
 
     def rollback(self) -> None:
         self.refs = []
+        self.missing = []
         try:
             self.store.rollback()
         except Exception:  # noqa: BLE001
@@ -146,6 +157,12 @@ def loop(settings: Settings, *, once: bool = False, stop_on_idle: bool = True, m
             pending = None
 
             if not refs:
+                if current.missing:                 # 집은 게 전부 미리보기 없음 — error 만 commit 하고 유휴로 세지 않는다
+                    summary["failed"] += len(current.missing)
+                    current.missing = []
+                    current.store.commit()
+                    current, other = other, current
+                    continue
                 current.rollback()                  # 빈 SELECT 도 트랜잭션을 열었다 — 닫아야 다음 집기가 새 스냅샷을 본다
                 now = time.monotonic()
                 idle_since = idle_since or now
@@ -182,11 +199,28 @@ def loop(settings: Settings, *, once: bool = False, stop_on_idle: bool = True, m
             consecutive_failures = 0
             failed = [int(pid) for pid in result.get("failed", []) if str(pid).isdigit()]
             poison.extend(failed)
+            # 결정적 실패를 남긴다(#85). write_scores 가 이미 commit 했으니(잠금 해제) 여기서 다시 commit — 실패한 장은 잠금이
+            # 풀린 짧은 틈에 다른 워커가 집을 수 있지만, 그쪽도 같은 실패 → 같은 error 를 쓴다. 이 쓰기가 실패하면 독성 목록이 막는다.
+            errors = len(current.missing) + len(failed)
+            if failed:
+                try:
+                    current.store.write_errors([str(pid) for pid in failed], SCORE_FAILED)
+                except Exception as exc:  # noqa: BLE001
+                    log.warning("[worker] error 기록 실패 (%s) — 독성 목록으로만 막는다", exc)
+            try:
+                current.store.commit()
+            except Exception as exc:  # noqa: BLE001
+                log.warning("[worker] commit 실패 (%s)", exc)
+            current.missing = []
             summary["batches"] += 1
             summary["processed"] += result.get("processed", 0)
-            summary["failed"] += len(failed)
-            log.info("[worker] 배치 %d장 %.1fs (장당 %.3fs) 실패 %d 누적 %d장", len(refs), time.monotonic() - t0,
-                     (time.monotonic() - t0) / max(1, len(refs)), len(failed), summary["processed"])
+            summary["failed"] += errors
+            took = time.monotonic() - t0
+            log.info("[worker] 배치 %d장 %.1fs (장당 %.3fs) 실패 %d 누적 %d장", len(refs), took, took / max(1, len(refs)),
+                     errors, summary["processed"])
+            # wes 와 합의한 한 줄(pipeline-v2-wes.md §3.7) — CloudWatch Logs Insights 가 key=value 로 표를 만든다.
+            log.info("score worker batch=%d photos=%d failed=%d seconds=%.1f", settings.worker_batch,
+                     result.get("processed", 0), errors, took)
             current, other = other, current
             if once or (max_batches is not None and summary["batches"] >= max_batches):
                 if pending is not None:             # 미리 잠근 배치는 돌려준다

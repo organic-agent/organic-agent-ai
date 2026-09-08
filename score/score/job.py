@@ -86,12 +86,24 @@ def _run_photo_ids(gallery_id: int, photo_ids: list[int], settings: Settings,
     try:
         storage = PreviewStorage(settings.s3_bucket)
         refs = load_by_ids(connection, photo_ids)
-        refs = download_previews(storage, refs, settings.work_dir / str(gallery_id), workers=settings.download_workers)
+        missing: list[str] = []
+        refs = download_previews(storage, refs, settings.work_dir / str(gallery_id), workers=settings.download_workers,
+                                 missing=missing)
         store = DbStore(settings, connection)
         result = pipeline.run(store, str(gallery_id), refs, settings, force=True, remaining_seconds=remaining_seconds)
+        # 결정적 실패는 워커와 같은 표시(#85) — wes 가 그 장을 기대 장수에서 뺀다.
+        failed = [str(pid) for pid in result.get("failed", [])]
+        if missing:
+            store.write_errors(missing, "PREVIEW_MISSING")
+        if failed:
+            store.write_errors(failed, "SCORE_FAILED")
+        store.commit()
+        result["failed"] = failed + missing
         result["photoIds"] = len(photo_ids)
         result["elapsedSeconds"] = round(time.monotonic() - started, 1)
         log.info("갤러리 %s 사진 %d장: 완료 %s", gallery_id, len(photo_ids), result)
+        log.info("score lambda gallery=%s photos=%d failed=%d seconds=%.1f", gallery_id, result.get("processed", 0),
+                 len(result["failed"]), result["elapsedSeconds"])
         return result
     finally:
         connection.close()

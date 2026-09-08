@@ -628,6 +628,12 @@ def fake_worker(monkeypatch, tmp_path):
         def rollback(self):
             state["rollbacks"] += 1
 
+        def commit(self):
+            state["commits"] = state.get("commits", 0) + 1
+
+        def write_errors(self, ids, error):
+            state.setdefault("errors", []).append((list(ids), error))
+
     def run(store, gallery, refs, settings, force=False, scorer=None, **kw):
         state["runs"].append([r.photo_id for r in refs])
         if any(r.photo_id == "boom" for r in refs):
@@ -638,7 +644,7 @@ def fake_worker(monkeypatch, tmp_path):
     monkeypatch.setattr(gpu_worker.db, "connect", lambda s: _Conn())
     monkeypatch.setattr(gpu_worker, "DbStore", Store)
     monkeypatch.setattr(gpu_worker, "PreviewStorage", lambda bucket: None)
-    monkeypatch.setattr(gpu_worker, "download_previews", lambda storage, refs, d, workers=8: refs)
+    monkeypatch.setattr(gpu_worker, "download_previews", lambda storage, refs, d, workers=8, missing=None: refs)
     monkeypatch.setattr(gpu_worker.pipeline, "Scorer", lambda settings: SimpleNamespace(warm_up=lambda: 0.0))
     monkeypatch.setattr(gpu_worker.pipeline, "run", run)
     monkeypatch.setattr(gpu_worker, "stop_self", lambda: state.__setitem__("stopped", state["stopped"] + 1) or True)
@@ -676,6 +682,81 @@ def test_gpu_worker_rolls_back_failed_batch_and_excludes_poison_photos(fake_work
     assert w["runs"][0] == ["boom", "2"] and w["rollbacks"] >= 1   # 예외 → rollback, 루프는 계속
     assert summary["batches"] == 2 and summary["processed"] == 2 and summary["failed"] == 1
     assert w["excludes"][-1] == [7]                                # 실패한 장은 다음 집기에서 뺀다
+    assert w["errors"] == [(["7"], "SCORE_FAILED")]                # 그리고 photo_analysis.error 로 남긴다(#85)
+    assert w["commits"] >= 1
+
+
+def test_claim_batch_skips_rows_marked_with_error():
+    """wes V15(#85): error 가 찍힌 행은 집지 않는다 — 부분 인덱스 idx_photo_analysis_unscored 와 같은 조건."""
+    from score.store import DbStore
+
+    conn = _Conn(rows=[])
+    DbStore(SimpleNamespace(), conn).claim_batch(32)
+    sql, _ = conn.executed[0]
+    assert "a.clip_embedding IS NULL AND a.error IS NULL" in sql
+
+
+def test_write_errors_upserts_error_and_leaves_commit_to_caller():
+    from score.store import DbStore
+
+    conn = _Conn()
+    store = DbStore(SimpleNamespace(), conn)
+    store.write_errors(["11", "12", "x"], "PREVIEW_MISSING")
+    sql, params = conn.executed[0]
+    assert "INSERT INTO photo_analysis (photo_id, error" in sql and "ON CONFLICT (photo_id) DO UPDATE" in sql
+    assert params == [(11, "PREVIEW_MISSING"), (12, "PREVIEW_MISSING")] and conn.commits == 0
+    store.commit()
+    assert conn.commits == 1
+    store.write_errors([], "SCORE_FAILED")                          # 빈 목록은 SQL 을 내지 않는다
+    assert len(conn.executed) == 1
+
+
+def _client_error(code):
+    from botocore.exceptions import ClientError
+
+    return ClientError({"Error": {"Code": code, "Message": code}}, "HeadObject")
+
+
+def test_download_previews_drops_missing_keys_but_raises_other_errors(tmp_path):
+    from score.gallery import download_previews
+
+    class Storage:
+        def download(self, key, dest):
+            if key.endswith("/2.jpg"):
+                raise _client_error("404")
+            if key.endswith("/3.jpg"):
+                raise _client_error("Throttling")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"jpg")
+            return dest
+
+    missing = []
+    got = download_previews(Storage(), _refs(1, 2), tmp_path, workers=1, missing=missing)
+    assert [r.photo_id for r in got] == ["1"] and missing == ["2"]           # 404 는 그 장만 빠진다
+    with pytest.raises(Exception):
+        download_previews(Storage(), _refs(3), tmp_path, workers=2, missing=[])  # 그 외는 예외(일시 오류일 수 있다)
+    with pytest.raises(Exception):
+        download_previews(Storage(), _refs(2), tmp_path, workers=1)            # missing 없이 부르면 옛 동작
+
+
+def test_gpu_worker_marks_missing_previews_and_keeps_going(fake_worker, monkeypatch):
+    """미리보기가 S3 에 없는 장(#85): 배치를 죽이지 않고 error 를 쓰며, 집은 게 전부 없어도 유휴로 세지 않는다."""
+    w = fake_worker
+
+    def download(storage, refs, d, workers=8, missing=None):
+        kept = []
+        for r in refs:
+            (missing.append(r.photo_id) if r.photo_id in ("2", "9") else kept.append(r))
+        return kept
+
+    monkeypatch.setattr(w["module"], "download_previews", download)
+    w["queue"] = [_refs(1, 2), _refs(9), _refs(3)]
+
+    summary = w["module"].loop(w["settings"], stop_on_idle=False, max_batches=2)
+
+    assert w["runs"] == [["1"], ["3"]]
+    assert sorted(w["errors"]) == [(["2"], "PREVIEW_MISSING"), (["9"], "PREVIEW_MISSING")]
+    assert summary["processed"] == 2 and summary["failed"] == 2 and summary["batches"] == 2
 
 
 def test_gpu_worker_once_returns_after_one_batch(fake_worker):
@@ -709,7 +790,7 @@ def test_job_photo_ids_path_downloads_scores_and_skips_lock_and_jobs(monkeypatch
     monkeypatch.setattr(job.jobs, "start", lambda *a, **k: (_ for _ in ()).throw(AssertionError("잡 없음")))
     monkeypatch.setattr(job, "PreviewStorage", lambda bucket: None)
     monkeypatch.setattr(gallery_mod, "load_by_ids", lambda c, ids: _refs(*ids))
-    monkeypatch.setattr(job, "download_previews", lambda storage, refs, d, workers=8: refs)
+    monkeypatch.setattr(job, "download_previews", lambda storage, refs, d, workers=8, missing=None: refs)
     seen = {}
     monkeypatch.setattr(job.pipeline, "run", lambda store, g, refs, settings, force=False, **kw: seen.update(
         force=force, ids=[r.photo_id for r in refs]) or {"processed": len(refs)})
@@ -719,6 +800,31 @@ def test_job_photo_ids_path_downloads_scores_and_skips_lock_and_jobs(monkeypatch
 
     assert seen == {"force": True, "ids": ["3", "1"]}
     assert result["processed"] == 2 and result["photoIds"] == 2
+    assert conn.commits == 1 and result["failed"] == []
+
+
+def test_job_photo_ids_path_writes_errors_for_missing_and_failed(monkeypatch, tmp_path):
+    """Lambda 폴백도 워커와 같은 표시(#85): 404 는 PREVIEW_MISSING, 점수 실패는 SCORE_FAILED."""
+    from score import gallery as gallery_mod
+
+    conn = _Conn()
+    monkeypatch.setattr(job.db, "connect", lambda s: conn)
+    monkeypatch.setattr(job, "PreviewStorage", lambda bucket: None)
+    monkeypatch.setattr(gallery_mod, "load_by_ids", lambda c, ids: _refs(*ids))
+
+    def download(storage, refs, d, workers=8, missing=None):
+        missing.append("5")
+        return [r for r in refs if r.photo_id != "5"]
+
+    monkeypatch.setattr(job, "download_previews", download)
+    monkeypatch.setattr(job.pipeline, "run", lambda store, g, refs, settings, force=False, **kw: {"processed": 1, "failed": ["4"]})
+
+    result = job.run(gallery_id=7, settings=Settings(out_root=tmp_path, dataset_root=tmp_path, s3_bucket="b",
+                                                     db_host="h", db_name="d", db_user="u"), photo_ids=[3, 4, 5])
+
+    written = [(params, sql) for sql, params in conn.executed if "error" in sql]
+    assert [p for p, _ in written] == [[(5, "PREVIEW_MISSING")], [(4, "SCORE_FAILED")]]
+    assert sorted(result["failed"]) == ["4", "5"] and conn.commits == 1
 
 
 def test_gpu_worker_runs_real_pipeline_with_label_gallery(fake_runners, tmp_path, monkeypatch):
@@ -758,7 +864,7 @@ def test_gpu_worker_runs_real_pipeline_with_label_gallery(fake_runners, tmp_path
     monkeypatch.setattr(gpu_worker.db, "connect", lambda s: _Conn())
     monkeypatch.setattr(gpu_worker, "DbStore", Store)
     monkeypatch.setattr(gpu_worker, "PreviewStorage", lambda bucket: None)
-    monkeypatch.setattr(gpu_worker, "download_previews", lambda storage, refs, d, workers=8: refs)
+    monkeypatch.setattr(gpu_worker, "download_previews", lambda storage, refs, d, workers=8, missing=None: refs)
     monkeypatch.setattr(gpu_worker, "stop_self", lambda: True)
     monkeypatch.setattr(gpu_worker.time, "sleep", lambda s: None)
     settings = Settings(out_root=tmp_path, dataset_root=tmp_path, s3_bucket="b", work_dir=tmp_path / "w",
