@@ -83,9 +83,9 @@ class Settings:
     db_port: int = 5432
     db_name: str | None = None
     db_user: str | None = None
+    #: Lambda 는 인프라 env, GPU 워커는 호스트 env 스크립트가 SSM 에서 읽어 --env-file 로 넘긴다(#91, score/deploy/gpu-worker/).
+    #: 컨테이너가 SSM 을 직접 읽는 경로는 없다 — 비밀을 읽는 주체를 호스트 한 곳으로.
     db_password: str | None = None
-    #: DB_PASSWORD 가 없을 때 SSM SecureString 이름(#75). GPU 워커 인스턴스는 역할로 이걸 읽는다.
-    db_password_ssm_param: str | None = None
     #: RDS 는 평문 접속을 거부하므로 기본 require. 로컬 docker pg 는 DB_SSLMODE=disable.
     db_sslmode: str = "require"
     db_sslrootcert: str | None = None
@@ -148,7 +148,6 @@ class Settings:
             db_name=os.environ.get("DB_NAME"),
             db_user=os.environ.get("DB_USER"),
             db_password=os.environ.get("DB_PASSWORD"),
-            db_password_ssm_param=os.environ.get("DB_PASSWORD_SSM_PARAM") or None,
             db_sslmode=os.environ.get("DB_SSLMODE", "require"),
             db_sslrootcert=os.environ.get("DB_SSLROOTCERT"),
             s3_bucket=os.environ.get("S3_BUCKET"),
