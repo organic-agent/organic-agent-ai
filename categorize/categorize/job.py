@@ -1,6 +1,6 @@
 """갤러리 잡 — Lambda handler 와 로컬 CLI 가 같은 `run()` 을 부른다.
 
-    (잡이면 RUNNING) → EMBEDDED 사진 목록(다운로드 없음) → pipeline.run(그룹 → naming) → 잡 DONE / FAILED
+    (잡이면 RUNNING) → 미리보기 있는 사진 목록(다운로드 없음) → pipeline.run(그룹 → naming) → 잡 DONE / FAILED
 
 체인의 끝이다: FULL 잡은 score 가 열어 둔 RUNNING 잡을 이어받고, NAMING 잡은 여기서 연다. 잡(job_id)은
 naming(Bedrock)까지가 산출물이라 llm 없이는 시작하지 않는다 — 잡 없는 CLI 실행만 그룹화만으로 끝낼 수 있다.
@@ -36,7 +36,7 @@ def run(gallery_id: int, settings: Settings | None = None, job_id: int | None = 
         try:
             refs = load_db(connection, None, gallery_id, settings.work_dir, limit=limit, download=False)
             if not refs:
-                raise RuntimeError(f"갤러리 {gallery_id} 에 EMBEDDED 사진이 없다 — embedder·score 가 먼저다")
+                raise RuntimeError(f"갤러리 {gallery_id} 에 미리보기 있는 사진이 없다 — embedder 가 먼저다")
             store = DbStore(settings, connection)
             result = pipeline.run(store, str(gallery_id), refs, settings, llm, job_id=job_id)
         except BaseException as exc:  # noqa: BLE001 — SystemExit 포함, 잡에 실패를 남긴다

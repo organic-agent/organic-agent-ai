@@ -3,7 +3,7 @@
 로컬 모드: 데이터셋 폴더. 갤러리 이름 = 스파이크 매니페스트의 group과 같은 규칙
 (`dataset1/류지혜고객님 (2)` 처럼 상위 2단계 경로). 사진 id = 루트 기준 상대 경로.
 
-DB 모드: `load_db` — `photos` 중 임베딩이 끝난(EMBEDDED) 사진의 preview_key를 S3에서 내려받는다.
+DB 모드: `load_db` — `photos` 중 미리보기가 있는(임베더가 지난) 사진의 preview_key를 S3에서 내려받는다.
 원본이 아니라 미리보기(EXIF 회전·리사이즈 JPEG)다: HEIC 디코드를 피하고 용량이 1/10이며,
 점수·태그는 긴 변 1024면 충분하다. 이 모듈의 `PhotoRef`만 같으면 나머지 코드는 안 바뀐다.
 """
@@ -69,8 +69,10 @@ def load_db(conn, storage, gallery_id: int, work_dir: Path, limit: int | None = 
     """DB 모드의 사진 목록. 기본 순서는 wes 화면 순서(display_order, id)이고, 연사 클러스터링은
     taken_at·camera로 파티션·재정렬한다(cluster.partition_order — 멀티 카메라 대응).
 
-    EMBEDDED만 고른다: 임베더가 아직 안 지난 사진은 preview_key가 없고, DINOv3 벡터도 없어
-    클러스터에 넣을 수 없다. 그런 사진은 다음 분석 잡에서 잡힌다.
+    미리보기(preview_key)가 있는 사진만 고른다 — 임베더가 지난 사진이다(#93). 옛 계약에서는 `status='EMBEDDED'` 를 봤지만
+    wes V15(2026-09-08)가 그 값을 없앴다(status 는 "S3 에 있나"만 답한다) — 조건을 그대로 두면 대상이 0장이 된다.
+    EMBEDDED ⇔ preview_key 있음이었으므로 결과는 같다. score 의 `gallery.load_db` 도 #75 에서 같은 규칙으로 바뀌었다.
+    점수·벡터가 아직 없는 사진이 섞여도 `pipeline.run` 이 걸러 낸다(경고 로그 + 제외).
 
     download=False 면 미리보기를 내려받지 않는다(path 는 None, storage 도 None 가능) — categorize 는 벡터와
     taken_at·camera만 쓰고, 대표 사진은 store.preview_path 가 필요할 때 지연 다운로드한다(#26).
@@ -78,7 +80,7 @@ def load_db(conn, storage, gallery_id: int, work_dir: Path, limit: int | None = 
     with conn.cursor() as cur:
         cur.execute(
             "SELECT id, preview_key, taken_at, camera_make, camera_model "
-            "FROM photos WHERE gallery_id = %s AND status = 'EMBEDDED' "
+            "FROM photos WHERE gallery_id = %s "
             "AND deleted_at IS NULL AND preview_key IS NOT NULL ORDER BY display_order, id",
             (gallery_id,),
         )
