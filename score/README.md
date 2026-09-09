@@ -46,7 +46,7 @@ score/
 ├── score/
 │   ├── handler.py      Lambda: {galleryId, photoIds} 하나. 데드라인 앞 배치 경계 정지
 │   ├── __main__.py     CLI: --gallery-id N [--job-id J] [--force] | --local "갤러리" | --list | worker
-│   ├── job.py          갤러리 잡: lock → 잡 RUNNING → EMBEDDED 사진 + 미리보기 다운로드 → pipeline → result 기록
+│   ├── job.py          photoIds 경로(운영 폴백: 목록 → 미리보기 다운로드 → pipeline → write_errors) / 갤러리 경로(로컬 CLI·벤치마크). 잡·체인 없음(#98)
 │   ├── pipeline.py     SCORE 본체 (위 그림). Scorer(러너 1회 로드, #75) · 디코드 1회 · CLIP/ARNIQA 배치 · 배치 쓰기 · 데드라인 정지
 │   ├── images.py       이미지 로드 (torch 없음) — load_image · fit_long_edge · as_image
 │   ├── subjects.py     CLIP zero-shot — SubjectsTagger · ParentTagger
@@ -57,7 +57,7 @@ score/
 │   ├── sagemaker.py    SageMaker training 진입점 — GPU 벤치마크 전용, GPU 사용률 표본
 │   ├── config.py       Settings · Knobs · MODEL_VERSION · PARENTS · PARENT_PROMPTS
 │   ├── store.py        LocalStore(out/v3/) · DbStore — write_scores 하나
-│   ├── gallery.py      PhotoRef — 로컬 폴더 / DB(EMBEDDED + preview_key)
+│   ├── gallery.py      PhotoRef — 로컬 폴더 / DB(preview_key 있는 사진) · load_by_ids · download_previews(404 → missing)
 │   ├── storage.py      S3 미리보기 다운로드    ├── db.py  접속    ├── device.py  cuda|mps|cpu
 ├── tests/test_score.py   pytest 29 — 재개 · 컬럼 경계 · 배치/데드라인 · CLIP/ARNIQA 배치·실패 격리 · 프리페치 · 집기(SKIP LOCKED·error) · GPU 워커 루프 · photoIds 폴백 · handler 계약 · categorize 와의 상수 일치
 ├── Dockerfile · deploy.sh   컨테이너 Lambda (가중치 빌드 시 번들) · ECR 푸시 + update-function-code
@@ -106,7 +106,7 @@ python -m score worker --gpu --once                        # 배치 하나만 (�
   로 잠근 채 미리보기 다운로드(16 스레드) → CLIP·ARNIQA·classical → `write_scores`(UPSERT + commit = 잠금 해제). 워커가 죽으면 롤백으로 행이 자동 반환된다.
   여러 대가 같은 사진을 집을 수 없고(RDS 에서 확인), 한 갤러리를 나눠 먹어도 된다. status 는 보지 않는다(v2 에서 EMBEDDED 가 사라진다).
 - 유휴: 집을 게 없으면 `WORKER_POLL_SECONDS`(3) 대기, 연속 `WORKER_IDLE_STOP_SECONDS`(**30**, 다중 사용자 운영이면 600) 를 넘기면 **루프가 끝난다**.
-  그때 인스턴스를 정지할지는 별개다(#103) — 기본은 IMDSv2 로 자기 id 를 얻어 `StopInstances`, `--no-idle-stop` 이면 정지 없이 종료(EC2 밖).
+  그때 인스턴스를 정지할지는 별개다(#103) — 기본은 IMDSv2 로 자기 id·리전을 얻어 `StopInstances`(컨테이너에 AWS_REGION 이 없어 리전을 명시해야 한다), `--no-idle-stop` 이면 정지 없이 종료(EC2 밖).
   `WORKER_IDLE_STOP_SECONDS=0` 이면 끝나지 않는다. 켜는 것·폴백은 wes.
 - 실패: 배치가 `WORKER_MAX_CONSECUTIVE_FAILURES`(5)회 연속 실패하면 루프를 끝내고 exit 1 — 같은 오류로 헛돌지 않는다(#81).
 - 잡 테이블은 건드리지 않는다 — 완료는 wes 가 데이터로 관측.
