@@ -75,7 +75,7 @@ def load_db(conn, storage, gallery_id: int, work_dir: Path, limit: int | None = 
     점수·벡터가 아직 없는 사진이 섞여도 `pipeline.run` 이 걸러 낸다(경고 로그 + 제외).
 
     download=False 면 미리보기를 내려받지 않는다(path 는 None, storage 도 None 가능) — categorize 는 벡터와
-    taken_at·camera만 쓰고, 대표 사진은 store.preview_path 가 필요할 때 지연 다운로드한다(#26).
+    taken_at·camera만 쓰고, 대표 사진은 naming 이 store.preview_paths 로 한꺼번에 내려받는다(#26).
     """
     with conn.cursor() as cur:
         cur.execute(

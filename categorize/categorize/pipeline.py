@@ -11,6 +11,8 @@
     → store.write_groups (pct · cluster · group · sub_scores 만 — subjects·clip_embedding 은 SCORE 의 것)
     → naming.run (Bedrock 이름 · 소그룹 최근접 · 저장된 clip_parent 다수결 검증) → ai_concept_assignments
 
+갤러리는 **한 번만 읽는다** — `store.read_gallery` 한 쿼리로 행·벡터를 받고, 그룹화가 만든 행과 concat 공간([Grouped])을
+naming 에 그대로 넘긴다. 예전엔 naming 이 셋을 다시 읽고 X 를 다시 만들었다(7천 장이면 벡터 44MB 를 두 번).
 항상 갤러리 전체를 다시 계산한다 — 결정적이고 싸다(822장 수 초). 재개는 score 의 일이다.
 FULL 잡은 score Lambda 가 끝에서 이 함수를 체인으로 부르고, NAMING 잡은 wes 가 직접 부른다. (#26·#35)
 """
@@ -30,6 +32,14 @@ from categorize.gallery import PhotoRef
 from categorize.store import PhotoAnalysis, Store
 
 log = logging.getLogger(__name__)
+
+
+@dataclass
+class Grouped:
+    """그룹화가 끝난 갤러리 — naming 의 입력. [rows] 와 [X] 는 같은 순서(화면 순)다."""
+
+    rows: list[PhotoAnalysis]   # 점수·벡터가 다 있는 사진, cluster_id·embed_group_id 채워짐
+    X: np.ndarray               # concat(DINOv3 ⊕ CLIP) 정규화 공간, rows 와 행이 맞는다
 
 
 @dataclass
@@ -108,17 +118,16 @@ def assign_ranks(rows: list[PhotoAnalysis]) -> None:
                 m.sub_scores["rank_reason"] = _rep_reason(m, members[1:])
 
 
-def group(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings) -> tuple[list[PhotoAnalysis], CategorizeResult]:
-    """백분위·연사·임베딩 그룹을 계산해 저장한다. naming 은 하지 않는다."""
+def group(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings) -> tuple[Grouped, CategorizeResult]:
+    """백분위·연사·임베딩 그룹을 계산해 저장한다. naming 은 하지 않는다 — 대신 naming 이 쓸 [Grouped] 를 돌려준다."""
     started = time.monotonic()
     k = settings.knobs
     result = CategorizeResult(gallery=gallery)
 
-    scored = {r.photo_id: r for r in store.read_analysis(gallery) if r.model_version == MODEL_VERSION}
-    clip_ids, clip_vecs = store.read_clip_embeddings(gallery)
-    clips = dict(zip(clip_ids, clip_vecs)) if len(clip_ids) else {}
-    emb_ids, emb_vecs = store.read_embeddings(gallery)
-    embs = dict(zip(emb_ids, emb_vecs)) if len(emb_ids) else {}
+    data = store.read_gallery(gallery)
+    scored = {r.photo_id: r for r in data.rows if r.model_version == MODEL_VERSION}
+    clips = data.clip_embeddings
+    embs = data.embeddings
     if not embs:
         # 로컬 데이터셋 모드 — 임베더가 없다. concat 이 CLIP 단독으로 퇴화하는 것을 감수한다.
         log.warning("[categorize] 갤러리 %s: 임베더 벡터가 없다 — CLIP 을 E 자리에 쓴다 (로컬 한정)", gallery)
@@ -159,7 +168,7 @@ def group(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings) 
     result.group_distance = used_d
     result.similarity_profile = cluster.similarity_profile(E, k.burst_window) if len(E) > 1 else {}
     result.elapsed_seconds = time.monotonic() - started
-    return ordered, result
+    return Grouped(rows=ordered, X=X), result
 
 
 def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, llm,
@@ -168,9 +177,9 @@ def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, ll
     from categorize import naming
 
     started = time.monotonic()
-    _, result = group(store, gallery, refs, settings)
+    grouped, result = group(store, gallery, refs, settings)
     if llm is not None:
-        result.naming = naming.run(store, gallery, settings, llm, job_id=job_id)
+        result.naming = naming.run(store, gallery, settings, llm, job_id=job_id, grouped=grouped)
     else:
         result.naming = "skipped (no --llm)"
     result.elapsed_seconds = time.monotonic() - started

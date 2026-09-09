@@ -55,8 +55,8 @@ categorize/
 │   ├── concept.py      임베딩 그룹 — 평균연결 계층 클러스터, 적응 임계
 │   ├── llm.py          BedrockClient.complete_json — JSON 스키마 강제, 텍스트+이미지 블록
 │   ├── config.py       Settings · Knobs · LlmKnobs · MODEL_VERSION · PARENTS
-│   ├── store.py        LocalStore(out/v3/) · DbStore — read_analysis/embeddings/clip · write_groups · write_assignments · preview_path
-│   ├── gallery.py · storage.py · db.py · jobs.py(start · finish · fail)
+│   ├── store.py        LocalStore(out/v3/) · DbStore — read_gallery(행+벡터 한 쿼리) · write_groups · write_assignments · preview_paths(배치 SELECT+병렬 다운로드)
+│   ├── gallery.py · storage.py · db.py · jobs.py(fail 하나 — ai_analysis_jobs.error, #95)
 ├── tests/test_categorize.py   pytest 23 — concat 성질 · 카메라 파티션 · 적응 임계 · naming 4단계 · 컬럼 경계 · CLIP 폴백 · torch 미import · score 와의 상수 일치 · handler
 ├── Dockerfile · deploy.sh     컨테이너 Lambda (torch 없음, 작다) · ECR 푸시 + update-function-code
 └── requirements.txt · pyproject.toml

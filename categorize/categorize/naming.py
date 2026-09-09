@@ -15,19 +15,21 @@ ai-folder-structure.md의 ②~④ 구현. 층마다 잘하는 도구:
 Bedrock 이미지 호출은 그룹 수 상한으로 절대 상한이 잡힌다(⌈이미지 수/naming_chunk⌉+1회) —
 갤러리가 커져도 비용은 커버리지 목표와 상한이 정한 범위를 넘지 않는다.
 FULL 잡의 끝에서도, NAMING 단독 잡에서도 같은 `run()`이 돈다 (분석 재실행 없음 —
-clip_embedding을 저장해 둔 이유).
+clip_embedding을 저장해 둔 이유). 파이프라인이 부를 때는 그룹화가 만든 행·concat 공간(`grouped`)을 그대로 받아
+DB 를 다시 읽지 않고, 단독 실행일 때만 `store.read_gallery` 로 읽는다.
 """
 
 from __future__ import annotations
 
 import logging
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import numpy as np
 
 from categorize.config import PARENTS, Settings
-from categorize.pipeline import concat_space
+from categorize.pipeline import Grouped, concat_space
 from categorize.llm import LlmClient, jpeg_bytes
 from categorize.store import ConceptAssignment, Store
 
@@ -163,25 +165,44 @@ def _merge_names(llm: LlmClient, named: dict[int, dict], sizes: dict[int, int], 
     return named
 
 
+def _load(store: Store, gallery: str) -> Grouped:
+    """단독 실행(NAMING 만) — 저장된 그룹·벡터로 [Grouped] 를 다시 만든다. 파이프라인은 이 길을 지나지 않는다."""
+    data = store.read_gallery(gallery)
+    rows = [r for r in data.rows if r.embed_group_id >= 0]
+    if not rows:
+        raise RuntimeError(f"갤러리 {gallery}: embed_group_id 가 없다 — FULL(SCORE→CATEGORIZE) 분석이 먼저다")
+    rows = [r for r in rows if r.photo_id in data.embeddings and r.photo_id in data.clip_embeddings]
+    ids = [r.photo_id for r in rows]
+    E = np.stack([data.embeddings[i] for i in ids])
+    C = np.stack([data.clip_embeddings[i] for i in ids])
+    return Grouped(rows=rows, X=concat_space(E, C))
+
+
+def _rep_images(store: Store, gallery: str, rows, reps: dict[int, list[int]], long_edge: int) -> dict[int, list[bytes]]:
+    """대표 사진 → LLM 에 보낼 JPEG. 경로는 한 번에 받고(배치 SELECT + 병렬 다운로드), 축소도 스레드로 겹친다."""
+    wanted = sorted({rows[i].photo_id for rr in reps.values() for i in rr})
+    paths = store.preview_paths(gallery, wanted)
+
+    def shrink(pid: str) -> tuple[str, bytes]:
+        return pid, jpeg_bytes(paths[pid], long_edge)
+
+    with ThreadPoolExecutor(max_workers=min(8, max(1, len(paths)))) as pool:
+        encoded = dict(pool.map(shrink, list(paths)))
+    return {gid: [encoded[rows[i].photo_id] for i in rr if rows[i].photo_id in encoded]
+            for gid, rr in reps.items()}
+
+
 def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
-        job_id: int | None = None) -> dict:
+        job_id: int | None = None, grouped: Grouped | None = None) -> dict:
     if llm is None:
         raise RuntimeError("naming 은 Bedrock 이 필요하다 — --llm 으로 실행하라 (AWS 자격 필요)")
     started = time.monotonic()
     k = settings.knobs
     parents = PARENTS
 
-    rows = [r for r in store.read_analysis(gallery) if r.embed_group_id >= 0]
-    if not rows:
-        raise RuntimeError(f"갤러리 {gallery}: embed_group_id 가 없다 — FULL(SCORE→CATEGORIZE) 분석이 먼저다")
-    emb_ids, E = store.read_embeddings(gallery)
-    clip_ids, C = store.read_clip_embeddings(gallery)
-    emb_map, clip_map = dict(zip(emb_ids, E)), dict(zip(clip_ids, C))
-    rows = [r for r in rows if r.photo_id in emb_map and r.photo_id in clip_map]
-    ids = [r.photo_id for r in rows]
-    E = np.stack([emb_map[i] for i in ids])
-    C = np.stack([clip_map[i] for i in ids])
-    X = concat_space(E, C)
+    if grouped is None:
+        grouped = _load(store, gallery)
+    rows, X = grouped.rows, grouped.X
     gids = np.array([r.embed_group_id for r in rows], dtype=int)
 
     groups = _build_groups(gids, X)
@@ -199,17 +220,17 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
         covered += len(g.members)
 
     # 대표 이미지 — spread 큰(이질적) 그룹은 중심 최근접 + 최원점 2장 (review-v3-design.md (2))
-    with_img: list[tuple[_Group, list[bytes]]] = []
-    extra_reps = 0
+    reps: dict[int, list[int]] = {}
     for g in top:
         rep_rows = [g.rep_row]
         if g.spread > k.naming_spread_extra and g.far_row != g.rep_row:
             rep_rows.append(g.far_row)
-        imgs: list[bytes] = []
-        for row in rep_rows:
-            path = store.preview_path(gallery, rows[row].photo_id)
-            if path is not None:
-                imgs.append(jpeg_bytes(path, k.naming_image_long_edge))
+        reps[g.gid] = rep_rows
+    images = _rep_images(store, gallery, rows, reps, k.naming_image_long_edge)
+    with_img: list[tuple[_Group, list[bytes]]] = []
+    extra_reps = 0
+    for g in top:
+        imgs = images.get(g.gid, [])
         if not imgs:
             log.warning("그룹 %d 대표 사진(%s) 이미지 없음 — nearest 배정으로", g.gid, rows[g.rep_row].photo_id)
             continue
