@@ -745,3 +745,34 @@ def test_gpu_worker_aborts_after_consecutive_failures(fake_worker):
     summary = w["module"].loop(w["settings"], stop_on_idle=False)
 
     assert summary["aborted"] is True and summary["batches"] == 0 and len(w["runs"]) == 3
+
+
+def test_gpu_worker_stop_self_pins_region_from_imds(monkeypatch):
+    """워커 컨테이너에는 AWS_REGION 이 없다 — 리전을 IMDS 에서 읽어 ec2 클라이언트에 명시해야 StopInstances 가 된다
+    (2026-09-09 운영 NoRegionError)."""
+    from score import gpu_worker
+
+    calls = {}
+
+    class Ec2:
+        def stop_instances(self, InstanceIds):
+            calls["ids"] = InstanceIds
+
+    def client(service, region_name=None):
+        calls["service"], calls["region"] = service, region_name
+        return Ec2()
+
+    monkeypatch.setattr(gpu_worker, "_imds", lambda path: {"instance-id": "i-1", "placement/region": "ap-northeast-2"}[path])
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=client))
+
+    assert gpu_worker.stop_self() is True
+    assert calls == {"service": "ec2", "region": "ap-northeast-2", "ids": ["i-1"]}
+
+
+def test_gpu_worker_stop_self_skips_outside_ec2(monkeypatch):
+    from score import gpu_worker
+
+    monkeypatch.setattr(gpu_worker, "_imds", lambda path: None)
+    monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda *a, **k: pytest.fail("boto3 를 부르면 안 된다")))
+
+    assert gpu_worker.stop_self() is False
