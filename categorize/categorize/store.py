@@ -1,6 +1,7 @@
 """저장소 — `photo_analysis` 와 `ai_concept_assignments` 중 CATEGORIZE 가 읽고 쓰는 부분.
 
-읽기: score 의 원점수·subjects·clip_parent(sub_scores)·clip_embedding, embedder 의 embedding(DINOv3).
+읽기: `read_gallery` **한 쿼리** — score 의 원점수·subjects·clip_parent(sub_scores)·clip_embedding 과 embedder 의
+embedding(DINOv3) 을 한 번에. 그룹화와 naming 이 같은 결과를 나눠 쓰므로 갤러리당 한 번만 읽는다(7천 장이면 벡터 두 종류 44MB).
 쓰기: `write_groups`(technical_pct · aesthetic_pct · sub_scores · cluster_id · cluster_rank · embed_group_id — UPDATE,
 행은 score 가 만들어 두었다)와 `write_assignments`(ai_concept_assignments, job_id 에 매달림).
 subjects · clip_embedding · model_version 은 score 의 것, embedding · embedding_model 은 embedder 의 것 — 건드리지 않는다.
@@ -12,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Protocol
@@ -19,6 +21,9 @@ from typing import Protocol
 import numpy as np
 
 log = logging.getLogger(__name__)
+
+#: 대표 사진 S3 다운로드 동시 수. Lambda 의 네트워크·/tmp 에 부담 없는 크기다.
+PREVIEW_DOWNLOAD_WORKERS = 16
 
 
 # ── 레코드 ───────────────────────────────────────────────────────────────────
@@ -51,15 +56,24 @@ class ConceptAssignment:
     needs_review: bool = False
 
 
+@dataclass
+class GalleryRead:
+    """갤러리 한 번 읽기 — score 가 지난 분석 행과 벡터 두 종류. 파이프라인 한 실행에 한 번만 만든다."""
+
+    rows: list[PhotoAnalysis]                 # model_version 있는 행, 화면 순(display_order, id)
+    embeddings: dict[str, np.ndarray]         # DINOv3 — 없으면 빈 dict(로컬 데이터셋 모드)
+    clip_embeddings: dict[str, np.ndarray]    # CLIP ViT-L/14
+
+
 # ── 인터페이스 ───────────────────────────────────────────────────────────────
 class Store(Protocol):
-    def read_analysis(self, gallery: str) -> list[PhotoAnalysis]: ...
-    def read_embeddings(self, gallery: str) -> tuple[list[str], np.ndarray]: ...
-    def read_clip_embeddings(self, gallery: str) -> tuple[list[str], np.ndarray]: ...
+    def read_gallery(self, gallery: str) -> GalleryRead: ...
     def write_groups(self, gallery: str, rows: list[PhotoAnalysis]) -> None: ...
     def write_assignments(self, gallery: str, job_id: int | None,
                           rows: list[ConceptAssignment]) -> None: ...
-    def preview_path(self, gallery: str, photo_id: str) -> str | None: ...
+    def preview_paths(self, gallery: str, photo_ids: list[str]) -> dict[str, str]:
+        """대표 사진들의 로컬 JPEG 경로. 없는 사진은 빠진다 — 호출자가 nearest 배정으로 넘긴다."""
+        ...
 
 
 # ── 로컬 구현 ────────────────────────────────────────────────────────────────
@@ -70,11 +84,11 @@ class LocalStore:
         self.root = Path(root)
         self.dataset_root = Path(dataset_root) if dataset_root else None
 
-    def preview_path(self, gallery: str, photo_id: str) -> str | None:
+    def preview_paths(self, gallery: str, photo_ids: list[str]) -> dict[str, str]:
         if self.dataset_root is None:
-            return None
-        p = self.dataset_root / photo_id
-        return str(p) if p.is_file() else None
+            return {}
+        found = {pid: self.dataset_root / pid for pid in photo_ids}
+        return {pid: str(p) for pid, p in found.items() if p.is_file()}
 
     def _dir(self, gallery: str) -> Path:
         d = self.root / "v3" / gallery.replace("/", "__")
@@ -100,6 +114,14 @@ class LocalStore:
 
     def read_clip_embeddings(self, gallery: str) -> tuple[list[str], np.ndarray]:
         return self._read_npy(gallery, "clip_embeddings")
+
+    def read_gallery(self, gallery: str) -> GalleryRead:
+        rows = [r for r in self.read_analysis(gallery) if r.model_version]
+        emb_ids, E = self.read_embeddings(gallery)
+        clip_ids, C = self.read_clip_embeddings(gallery)
+        return GalleryRead(rows=rows,
+                           embeddings=dict(zip(emb_ids, E)) if len(emb_ids) else {},
+                           clip_embeddings=dict(zip(clip_ids, C)) if len(clip_ids) else {})
 
     def _write_rows(self, gallery: str, rows: list[PhotoAnalysis]) -> None:
         with (self._dir(gallery) / "analysis.jsonl").open("w", encoding="utf-8") as f:
@@ -180,75 +202,85 @@ class DbStore:
         self._settings = settings
         self._storage = None
 
-    def preview_path(self, gallery: str, photo_id: str) -> str | None:
-        """naming 대표 사진용 — work_dir 에 있으면 그것, 없으면 S3 에서 받는다(갤러리당 수십 장)."""
-        dest = Path(self._settings.work_dir) / str(gallery) / f"{photo_id}.jpg"
-        if dest.is_file() and dest.stat().st_size > 0:
-            return str(dest)
-        if not self._settings.s3_bucket:
-            return None
+    def preview_paths(self, gallery: str, photo_ids: list[str]) -> dict[str, str]:
+        """naming 대표 사진용 — work_dir 에 있으면 그것, 없으면 S3 에서 받는다(갤러리당 수십~수백 장).
+
+        preview_key 는 SELECT 한 번으로 모아 받고, 다운로드는 스레드풀로 겹친다. 사진마다 SELECT + GET 을 직렬로 하면
+        대표 240장에 10~25초가 들었다 — 왕복 지연이 곧 시간이라 병렬이 답이다. 실패한 사진은 결과에서 빠질 뿐이다."""
+        dest_dir = Path(self._settings.work_dir) / str(gallery)
+        out: dict[str, str] = {}
+        need: list[str] = []
+        for pid in photo_ids:
+            dest = dest_dir / f"{pid}.jpg"
+            if dest.is_file() and dest.stat().st_size > 0:
+                out[pid] = str(dest)
+            else:
+                need.append(pid)
+        if not need or not self._settings.s3_bucket:
+            return out
         with self.conn.cursor() as cur:
-            cur.execute("SELECT preview_key FROM photos WHERE id = %s AND deleted_at IS NULL", (int(photo_id),))
-            row = cur.fetchone()
-        if row is None or row[0] is None:
-            return None
+            cur.execute(
+                "SELECT id, preview_key FROM photos WHERE id = ANY(%s) AND deleted_at IS NULL AND preview_key IS NOT NULL",
+                ([int(pid) for pid in need],),
+            )
+            keys = {str(photo_id): key for photo_id, key in cur.fetchall()}
+        if not keys:
+            return out
         if self._storage is None:
             from categorize.storage import PreviewStorage
             self._storage = PreviewStorage(self._settings.s3_bucket)
-        try:
-            return str(self._storage.download(row[0], dest))
-        except Exception as exc:  # noqa: BLE001
-            log.warning("미리보기 내려받기 실패 photo=%s: %s", photo_id, exc)
-            return None
+        storage = self._storage
 
-    # ── analysis ──
-    def read_analysis(self, gallery: str) -> list[PhotoAnalysis]:
+        def fetch(pid: str) -> tuple[str, str | None]:
+            try:
+                return pid, str(storage.download(keys[pid], dest_dir / f"{pid}.jpg"))
+            except Exception as exc:  # noqa: BLE001
+                log.warning("미리보기 내려받기 실패 photo=%s: %s", pid, exc)
+                return pid, None
+
+        with ThreadPoolExecutor(max_workers=min(PREVIEW_DOWNLOAD_WORKERS, len(keys))) as pool:
+            for pid, path in pool.map(fetch, list(keys)):
+                if path is not None:
+                    out[pid] = path
+        return out
+
+    # ── analysis + vectors ──
+    def read_gallery(self, gallery: str) -> GalleryRead:
+        """분석 행과 벡터 두 종류를 **한 쿼리**로. embedding_model 이 섞여 있으면 실패한다 — 다른 공간의 코사인은 무의미."""
         cols = ", ".join(f"a.{c}" for c in self.ANALYSIS_COLUMNS)
         with self.conn.cursor() as cur:
             cur.execute(
-                f"SELECT a.photo_id, {cols} FROM photo_analysis a JOIN photos p ON p.id = a.photo_id "
-                "WHERE p.gallery_id = %s AND p.deleted_at IS NULL AND a.model_version IS NOT NULL "
+                f"SELECT a.photo_id, {cols}, a.embedding, a.embedding_model, a.clip_embedding "
+                "FROM photo_analysis a JOIN photos p ON p.id = a.photo_id "
+                "WHERE p.gallery_id = %s AND p.deleted_at IS NULL "
                 "ORDER BY p.display_order, p.id",
                 (int(gallery),),
             )
-            rows = cur.fetchall()
-        out = []
-        for r in rows:
-            d = dict(zip(("photo_id",) + self.ANALYSIS_COLUMNS, r))
-            d["photo_id"] = str(d["photo_id"])
+            raw = cur.fetchall()
+        rows: list[PhotoAnalysis] = []
+        embeddings: dict[str, np.ndarray] = {}
+        clips: dict[str, np.ndarray] = {}
+        models: set[str] = set()
+        n_cols = len(self.ANALYSIS_COLUMNS)
+        for r in raw:
+            photo_id = str(r[0])
+            embedding, embedding_model, clip = r[1 + n_cols], r[2 + n_cols], r[3 + n_cols]
+            if embedding is not None:
+                embeddings[photo_id] = np.asarray(embedding, dtype=np.float32)
+                models.add(str(embedding_model))
+            if clip is not None:
+                clips[photo_id] = np.asarray(clip, dtype=np.float32)
+            d = dict(zip(("photo_id",) + self.ANALYSIS_COLUMNS, r[:1 + n_cols]))
+            if d["model_version"] is None:
+                continue
+            d["photo_id"] = photo_id
             d["sub_scores"] = dict(d["sub_scores"] or {})
-            out.append(PhotoAnalysis(**d))
-        return out
-
-    def _read_vectors(self, gallery: str, column: str, model_column: str | None) -> tuple[list[str], np.ndarray]:
-        model_sel = f", a.{model_column}" if model_column else ""
-        with self.conn.cursor() as cur:
-            cur.execute(
-                f"SELECT a.photo_id, a.{column}{model_sel} FROM photo_analysis a "
-                "JOIN photos p ON p.id = a.photo_id "
-                f"WHERE p.gallery_id = %s AND p.deleted_at IS NULL AND a.{column} IS NOT NULL "
-                "ORDER BY p.display_order, p.id",
-                (int(gallery),),
-            )
-            rows = cur.fetchall()
-        if not rows:
-            return [], np.zeros((0, 0))
-        if model_column:
-            models = {r[2] for r in rows}
-            if len(models) > 1:
-                raise RuntimeError(
-                    f"gallery {gallery}: {model_column}이 섞여 있다 {sorted(map(str, models))} — "
-                    "임베더 force 재실행으로 한 모델로 맞춘 뒤 분석하라")
-        ids = [str(r[0]) for r in rows]
-        return ids, np.stack([np.asarray(r[1], dtype=np.float32) for r in rows])
-
-    def read_embeddings(self, gallery: str) -> tuple[list[str], np.ndarray]:
-        """임베더의 DINOv3. embedding_model 이 섞여 있으면 실패한다 — 다른 공간의 코사인은 무의미."""
-        return self._read_vectors(gallery, "embedding", "embedding_model")
-
-    def read_clip_embeddings(self, gallery: str) -> tuple[list[str], np.ndarray]:
-        """score 가 저장한 CLIP ViT-L/14."""
-        return self._read_vectors(gallery, "clip_embedding", None)
+            rows.append(PhotoAnalysis(**d))
+        if len(models) > 1:
+            raise RuntimeError(
+                f"gallery {gallery}: embedding_model이 섞여 있다 {sorted(models)} — "
+                "임베더 force 재실행으로 한 모델로 맞춘 뒤 분석하라")
+        return GalleryRead(rows=rows, embeddings=embeddings, clip_embeddings=clips)
 
     def write_groups(self, gallery: str, rows: list[PhotoAnalysis]) -> None:
         """CATEGORIZE 의 컬럼만 UPDATE — 행은 score 가 만들어 두었다."""

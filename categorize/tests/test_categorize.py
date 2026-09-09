@@ -472,3 +472,145 @@ def test_job_run_writes_error_when_pipeline_fails(monkeypatch, tmp_path):
 
     sql, params = conn.executed[0]
     assert "SET error = %s" in sql and params == ("RuntimeError: no vectors", 3)
+
+
+# ── 갤러리 한 번 읽기 · 대표 사진 배치 다운로드 ──────────────────────────────
+class _CountingStore:
+    """LocalStore 를 감싸 read_gallery · preview_paths 호출을 센다."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.reads = 0
+        self.preview_calls: list[list[str]] = []
+
+    def read_gallery(self, gallery):
+        self.reads += 1
+        return self.inner.read_gallery(gallery)
+
+    def preview_paths(self, gallery, photo_ids):
+        self.preview_calls.append(list(photo_ids))
+        return self.inner.preview_paths(gallery, photo_ids)
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
+def test_pipeline_reads_gallery_once_and_hands_grouped_to_naming(tmp_path):
+    """그룹화가 읽은 행·concat 공간을 naming 이 그대로 받는다 — DB 를 두 번 읽지 않는다."""
+    store, rows, *_, settings = _world(tmp_path)
+    counting = _CountingStore(store)
+    refs = [PhotoRef(photo_id=r.photo_id, path=None) for r in rows]
+    settings = _with_knobs(settings, group_distance=0.4, group_min_groups=2, group_max_share=0.6)
+
+    result = pipeline.run(counting, "g", refs, settings, FakeLlm(), job_id=None)
+
+    assert counting.reads == 1
+    assert result["naming"]["vlmGroups"] == result["groups"]["groups"]
+
+
+def test_naming_fetches_all_representatives_in_one_batch(tmp_path):
+    """대표 사진 경로는 preview_paths 한 번으로 — 사진마다 SELECT + GET 을 직렬로 하지 않는다."""
+    store, rows, *_, settings = _world(tmp_path)
+    counting = _CountingStore(store)
+
+    result = naming.run(counting, "g", settings, FakeLlm(), job_id=None)
+
+    assert len(counting.preview_calls) == 1
+    assert len(counting.preview_calls[0]) >= result["vlmGroups"]
+    assert len(set(counting.preview_calls[0])) == len(counting.preview_calls[0])
+
+
+class _VecConn:
+    def __init__(self, rows):
+        self.rows = rows
+        self.executed = []
+
+    def cursor(self):
+        conn = self
+
+        class _C:
+            def __enter__(self_inner):
+                return self_inner
+
+            def __exit__(self_inner, *a):
+                return None
+
+            def execute(self_inner, sql, params=None):
+                conn.executed.append((" ".join(sql.split()), params))
+
+            def fetchall(self_inner):
+                return conn.rows
+
+        return _C()
+
+
+def _db_store(tmp_path, conn, bucket=None):
+    from categorize.store import DbStore
+
+    settings = Settings(out_root=tmp_path, dataset_root=tmp_path, work_dir=tmp_path / "work", s3_bucket=bucket)
+    return DbStore(settings, connection=conn)
+
+
+def test_db_store_read_gallery_is_one_query(tmp_path):
+    """분석 행 + DINOv3 + CLIP 을 한 SELECT 로. model_version 없는 행은 벡터만 남고 행 목록에서 빠진다."""
+    e, c = np.ones(4, dtype=np.float32), np.zeros(4, dtype=np.float32)
+    conn = _VecConn(rows=[
+        (11, "couple", 50.0, 50.0, {"technical_score": 0.5}, -1, 0, -1, MODEL_VERSION, e, "dinov3", c),
+        (12, "unknown", 50.0, 50.0, None, -1, 0, -1, None, e, "dinov3", None),          # 임베딩만, 점수 아직
+    ])
+    data = _db_store(tmp_path, conn).read_gallery("7")
+
+    assert len(conn.executed) == 1
+    sql, params = conn.executed[0]
+    assert params == (7,)
+    assert "a.embedding" in sql and "a.clip_embedding" in sql and "JOIN photos" in sql
+    assert [r.photo_id for r in data.rows] == ["11"]
+    assert data.rows[0].sub_scores == {"technical_score": 0.5}
+    assert set(data.embeddings) == {"11", "12"} and set(data.clip_embeddings) == {"11"}
+
+
+def test_db_store_read_gallery_rejects_mixed_embedding_models(tmp_path):
+    e = np.ones(4, dtype=np.float32)
+    conn = _VecConn(rows=[
+        (11, "couple", 50.0, 50.0, {}, -1, 0, -1, MODEL_VERSION, e, "dinov3", e),
+        (12, "couple", 50.0, 50.0, {}, -1, 0, -1, MODEL_VERSION, e, "dinov2", e),
+    ])
+    with pytest.raises(RuntimeError, match="embedding_model"):
+        _db_store(tmp_path, conn).read_gallery("7")
+
+
+def test_db_store_preview_paths_batches_select_and_downloads_concurrently(tmp_path, monkeypatch):
+    """preview_key 는 SELECT 한 번(ANY), 다운로드는 스레드풀 — 사진 수만큼 왕복하지 않는다."""
+    import threading
+    import time as _time
+
+    conn = _VecConn(rows=[(11, "previews/a.jpg"), (12, "previews/b.jpg"), (13, "previews/c.jpg")])
+    store = _db_store(tmp_path, conn, bucket="bkt")
+    seen_threads: set[int] = set()
+    lock = threading.Lock()
+
+    class _FakeStorage:
+        def download(self, key, dest):
+            with lock:
+                seen_threads.add(threading.get_ident())
+            _time.sleep(0.05)                      # 겹쳐 돌면 세 건이 0.15초가 아니라 ~0.05초
+            if key.endswith("c.jpg"):
+                raise OSError("no such key")
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(b"jpeg")
+            return dest
+
+    store._storage = _FakeStorage()
+    started = _time.monotonic()
+    paths = store.preview_paths("7", ["11", "12", "13"])
+    elapsed = _time.monotonic() - started
+
+    assert len(conn.executed) == 1
+    sql, params = conn.executed[0]
+    assert "ANY(%s)" in sql and params == ([11, 12, 13],)
+    assert set(paths) == {"11", "12"}                     # 실패한 13 은 빠진다
+    assert len(seen_threads) > 1 and elapsed < 0.14
+
+    # 이미 받아 둔 파일은 SELECT 도 다운로드도 없이 돌려준다
+    again = store.preview_paths("7", ["11", "12"])
+    assert again == paths and len(conn.executed) == 1
