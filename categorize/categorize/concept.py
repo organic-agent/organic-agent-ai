@@ -30,8 +30,16 @@ def concept_groups(emb: np.ndarray, distance: float, min_groups: int = 4,
     if n == 1:
         return np.zeros(1, dtype=int), distance
     from scipy.cluster.hierarchy import fcluster, linkage
+    from scipy.spatial.distance import squareform
 
-    Z = linkage(emb, method="average", metric="cosine")
+    # linkage 에 원시 벡터를 주면 scipy 가 pdist(cosine) 을 스칼라 C 루프로 돌려 7,189장 × 1,536차원에 37s 가 든다(#113).
+    # 정규화된 벡터의 코사인 거리는 1 − X·Xᵀ 라 BLAS 행렬곱 한 번(≈0.5s)이면 같은 값이다. linkage 자체는 O(N²) 로 싸다.
+    X = emb / np.clip(np.linalg.norm(emb, axis=1, keepdims=True), 1e-8, None)   # 이미 정규화돼 있으면 no-op
+    G = 1.0 - X @ X.T
+    np.fill_diagonal(G, 0.0)
+    np.clip(G, 0.0, 2.0, out=G)          # 부동소수 -1e-16 방지 — linkage 는 음수 거리를 거부한다
+    Z = linkage(squareform(G, checks=False), method="average")
+    del G
 
     def cut(d: float):
         labels = fcluster(Z, t=d, criterion="distance")
