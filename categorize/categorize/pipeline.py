@@ -125,6 +125,9 @@ def group(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings) 
     result = CategorizeResult(gallery=gallery)
 
     data = store.read_gallery(gallery)
+    # 운영 7,189장에서 START→그룹 적재가 45.8s 인데 로그가 없어 읽기/계산을 못 나눴다(#111) — 단계별 소요를 남긴다.
+    log.info("[categorize] 갤러리 %s 읽기: %d행 · dinov3 %d · clip %d · %.1fs",
+             gallery, len(data.rows), len(data.embeddings), len(data.clip_embeddings), time.monotonic() - started)
     scored = {r.photo_id: r for r in data.rows if r.model_version == MODEL_VERSION}
     clips = data.clip_embeddings
     embs = data.embeddings
@@ -151,14 +154,20 @@ def group(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings) 
     for r, v in zip(ordered, percentile([r.sub_scores.get("sharpness", math.nan) for r in ordered])):
         r.sub_scores["sharpness_pct"] = v
 
+    t0 = time.monotonic()
     parts = cluster.partition_order([r.camera for r in ordered_refs], [r.taken_at for r in ordered_refs])
     cids = cluster.cluster_bursts_partitioned(E, parts, k.burst_threshold, k.burst_window)
+    t1 = time.monotonic()
     X = concat_space(E, C)
     gids, used_d = concept.concept_groups(X, k.group_distance, k.group_min_groups,
                                           k.group_max_share, k.group_frag_share)
     for r, c, g in zip(ordered, cids, gids):
         r.cluster_id, r.embed_group_id = int(c), int(g)
     assign_ranks(ordered)
+    t2 = time.monotonic()
+    log.info("[categorize] 갤러리 %s 그룹화: %d장 · 연사 %d (%.1fs) · 그룹 %d (%.1fs) · 읽기 뒤 누적 %.1fs",
+             gallery, len(ordered), int(cids.max()) + 1 if len(cids) else 0, t1 - t0,
+             int(gids.max()) + 1 if len(gids) else 0, t2 - t1, t2 - started)
 
     store.write_groups(gallery, ordered)
 

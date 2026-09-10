@@ -283,12 +283,20 @@ def test_majority_ignores_none_and_breaks_ties_by_first_seen():
 
 
 # ── pipeline (그룹 → naming) ─────────────────────────────────────────────────
-def test_pipeline_groups_then_names(tmp_path):
+def test_pipeline_groups_then_names(tmp_path, caplog):
     store, rows, E, C, settings = _world(tmp_path)
     refs = [PhotoRef(photo_id=r.photo_id, path=None) for r in rows]   # 파일이 필요 없다
     settings = _with_knobs(settings, group_distance=0.4, group_min_groups=2, group_max_share=0.6)
 
-    result = pipeline.run(store, "g", refs, settings, FakeLlm(), job_id=None)
+    with caplog.at_level("INFO", logger="categorize.pipeline"):
+        result = pipeline.run(store, "g", refs, settings, FakeLlm(), job_id=None)
+
+    # 그룹 단계 45s 를 읽기/연사/계층으로 나누는 로그 두 줄(#111) — 운영 CloudWatch 에서 이 줄을 찾는다
+    stage_logs = [m for m in caplog.messages if m.startswith("[categorize] 갤러리 g ")]
+    assert len(stage_logs) == 2
+    assert stage_logs[0].startswith(f"[categorize] 갤러리 g 읽기: {len(rows)}행 · dinov3 {len(rows)} · clip {len(rows)} · ")
+    assert stage_logs[1].startswith(f"[categorize] 갤러리 g 그룹화: {len(rows)}장 · 연사 {len(rows)} (")
+    assert f"· 그룹 {int(result['groups']['groups'])} (" in stage_logs[1] and "읽기 뒤 누적" in stage_logs[1]
 
     assert result["mode"] == "categorize" and result["photos"] == len(rows)
     assert result["embeddingsSource"] == "dinov3"
