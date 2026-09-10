@@ -614,3 +614,14 @@ def test_db_store_preview_paths_batches_select_and_downloads_concurrently(tmp_pa
     # 이미 받아 둔 파일은 SELECT 도 다운로드도 없이 돌려준다
     again = store.preview_paths("7", ["11", "12"])
     assert again == paths and len(conn.executed) == 1
+
+
+def test_preview_storage_pool_matches_download_workers(monkeypatch):
+    """풀이 스레드 수보다 작으면 urllib3 가 'Connection pool is full' 을 찍는다(#109) — store 는 PREVIEW_DOWNLOAD_WORKERS 를 그대로 넘긴다."""
+    from categorize.storage import PreviewStorage
+    from categorize.store import PREVIEW_DOWNLOAD_WORKERS
+
+    monkeypatch.setenv("AWS_DEFAULT_REGION", "ap-northeast-2")     # 클라이언트 생성만 — 자격·네트워크 없음
+    pooled = PreviewStorage("bkt", max_concurrency=PREVIEW_DOWNLOAD_WORKERS)
+    assert pooled._client._client_config.max_pool_connections == PREVIEW_DOWNLOAD_WORKERS == 16
+    assert PreviewStorage("bkt")._client._client_config.max_pool_connections == 10   # 기본값은 boto 기본(10) 아래로 안 내려간다

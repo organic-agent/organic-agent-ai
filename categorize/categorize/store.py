@@ -228,7 +228,7 @@ class DbStore:
             return out
         if self._storage is None:
             from categorize.storage import PreviewStorage
-            self._storage = PreviewStorage(self._settings.s3_bucket)
+            self._storage = PreviewStorage(self._settings.s3_bucket, max_concurrency=PREVIEW_DOWNLOAD_WORKERS)
         storage = self._storage
 
         def fetch(pid: str) -> tuple[str, str | None]:
