@@ -22,7 +22,7 @@ wes ──EVENT {galleryId, jobId}──▶ [categorize] ──▶ ai_concept_as
 → store.write_groups  (pct · cluster · group · sub_scores 만 — subjects · clip_embedding · model_version 은 score 의 것)
 → naming.run
   ② 크기순 커버리지 85%(상한 120그룹)까지 대표 1~2장(spread > 0.12 면 최원점 추가)을 15장 청크로 Sonnet
-     → {parent(enum 강제), concept(열린 한국어), confidence}. 청크 둘 이상이면 통합 텍스트 호출 1회
+     → {parent(enum 강제), concept(열린 한국어), confidence}. 청크는 동시에 보내고(`NAMING_PARALLEL` 4, 1 이면 직렬) 둘 이상이면 통합 텍스트 호출 1회
   ③ VLM 안 간 소그룹 → concat 공간 최근접 이름 상속. 거리 > 0.25 → 기타/기타 + needs_review
   ④ 저장된 clip_parent 그룹 다수결 ≠ VLM 부모, 또는 confidence < 0.8 → needs_review
 → store.write_assignments (ai_concept_assignments, job_id 에 매달림)

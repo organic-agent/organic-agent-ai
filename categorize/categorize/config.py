@@ -52,6 +52,8 @@ class Knobs:
     naming_spread_extra: float = 0.12
     #: Bedrock 한 요청에 넣는 대표 이미지 수.
     naming_chunk: int = 15
+    #: 청크 vision 호출을 동시에 보내는 수(#115). 청크는 서로 독립이라 직렬 25s → max 한 청크 + 통합. 1 이면 직렬(스로틀 때 되돌리는 손잡이).
+    naming_parallel: int = 4
     naming_max_tokens: int = 4096
     #: VLM에 보내는 대표 JPEG 긴 변.
     naming_image_long_edge: int = 768
@@ -117,4 +119,5 @@ class Settings:
                 aws_region=os.environ.get("BEDROCK_REGION", "ap-northeast-2"),
                 model_id=os.environ.get("BEDROCK_MODEL_ID", "global.anthropic.claude-sonnet-4-6"),
             ),
+            knobs=Knobs(naming_parallel=int(os.environ.get("NAMING_PARALLEL", Knobs.naming_parallel))),
         )
