@@ -138,6 +138,26 @@ def test_concept_groups_raise_steps_back_before_overmerge():
     assert np.bincount(labels).max() <= len(emb) * 0.5
 
 
+
+def test_concept_groups_matmul_distance_matches_scipy_cosine_linkage():
+    """거리 행렬을 BLAS 로 만들어도(#113) scipy 의 원시-벡터 cosine linkage 와 같은 분할이어야 한다 — 결과 계약 불변."""
+    from scipy.cluster.hierarchy import fcluster, linkage
+
+    rng = np.random.default_rng(13)
+    centers = [_unit(rng.normal(size=48)) for _ in range(12)]
+    emb = np.stack([_unit(c + 0.04 * rng.normal(size=48)) for c in centers for _ in range(25)])
+    labels, used = concept.concept_groups(emb, 0.2, min_groups=4)
+
+    ref = fcluster(linkage(emb, method="average", metric="cosine"), t=used, criterion="distance")
+    pairs = set(zip(labels.tolist(), ref.tolist()))
+    assert len(pairs) == len(set(labels.tolist())) == len(set(ref.tolist()))   # 1:1 대응 = 동일 분할
+    assert 4 <= len(pairs) <= 12 * 3
+
+    # 정규화 안 된 입력도 안에서 정규화한다 — 스케일이 달라도 같은 분할
+    scaled, used2 = concept.concept_groups(emb * 7.0, 0.2, min_groups=4)
+    assert used2 == used and set(zip(labels.tolist(), scaled.tolist())).__len__() == len(pairs)
+
+
 # ── LocalStore 왕복 · 컬럼 경계 ──────────────────────────────────────────────
 def test_local_store_roundtrip(tmp_path):
     store, rows, E, C, _ = _world(tmp_path)
