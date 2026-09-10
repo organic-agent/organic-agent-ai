@@ -266,6 +266,58 @@ def test_naming_merge_call_unifies_names_across_chunks(tmp_path):
     assert all(a.concept_name.endswith("(통일)") for a in store.read_assignments("g"))
 
 
+
+def test_naming_chunk_calls_run_concurrently(tmp_path):
+    """청크 vision 호출은 서로 독립이라 동시에 나간다(#115) — 세 청크가 0.05s 씩이면 직렬 0.15s 가 아니라 ≈0.05s."""
+    import threading
+    import time as _time
+
+    class SlowLlm(FakeLlm):
+        def __init__(self):
+            super().__init__()
+            self.threads: set[int] = set()
+            self.lock = threading.Lock()
+
+        def complete_json(self, system, user, schema, max_tokens):
+            with self.lock:
+                self.threads.add(threading.get_ident())
+            if not isinstance(user, str):
+                _time.sleep(0.05)
+            return super().complete_json(system, user, schema, max_tokens)
+
+    store, rows, *_, settings = _world(tmp_path, n_groups=5, per_group=6)
+    settings = _with_knobs(settings, naming_chunk=2, naming_spread_extra=9.0)
+    llm = SlowLlm()
+    started = _time.monotonic()
+    result = naming.run(store, "g", settings, llm, job_id=None)
+    elapsed = _time.monotonic() - started
+
+    assert result["llmCalls"] == 4 and [k for k, _ in llm.calls].count("vision") == 3
+    assert len(llm.threads) > 1 and elapsed < 0.14
+    assert all(a.concept_name.endswith("(통일)") for a in store.read_assignments("g"))   # 결과 계약 불변
+
+    # naming_parallel=1 이면 직렬로 돌아간다 — 스로틀 때의 손잡이
+    settings_serial = _with_knobs(settings, naming_chunk=2, naming_spread_extra=9.0, naming_parallel=1)
+    started = _time.monotonic()
+    naming.run(store, "g", settings_serial, SlowLlm(), job_id=None)
+    assert _time.monotonic() - started >= 0.15
+
+
+def test_naming_chunk_failure_still_fails_the_run(tmp_path):
+    """청크 하나가 실패하면 naming 전체가 실패한다 — 병렬화가 예외를 삼키지 않는다(통합 호출만 실패를 삼킨다)."""
+    class FlakyLlm(FakeLlm):
+        def complete_json(self, system, user, schema, max_tokens):
+            out = super().complete_json(system, user, schema, max_tokens)
+            if [k for k, _ in self.calls].count("vision") == 2:
+                raise RuntimeError("bedrock 429")
+            return out
+
+    store, rows, *_, settings = _world(tmp_path, n_groups=5, per_group=6)
+    settings = _with_knobs(settings, naming_chunk=2, naming_spread_extra=9.0)
+    with pytest.raises(RuntimeError, match="bedrock 429"):
+        naming.run(store, "g", settings, FlakyLlm(), job_id=None)
+
+
 def test_naming_coverage_target_limits_vlm_groups(tmp_path):
     store, rows, *_, settings = _world(tmp_path, n_groups=4, per_group=8, clip_parent=None)
     settings = _with_knobs(settings, naming_coverage=0.5, nearest_tau=1.0)

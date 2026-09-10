@@ -124,10 +124,9 @@ def _build_groups(gids: np.ndarray, X: np.ndarray) -> list[_Group]:
 def _vlm_name(llm: LlmClient, chunks: list[list[tuple[_Group, list[bytes]]]], parents: list[str],
               k) -> tuple[dict[int, dict], int]:
     """청크 vision 호출들 → {gid: {parent, proposed_parent, concept, confidence}}, 호출 수."""
-    named: dict[int, dict] = {}
-    calls = 0
     schema = _schema(parents)
-    for chunk in chunks:
+
+    def one(chunk: list[tuple[_Group, list[bytes]]]) -> dict[int, dict]:
         parts: list = [("text", f"큰 분류 목록: {', '.join(parents)}\n그룹 {len(chunk)}개의 대표 사진이다.")]
         for g, imgs in chunk:
             suffix = " — 대표 2장" if len(imgs) > 1 else ""
@@ -135,16 +134,19 @@ def _vlm_name(llm: LlmClient, chunks: list[list[tuple[_Group, list[bytes]]]], pa
             for img in imgs:
                 parts.append(("image", img))
         out = llm.complete_json(SYSTEM, parts, schema, k.naming_max_tokens)
-        calls += 1
         wanted = {g.gid for g, _ in chunk}
-        for item in out.get("groups", []):
-            gid = int(item["group_id"])
-            if gid in wanted:
-                named[gid] = item
-        missing = wanted - set(named)
+        got = {int(item["group_id"]): item for item in out.get("groups", []) if int(item["group_id"]) in wanted}
+        missing = wanted - set(got)
         if missing:
             log.warning("VLM 응답에 그룹 누락: %s — nearest 배정으로 넘긴다", sorted(missing))
-    return named, calls
+        return got
+
+    # 청크는 서로 다른 그룹·다른 사진이라 독립이다 — 동시에 보낸다(#115). 갤러리 17 실측: 11s + 7s 직렬 → max 11s.
+    # 예외는 지금과 같이 전파한다(map 이 첫 예외를 올린다) — 통합 호출과 달리 청크 결과는 산출물 자체라 삼키지 않는다.
+    with ThreadPoolExecutor(max_workers=max(1, min(k.naming_parallel, len(chunks)))) as pool:
+        results = list(pool.map(one, chunks))
+    named = {gid: item for got in results for gid, item in got.items()}
+    return named, len(chunks)
 
 
 def _merge_names(llm: LlmClient, named: dict[int, dict], sizes: dict[int, int], parents: list[str],
