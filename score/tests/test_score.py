@@ -301,6 +301,30 @@ def test_classical_measure_same_for_path_and_decoded_image(tmp_path):
     assert classical.measure(str(path)) == classical.measure(images.load_image(str(path)))
 
 
+def test_bg_luma_reads_the_border_not_the_subject():
+    """검은 배경 + 큰 흰 피사체 — mean_luma 는 밝다고 하고 bg_luma 는 어둡다고 한다(#117)."""
+    from score import classical
+
+    a = np.zeros((400, 600), dtype=np.uint8)
+    a[80:320, 150:450] = 255                      # 가운데 흰 드레스 (화면의 30%)
+    dark_bg = classical.measure(Image.fromarray(a).convert("RGB"))
+    assert dark_bg["bg_luma"] < 10                # 테두리는 검다
+    assert dark_bg["mean_luma"] > 60              # 평균은 피사체에 끌려 올라간다
+
+    white_bg = classical.measure(Image.fromarray(255 - a).convert("RGB"))
+    assert white_bg["bg_luma"] > 245              # 같은 구도, 배경만 반대
+    assert dark_bg["bg_luma"] < white_bg["bg_luma"] - 200
+
+
+def test_bg_luma_ignores_a_subject_touching_the_border():
+    """링에 팔 하나가 걸려도 median 이라 배경 값이 유지된다."""
+    from score import classical
+
+    a = np.zeros((400, 600), dtype=np.uint8)
+    a[:, 280:320] = 255                           # 위아래 테두리를 관통하는 밝은 띠
+    assert classical.measure(Image.fromarray(a).convert("RGB"))["bg_luma"] < 10
+
+
 # ── categorize 와의 계약 ───────────────────────────────────────────────────────
 def _literal(path: Path, name: str):
     tree = ast.parse(path.read_text(encoding="utf-8"))
