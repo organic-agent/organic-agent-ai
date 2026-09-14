@@ -25,9 +25,10 @@ def _unit(v):
     return v / np.linalg.norm(v)
 
 
-def _world(tmp_path, n_groups=3, per_group=10, seed=0, clip_parent="실내 스튜디오"):
+def _world(tmp_path, n_groups=3, per_group=10, seed=0, clip_parent="실내 스튜디오", bg=None):
     """그룹마다 중심 벡터 + 노이즈. E(임베더)·C(CLIP)는 같은 그룹 구조를 공유한다.
-    clip_parent 는 score 가 사진마다 저장하는 부모 검증 라벨(sub_scores.clip_parent)이다."""
+    clip_parent 는 score 가 사진마다 저장하는 부모 검증 라벨(sub_scores.clip_parent)이다.
+    bg(group, j) 를 주면 그 값을 sub_scores.bg_luma 로 싣는다(score #117) — None 이면 아예 없는 갤러리다."""
     rng = np.random.default_rng(seed)
     dim = 32
     centers = [_unit(rng.normal(size=dim)) for _ in range(n_groups)]
@@ -44,6 +45,8 @@ def _world(tmp_path, n_groups=3, per_group=10, seed=0, clip_parent="실내 스�
                             "sharpness": rng.uniform(50, 500),
                             "clip_parent": clip_parent},
                 model_version=MODEL_VERSION))
+            if bg is not None:
+                rows[-1].sub_scores["bg_luma"] = float(bg(g, j))
     E, C = np.stack(E), np.stack(C)
     for r, t in zip(rows, percentile([r.sub_scores["technical_score"] for r in rows])):
         r.technical_pct = t
@@ -319,12 +322,67 @@ def test_naming_chunk_failure_still_fails_the_run(tmp_path):
 
 
 def test_naming_coverage_target_limits_vlm_groups(tmp_path):
+    """이웃이 가까울 때(group_distance 를 넘게 잡아 고립 보강을 끈 상태) 커버리지가 상한이다."""
     store, rows, *_, settings = _world(tmp_path, n_groups=4, per_group=8, clip_parent=None)
-    settings = _with_knobs(settings, naming_coverage=0.5, nearest_tau=1.0)
+    settings = _with_knobs(settings, naming_coverage=0.5, nearest_tau=1.0, group_distance=2.0)
     result = naming.run(store, "g", settings, FakeLlm(), job_id=None)
     assert result["vlmGroups"] < result["groups"]
     assert result["nearestGroups"] == result["groups"] - result["vlmGroups"]
     assert 0.5 <= result["coverage"] < 1.0
+
+
+# ── 고립 그룹 보강 · 배경 검증 (#118) ────────────────────────────────────────
+def test_isolated_group_is_named_even_outside_the_coverage_target(tmp_path):
+    """합성 세계의 그룹 중심은 서로 직교에 가깝다 — 전부 고립이라 커버리지를 넘겨 모두 이름을 받는다."""
+    store, rows, *_, settings = _world(tmp_path, n_groups=4, per_group=8, clip_parent=None)
+    settings = _with_knobs(settings, naming_coverage=0.5, nearest_tau=1.0, group_distance=0.2)
+    result = naming.run(store, "g", settings, FakeLlm(), job_id=None)
+    assert result["vlmGroups"] == result["groups"]
+    assert result["isolatedGroups"] == result["groups"] - 2      # 커버리지로 2개, 나머지는 고립 보강
+    assert result["nearestGroups"] == 0
+
+
+def test_isolation_is_keyed_to_group_distance_not_nearest_tau(tmp_path):
+    """τ 에 걸면 오배정이 그대로 남는다(운영 갤러리 25: 거리 0.239 가 τ=0.25 를 통과) — 기준은 group_distance 다.
+
+    τ=0(모든 그룹이 τ 밖)인데 group_distance=2(고립 없음)로 두면, 기준을 잘못 잡은 구현만 전부 이름을 짓는다."""
+    store, rows, *_, settings = _world(tmp_path, n_groups=4, per_group=8, clip_parent=None)
+    settings = _with_knobs(settings, naming_coverage=0.5, nearest_tau=0.0, group_distance=2.0)
+    result = naming.run(store, "g", settings, FakeLlm(), job_id=None)
+    assert result["isolatedGroups"] == 0
+    assert result["vlmGroups"] < result["groups"]
+
+
+def test_borrowed_name_with_a_different_background_needs_review(tmp_path):
+    """이름을 빌려온 그룹과 배경 밝기가 다르면 확인 대상 — 부모(실내 스튜디오)로는 검은·흰 스튜디오가 안 갈린다."""
+    store, rows, *_, settings = _world(tmp_path, n_groups=3, per_group=6, clip_parent=None,
+                                       bg=lambda g, j: 5.0 if g == 2 else 200.0)
+    settings = _with_knobs(settings, naming_coverage=0.4, nearest_tau=1.0, group_distance=2.0)
+    result = naming.run(store, "g", settings, FakeLlm(), job_id=None)
+    assert result["nearestGroups"] >= 1
+    assert result["bgMismatchGroups"] == 1
+    borrowed = [a for a in store.read_assignments("g") if a.assigned_by == "nearest"]
+    assert any(a.needs_review for a in borrowed)
+
+
+def test_background_outlier_inside_a_named_group_needs_review(tmp_path):
+    """대표 사진을 보고 지은 이름인데 멤버 배경이 다르면, 그 그룹 자체가 확인 대상이다."""
+    store, rows, *_, settings = _world(tmp_path, n_groups=2, per_group=8, clip_parent=None,
+                                       bg=lambda g, j: 200.0 if j % 2 == 0 else 5.0)
+    settings = _with_knobs(settings, group_distance=2.0)
+    result = naming.run(store, "g", settings, FakeLlm(), job_id=None)
+    assert result["vlmGroups"] == result["groups"]
+    assert result["bgMismatchGroups"] == result["groups"]
+    assert all(a.needs_review for a in store.read_assignments("g"))
+
+
+def test_missing_bg_luma_never_triggers_review(tmp_path):
+    """재점수 전 갤러리는 bg_luma 가 없다 — 없는 신호가 리뷰를 켜면 안 된다."""
+    store, rows, *_, settings = _world(tmp_path, n_groups=3, per_group=6, clip_parent=None)
+    settings = _with_knobs(settings, naming_coverage=0.4, nearest_tau=1.0, group_distance=2.0)
+    result = naming.run(store, "g", settings, FakeLlm(), job_id=None)
+    assert result["bgMismatchGroups"] == 0
+    assert result["needsReview"] == 0
 
 
 def test_naming_spread_adds_second_rep(tmp_path):

@@ -3,7 +3,8 @@
 ai-folder-structure.md의 ②~④ 구현. 층마다 잘하는 도구:
 
     ② 이름   크기순으로 사진 커버리지 목표(naming_coverage, 상한 naming_max_groups)까지 고른
-             그룹의 대표 1~2장(spread 크면 2장)을 Bedrock Sonnet에 (청크 호출 → 통합 텍스트 호출 1회)
+             그룹 + **이름을 빌려올 이웃이 없는 고립 그룹**(#118)의 대표 1~2장(spread 크면 2장)을
+             Bedrock Sonnet에 (청크 호출 → 통합 텍스트 호출 1회)
              · 부모 = 닫힌 고정 목록 (JSON 스키마 enum으로 강제, 목록 밖이면 '기타'+proposed)
              · 컨셉 = 열린 이름
     ③ 배정   K 밖 소그룹 → concat 공간에서 이름 붙은 그룹 중심과 최근접. 거리 > τ 면 '기타/기타'
@@ -11,6 +12,9 @@ ai-folder-structure.md의 ②~④ 구현. 층마다 잘하는 도구:
     ④ 검증   score 가 사진마다 저장한 CLIP zero-shot 부모 라벨(sub_scores.clip_parent) → 그룹 다수결.
              VLM 부모와 다르거나 confidence < 기준이면 needs_review. 검증 전용 — 판정은 VLM의 것.
              여기서 CLIP 텍스트 인코더를 올리지 않는다 — 이 모듈은 torch 없이 돈다(#26·#35)
+             배경 밝기(sub_scores.bg_luma, score #117)도 같은 자리에서 본다 — 부모는 배경색을 모른다.
+             '실내 스튜디오'라는 큰 분류는 검은 스튜디오와 흰 스튜디오를 함께 덮으므로, 이름이 가리키는
+             배경과 사진의 배경이 어긋나는 것은 이 값으로만 드러난다(#118)
 
 Bedrock 이미지 호출은 그룹 수 상한으로 절대 상한이 잡힌다(⌈이미지 수/naming_chunk⌉+1회) —
 갤러리가 커져도 비용은 커버리지 목표와 상한이 정한 범위를 넘지 않는다.
@@ -36,6 +40,30 @@ from categorize.store import ConceptAssignment, Store
 log = logging.getLogger(__name__)
 
 ETC = "기타"
+
+#: 배경 밝기(0~255)가 이만큼 어긋나면 "다른 배경"으로 본다 — 검증 전용이고 배정은 바꾸지 않는다.
+#: 운영 갤러리 25 실측: 검은 스튜디오 5 · 화이트 벽 199 · 흰 배경 243 (차이 190+), 같은 세트 안의
+#: 자연스러운 흔들림은 30 안팎(야외 그룹 p10~p90 158~185). 80 은 그 사이에 넉넉히 들어간다.
+BG_GAP = 80.0
+
+
+def _bg_median(rows, idxs) -> float | None:
+    """사진들의 배경 밝기 median. 값이 하나도 없으면 None — 재점수 전 갤러리는 검증을 건너뛴다."""
+    vals = [rows[i].sub_scores.get("bg_luma") for i in idxs]
+    vals = [float(v) for v in vals if v is not None]
+    return float(np.median(vals)) if vals else None
+
+
+def _bg_outliers(rows, idxs, ref: float | None) -> int:
+    """[ref] 에서 [BG_GAP] 넘게 벗어난 사진 수. ref 가 없으면 0 — 없는 신호가 리뷰를 켜지 않는다."""
+    if ref is None:
+        return 0
+    n = 0
+    for i in idxs:
+        v = rows[i].sub_scores.get("bg_luma")
+        if v is not None and abs(float(v) - ref) > BG_GAP:
+            n += 1
+    return n
 
 
 def majority(labels: list[str | None]) -> str | None:
@@ -221,6 +249,25 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
         top.append(g)
         covered += len(g.members)
 
+    # 고립 그룹 보강(#118) — 커버리지 밖이라도 이름을 빌려올 이웃이 없으면 직접 보여 준다.
+    # 판정 거리는 nearest_tau 가 아니라 group_distance 다: 클러스터가 "다른 그룹"이라고 가른 거리보다 먼
+    # 그룹이 이름만 빌려 가는 것이 오배정의 경로였다(운영 갤러리 25: 검은 배경 그룹이 0.239 로 τ=0.25 를
+    # 통과해 '화이트 벽 배경'을 가져갔다). 먼 것부터 넣는다 — 하나 넣으면 그 주변의 고립도가 함께 풀린다.
+    chosen = {g.gid for g in top}
+    rest = [g for g in groups if g.gid not in chosen]
+    isolated = 0
+    while rest and len(top) < k.naming_max_groups:
+        C = np.stack([g.centroid for g in top])
+        far = max(rest, key=lambda g: 1.0 - float(np.max(C @ g.centroid)))
+        if 1.0 - float(np.max(C @ far.centroid)) <= k.group_distance:
+            break
+        top.append(far)
+        rest.remove(far)
+        covered += len(far.members)
+        isolated += 1
+    if isolated:
+        log.info("[naming] 고립 그룹 %d개를 대상에 추가 — 최근접 이름이 %.2f 보다 멀다", isolated, k.group_distance)
+
     # 대표 이미지 — spread 큰(이질적) 그룹은 중심 최근접 + 최원점 2장 (review-v3-design.md (2))
     reps: dict[int, list[int]] = {}
     for g in top:
@@ -264,7 +311,7 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
     # 배정 만들기 — vlm(K 안) / nearest(K 밖·이미지 없음·응답 누락)
     named_centroids = np.stack([g.centroid for g in named_groups])
     assignments: list[ConceptAssignment] = []
-    counts = {"vlm": 0, "nearest": 0, "review": 0}
+    counts = {"vlm": 0, "nearest": 0, "review": 0, "bg": 0}
     for g in groups:
         # ④ 저장된 사진별 CLIP 부모 라벨의 그룹 다수결 — SCORE 가 계산해 둔 것
         clip_parent = majority([rows[i].sub_scores.get("clip_parent") for i in g.members])
@@ -272,7 +319,13 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
             d = named[g.gid]
             parent, concept = str(d["parent"]), str(d["concept"])
             conf = min(1.0, max(0.0, float(d["confidence"])))
-            review = conf < k.review_confidence or (
+            # 이름은 대표 사진을 보고 지었다 — 대표와 배경이 다른 멤버는 그 이름이 안 맞을 수 있다.
+            bg_off = _bg_outliers(rows, g.members, rows[g.rep_row].sub_scores.get("bg_luma"))
+            if bg_off:
+                counts["bg"] += 1
+                log.info("[naming] 그룹 %d: 대표와 배경이 %.0f 넘게 다른 사진 %d장 — 확인 필요",
+                         g.gid, BG_GAP, bg_off)
+            review = conf < k.review_confidence or bg_off > 0 or (
                 parent != ETC and clip_parent is not None and clip_parent != parent)
             assignments.append(ConceptAssignment(
                 embed_group_id=g.gid, parent_name=parent, concept_name=concept,
@@ -290,8 +343,18 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
                 src = named[named_groups[j].gid]
                 parent, concept = str(src["parent"]), str(src["concept"])
                 review = parent != ETC and clip_parent is not None and clip_parent != parent
+                # 이름을 빌려온 그룹과 배경 밝기가 다르면, 가까워도 같은 세트가 아니다 —
+                # 부모(실내 스튜디오)는 검은 스튜디오와 흰 스튜디오를 함께 덮어 clip_parent 로는 안 잡힌다.
+                src_bg = _bg_median(rows, named_groups[j].members)
+                own_bg = _bg_median(rows, g.members)
+                if src_bg is not None and own_bg is not None and abs(own_bg - src_bg) > BG_GAP:
+                    counts["bg"] += 1
+                    review = True
+                    log.info("[naming] 그룹 %d(배경 %.0f): 그룹 %d '%s'(배경 %.0f) 의 이름을 빌렸지만 배경이 다르다 — 확인 필요",
+                             g.gid, own_bg, named_groups[j].gid, concept, src_bg)
             assignments.append(ConceptAssignment(
                 embed_group_id=g.gid, parent_name=parent, concept_name=concept,
+                # confidence 는 vlm 의 자기 확신이 아니라 1 - 중심 거리다 — 다른 축의 값이 한 컬럼에 온다.
                 confidence=round(max(0.0, 1.0 - dist), 3), assigned_by="nearest",
                 clip_parent=clip_parent, needs_review=review))
             counts["nearest"] += 1
@@ -307,6 +370,7 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
         "gallery": gallery, "pipeline": "v3", "mode": "naming",
         "photos": len(rows), "groups": len(groups),
         "vlmGroups": counts["vlm"], "nearestGroups": counts["nearest"],
+        "isolatedGroups": isolated, "bgMismatchGroups": counts["bg"],
         "needsReview": counts["review"], "parents": per_parent,
         "coverage": round(covered / total_photos, 3) if total_photos else 0.0,
         "extraReps": extra_reps,
