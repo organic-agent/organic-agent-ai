@@ -1,4 +1,4 @@
-"""특징 x — 스칼라 11 + 임베딩 1536. 순서가 wes 와의 계약이다(`FEATURE_SPEC = pref-v1`).
+"""특징 x 만들기 — GalleryData → Features. 모양(이름 · 차원 · `FEATURE_SPEC`)은 `domain/features.py`.
 
 스칼라는 이미 갤러리 내 백분위(0~1)거나 비율이라 그대로. 임베딩은 행마다 L2 정규화한 DINOv3 ⊕ CLIP 에서 **갤러리 평균을
 뺀다** — 촬영 장소·작가 스타일은 갤러리마다 다르므로 절대 위치가 아니라 "그 갤러리 안에서 어느 쪽"을 배운다.
@@ -6,27 +6,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-
 import numpy as np
 
-from preference.store import GalleryData
-
-SUBJECTS = ("bride", "groom", "couple", "group")
-SCALAR_NAMES = (
-    "technical_pct", "aesthetic_pct", "sharpness_pct",
-    "subj_bride", "subj_groom", "subj_couple", "subj_group",
-    "log_group_share", "timeline_pos", "cluster_size_rel", "is_burst",
-)
-N_SCALAR = len(SCALAR_NAMES)
-N_EMB = 768 * 2
-
-
-@dataclass
-class Features:
-    scalar: np.ndarray   # (n, 11)
-    emb: np.ndarray      # (n, 1536), 갤러리 평균 제거
-    emb_mean: np.ndarray  # (1536,) — wes 가 같은 값을 빼야 하므로 함께 둔다(추론 시 갤러리에서 다시 계산)
+from preference.domain.features import SUBJECTS, Features
+from preference.domain.gallery import GalleryData
 
 
 def _l2(v: np.ndarray) -> np.ndarray:

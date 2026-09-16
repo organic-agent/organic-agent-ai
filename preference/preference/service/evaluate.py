@@ -13,11 +13,12 @@ from dataclasses import dataclass
 import numpy as np
 from scipy.stats import binomtest
 
-from preference.config import Knobs
-from preference.features import Features, build
-from preference.model import PreferenceModel, lam, prior, z
-from preference.store import LabeledGallery
-from preference.train import make_sample, train
+from preference.config.settings import Knobs
+from preference.domain.features import Features
+from preference.domain.gallery import LabeledGallery
+from preference.domain.model import PreferenceModel, lam, prior, z
+from preference.service.features import build
+from preference.service.train import make_sample, train
 
 log = logging.getLogger(__name__)
 

@@ -6,7 +6,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-MODULE_ROOT = Path(__file__).resolve().parent.parent
+#: preference/ (모듈 루트) — config/settings.py 에서 세 단계 위.
+MODULE_ROOT = Path(__file__).resolve().parent.parent.parent
 
 
 @dataclass(frozen=True)

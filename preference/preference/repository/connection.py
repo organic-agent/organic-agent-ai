@@ -1,11 +1,11 @@
-"""wes 공유 Postgres 접속. categorize/db.py 와 같은 모양 — SQL 은 전부 `store.DbStore` 에 있다."""
+"""wes 공유 Postgres 접속. categorize 와 같은 모양 — SQL 은 전부 `repository/db_store.py` 에 있다."""
 
 from __future__ import annotations
 
 import psycopg
 from pgvector.psycopg import register_vector
 
-from preference.config import Settings
+from preference.config.settings import Settings
 
 
 def connect(settings: Settings) -> psycopg.Connection:

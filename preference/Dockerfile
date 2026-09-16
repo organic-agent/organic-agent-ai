@@ -11,4 +11,4 @@ RUN mkdir -p /opt/rds-ca \
 
 COPY preference/ ${LAMBDA_TASK_ROOT}/preference/
 
-CMD ["preference.handler.handler"]
+CMD ["preference.controller.handler.handler"]

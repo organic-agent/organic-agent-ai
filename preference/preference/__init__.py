@@ -8,7 +8,6 @@ torch 없음)이 갤러리 CLOSED 때 하고, 추론은 wes 가 사진마다 내
 입력은 전부 DB 에 있는 것이다 — embedder 의 embedding(DINOv3), score 의 clip_embedding·pct·subjects·cluster.
 photo_ratings 는 읽지 않는다(CLAUDE.md). photo_selection_items 는 읽기만 한다.
 
-설계: docs/photoselect/plan-preference-layer.md (로컬).
+패키지는 embedder 와 같은 층으로 나뉜다 — controller → service → repository, 모두가 domain 을 본다.
+특징 순서 계약 `FEATURE_SPEC` 은 `domain/features.py` 에 있다. 설계: docs/photoselect/plan-preference-layer.md (로컬).
 """
-
-FEATURE_SPEC = "pref-v1"

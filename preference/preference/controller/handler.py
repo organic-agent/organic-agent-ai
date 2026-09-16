@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import logging
 
-from preference import job
-from preference.config import Settings
-from preference.store import DbStore
+from preference.config.settings import Settings
+from preference.repository.db_store import DbStore
+from preference.service import job
 
 log = logging.getLogger(__name__)
 logging.getLogger().setLevel(logging.INFO)

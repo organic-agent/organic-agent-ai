@@ -15,10 +15,11 @@ import logging
 import sys
 from pathlib import Path
 
-from preference import job
-from preference.config import Settings
-from preference.golden import load_golden
-from preference.store import DbStore, LocalStore
+from preference.config.settings import Settings
+from preference.repository.db_store import DbStore
+from preference.repository.golden import load_golden
+from preference.repository.local_store import LocalStore
+from preference.service import job
 
 
 def _golden_ids(gd, golden_path: Path) -> list[str]:

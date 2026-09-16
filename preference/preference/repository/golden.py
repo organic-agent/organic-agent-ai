@@ -4,8 +4,6 @@
   openpyxl 없이 zipfile + 정규식으로 읽는다(인라인 문자열 xlsx).
 - `.json` (`golden/dataset1-golden.json`): 파일명 목록. `{"files": [...]}` 또는 `[...]`,
   컷을 적고 싶으면 `[{"cut": "A", "file": "..."}]`. 컷이 없으면 A컷으로 본다.
-
-두 컷 모두 학습에서는 양성이다 — 부부가 고른 사진이라는 사실이 라벨이고, 보정 종류는 선호가 아니라 후처리 요청이다.
 """
 
 from __future__ import annotations
@@ -14,18 +12,13 @@ import html
 import json
 import re
 import zipfile
-from dataclasses import dataclass
 from pathlib import Path
+
+from preference.domain.golden import GoldenItem
 
 _CELL = re.compile(r'<c r="([A-Z]+)(\d+)"[^>]*?(?:/>|>(.*?)</c>)', re.S)
 _TEXT = re.compile(r"<t[^>]*>(.*?)</t>|<v>(.*?)</v>", re.S)
 _FILE = re.compile(r"^[\w.-]+\.(jpe?g|png|heic)$", re.I)
-
-
-@dataclass(frozen=True)
-class GoldenItem:
-    cut: str          # 'A' | 'B'
-    file_name: str
 
 
 def load_golden(path: Path) -> list[GoldenItem]:
