@@ -1,7 +1,8 @@
-"""실행 결과 값 타입. service 가 만들어 controller(handler · __main__)로 돌려준다.
+"""배치 임베딩 실행 결과 값 타입. service 가 만들어 controller(embed · __main__)로 돌려준다.
 
-    RunResult        배치 임베딩 한 번의 결과. run() 이 도는 동안 누적하므로 frozen 이 아니다.
-    AdminJobResult   관리자 사진 교체 한 건의 결과.
+    RunResult   배치 임베딩 한 번의 결과. run() 이 도는 동안 누적하므로 frozen 이 아니다.
+
+어드민 쪽 결과(`AdminJobResult`)는 `domain/admin.py` 에 있다(#123).
 
 `to_dict()` 의 camelCase 키는 바깥에 보이는 모양이다. 지금은 읽는 쪽이 없다 — Lambda 는 EVENT 호출이라 wes 가
 응답을 받지 않고, handler 는 로그에, __main__ 은 stdout 에 찍을 뿐이다. 누가 이 값을 계약으로 읽게 되면
@@ -12,7 +13,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from embedder.domain.admin import AdminPhotoEvent
 
 
 @dataclass
@@ -53,26 +53,3 @@ class RunResult:
         if self.photo_ids is not None:
             out["photoIds"] = self.photo_ids
         return out
-
-
-@dataclass(frozen=True)
-class AdminJobResult:
-    """관리자 사진 교체 한 건의 결과. `status` 는 SUCCEEDED · FAILED · IGNORED 셋 중 하나다.
-
-    `detail` 은 상태에 따라 다르다 — 성공이면 `previewKey` 또는 `embeddingDimension`, 실패·무시면 `failureCode`.
-    """
-
-    event: AdminPhotoEvent
-    status: str
-    detail: dict = field(default_factory=dict)
-
-    def to_dict(self) -> dict:
-        return {
-            "jobId": self.event.job_id,
-            "attemptCount": self.event.attempt_count,
-            "jobType": self.event.job_type,
-            "photoId": self.event.photo_id,
-            "revisionId": self.event.revision_id,
-            "status": self.status,
-            **self.detail,
-        }

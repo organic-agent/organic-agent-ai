@@ -44,7 +44,7 @@ from embedder.config.settings import Settings
 from embedder.domain.photo import EmbeddingResult, PhotoMetadata, PhotoRef
 from embedder.domain.run import RunResult
 from embedder.infrastructure import model
-from embedder.repository import db
+from embedder.repository import connection, photos
 from embedder.repository.storage import PhotoStorage
 from embedder.service import images, metadata
 
@@ -72,7 +72,7 @@ def run(
     """사진 id 목록(운영), 또는 갤러리에서 아직 벡터가 없는 사진 전체(로컬 CLI).
 
     `photo_ids` 가 있으면 **그 목록만** 임베딩한다 — wes 스위퍼가 배정해 부르는 스트리밍 경로(#73). 대상 조회·잠금이 없다.
-    없으면 `db.fetch_targets` 로 갤러리를 훑는다(로컬 `local-ai.sh`).
+    없으면 `photos.fetch_targets` 로 갤러리를 훑는다(로컬 `local-ai.sh`).
 
     `remaining_seconds`는 실행 환경이 남은 시간을 알려 주는 함수다. Lambda handler가
     `context.get_remaining_time_in_millis`를 감싸 넘기고, 로컬 CLI는 None이다(멈추지 않는다).
@@ -86,12 +86,12 @@ def run(
 
     storage = PhotoStorage(settings.s3_bucket, max_concurrency=settings.download_workers)
 
-    with db.connect(settings) as connection:
+    with connection.connect(settings) as conn:
         if photo_ids is not None:
             # v2 스트리밍 경로 — 잠금·조정자 없음. 배정한 쪽(wes)이 겹치지 않게 했다.
-            targets = db.fetch_by_ids(connection, photo_ids)
+            targets = photos.fetch_by_ids(conn, photo_ids)
         else:
-            targets = db.fetch_targets(connection, gallery_id)
+            targets = photos.fetch_targets(conn, gallery_id)
 
         result.targets = len(targets)
         log.info("%s: 대상 %s장", tag, len(targets))
@@ -171,8 +171,8 @@ def run(
                 if loaded_images:
                     vectors = embedder.encode(loaded_images)
 
-                    stored = db.store_embeddings(
-                        connection,
+                    stored = photos.store_embeddings(
+                        conn,
                         [
                             EmbeddingResult(item.ref, vector, item.preview_key, item.metadata)
                             for item, vector in zip(pending, vectors)
@@ -182,7 +182,7 @@ def run(
 
                     # ④ 배치 단위로 커밋한다. 중간에 죽어도 그때까지의 벡터·미리보기는 남고,
                     # 남은 사진은 wes 가 다시 배정한다(로컬 CLI 면 fetch_targets 가 나머지만 집어 온다).
-                    connection.commit()
+                    conn.commit()
                     result.processed += stored
 
                 batch_seconds = time.monotonic() - batch_started

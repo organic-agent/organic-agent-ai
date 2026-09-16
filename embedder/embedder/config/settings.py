@@ -4,13 +4,13 @@ Lambda에는 Terraform이 값을 넣어 주고(인프라 레포의 `modules/embe
 환경에서 온다.
 
 원래 이 모듈에서 가장 중요한 점은 DB 비밀번호가 **없다**는 것이었다. 접속은 RDS IAM 인증을
-쓰고, `db.py`가 매 실행마다 짧은 수명의 토큰을 만들어 비밀번호 자리에 넣었다.
+쓰고, `repository/connection.py`가 매 실행마다 짧은 수명의 토큰을 만들어 비밀번호 자리에 넣었다.
 
 지금은 조직 SCP가 `rds-db:connect`를 계정 전체에서 거부해 그 설계를 쓰지 못한다. 임시로
 `DB_PASSWORD`를 받아 쓴다. 이 환경변수는 Terraform이 넣지 않는다 -- 넣으면 state에 평문으로
 남기 때문에, apply 밖에서 주입하고 `ignore_changes`가 지켜 준다.
 
-**이건 임시 우회로다.** SCP가 풀리면 `db_password`와 `db.py`의 password 인자를 지우고 토큰
+**이건 임시 우회로다.** SCP가 풀리면 `db_password`와 `repository/connection.py`의 password 인자를 지우고 토큰
 생성으로 되돌린다. 절차는 인프라 레포 `docs/runbook.md`의 "SCP 차단" 절.
 """
 
@@ -32,7 +32,7 @@ class Settings:
     #:
     #: 원래는 이 필드가 없었다 -- RDS IAM 인증으로 비밀번호 자체가 필요 없는 설계였다.
     #: 조직 SCP가 rds-db:connect를 거부해 임시로 되돌린 상태다. SCP가 풀리면 이 필드와
-    #: db.py의 password 인자를 함께 지우고 토큰 생성으로 돌아간다.
+    #: repository/connection.py의 password 인자를 함께 지우고 토큰 생성으로 돌아간다.
     #: 자세한 경위와 원복 절차는 인프라 레포의 docs/runbook.md "SCP 차단" 절에 있다.
     db_password: str
 
