@@ -1,8 +1,7 @@
-"""어드민 경로 — 관리자 사진 교체 outbox 호출 `{"jobId", "attemptCount", "jobType", "photoId", "galleryId", "storageKey", "revisionId"}`.
+"""어드민 경로 — 관리자 사진 교체 outbox 호출.
 
-페이로드를 검증해 `AdminPhotoEvent` 로 바꾸고 `service.admin_job` 에 넘긴다. wes `StageCallDto.ExactPhoto` 계약의
-모양(JSON 키 이름 · 허용 jobType · 길이 제한)은 전부 이 파일에만 있어서, wes 쪽 계약이 바뀌면 여기만 고친다.
-값 타입 자체는 `domain/admin.py` 에 있다.
+페이로드 `{"jobId", "attemptCount", "jobType", "photoId", "galleryId", "storageKey", "revisionId"}` 를 검증해
+`AdminPhotoEvent` 로 바꾼다. wes 계약(키 이름 · 허용 jobType · 길이 제한)은 이 파일에만 있다.
 """
 
 from __future__ import annotations
@@ -11,7 +10,7 @@ from embedder.config.settings import Settings
 from embedder.domain.admin import AdminPhotoEvent
 from embedder.service import admin_job
 
-#: wes V15(#100)가 QUALITY_ANALYSIS 잡과 그 점수 컬럼을 지웠다 — 관리자 사진 교체는 파생본과 벡터 둘뿐이다.
+#: 관리자 사진 교체는 파생본과 벡터 둘뿐이다.
 SUPPORTED_JOB_TYPES = frozenset({"DERIVATIVE", "EMBEDDING"})
 
 

@@ -1,4 +1,4 @@
-"""관리자 사진 교체 뒤 한 사진·한 리비전만 처리하는 비동기 작업."""
+"""관리자 사진 교체 뒤 한 사진·한 리비전만 처리한다."""
 
 from __future__ import annotations
 
@@ -18,9 +18,7 @@ log = logging.getLogger(__name__)
 
 def run(event: AdminPhotoEvent, settings: Settings) -> dict:
     try:
-        # 검증 SELECT가 여는 transaction은 이미지 다운로드·디코딩·모델 추론 전에 끝낸다.
-        # 검증 뒤 대상이 바뀌는 race는 아래 final transaction의 exact attempt/revision CAS가
-        # 막는다. 따라서 긴 S3/CPU 구간에는 DB connection도 transaction도 잡지 않는다.
+        # 긴 S3/CPU 구간 동안 DB 트랜잭션을 잡지 않는다. 검증 뒤 대상이 바뀌는 race 는 마지막 CAS 가 막는다.
         with connection.connect(settings) as verification_connection:
             if not admin_jobs.verify_admin_photo_event(verification_connection, event):
                 raise AdminPhotoProcessingError("TARGET_REVISION_MISMATCH")
@@ -44,15 +42,12 @@ def run(event: AdminPhotoEvent, settings: Settings) -> dict:
                 photo_metadata = None
             result = {"previewKey": preview_key}
         elif event.job_type == "EMBEDDING":
-            # DERIVATIVE 경로는 이 줄을 지나지 않는다. 모델은 첫 EMBEDDING에서만
-            # 올라가고 웜 스타트에서는 model.get_embedder 캐시를 재사용한다.
             vector = model.load_from(settings).encode([prepared])[0]
             result = {"embeddingDimension": len(vector)}
-        else:  # AdminPhotoEvent가 막지만 타입 계약을 이 함수에도 남긴다.
+        else:
             raise AdminPhotoProcessingError("UNSUPPORTED_JOB_TYPE")
 
-        # 결과 계산 뒤 새 connection/transaction에서 사진 결과와 job terminal CAS를 함께
-        # commit한다. 취소·재시도·새 리비전이 먼저 이기면 둘 다 rollback된다.
+        # 사진 결과와 job 상태를 새 트랜잭션에서 함께 CAS 한다. 먼저 이긴 쪽이 있으면 둘 다 rollback.
         with connection.connect(settings) as final_connection:
             if event.job_type == "DERIVATIVE":
                 admin_jobs.complete_admin_derivative(final_connection, event, preview_key, photo_metadata)

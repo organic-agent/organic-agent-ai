@@ -1,9 +1,6 @@
-"""DINOv3 장면 임베딩.
+"""DINOv3 장면 임베딩. CLS 토큰을 L2 정규화해 돌려준다.
 
-CLS 토큰을 L2 정규화해서 돌려준다. pgvector의 `<=>`(코사인 거리)는 스케일에 무관하므로
-클러스터링 질의는 정규화 없이도 맞게 동작하지만, 정규화해 두면 "내적 = 코사인 유사도"가
-성립해 나중에 내적 기반 인덱스로 옮길 때 값을 다시 만질 필요가 없다. 정규화되지 않은 벡터가
-섞여 있으면 그때 원인을 찾기가 어려워지므로 적재 시점에 못박는다.
+정규화해 두면 내적이 곧 코사인 유사도라 나중에 인덱스를 바꿔도 값을 다시 만질 필요가 없다.
 """
 
 from __future__ import annotations
@@ -21,8 +18,7 @@ log = logging.getLogger(__name__)
 
 class DinoEmbedder:
     def __init__(self, model_id: str, model_revision: str, expected_dim: int) -> None:
-        # torch는 여기서만 import한다. 임포트 자체가 수 초 걸려서, 모델을 안 쓰는 경로가
-        # 그 값을 치르지 않게 한다.
+        # torch import 는 수 초 걸린다. 모델을 안 쓰는 경로가 그 값을 치르지 않게 여기서만 import 한다.
         import torch
         from transformers import AutoImageProcessor, AutoModel
 
@@ -31,7 +27,6 @@ class DinoEmbedder:
         self.model_revision = model_revision
         self.expected_dim = expected_dim
 
-        # Lambda에는 GPU가 없다. 로컬 맥에서 같은 코드를 돌릴 때만 MPS가 잡힌다.
         if torch.cuda.is_available():
             self.device = "cuda"
         elif torch.backends.mps.is_available():
@@ -51,8 +46,7 @@ class DinoEmbedder:
             cls = torch.nn.functional.normalize(cls, dim=-1)
             vectors = cls.float().cpu().numpy()
 
-        # 모델과 DB 컬럼이 어긋나면 UPDATE에서도 걸리지만, 그때는 이미 배치 하나를 통째로
-        # 계산한 뒤다. 첫 배치에서 바로 멈추는 편이 낫다.
+        # DB 컬럼 폭과 어긋나면 UPDATE 에서도 걸리지만, 첫 배치에서 바로 멈추는 편이 낫다.
         if vectors.shape[1] != self.expected_dim:
             raise RuntimeError(
                 f"임베딩 차원이 설정과 다릅니다: 모델 {vectors.shape[1]}, 기대값 {self.expected_dim}"

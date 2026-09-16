@@ -1,11 +1,7 @@
 """일반 경로 — wes 스위퍼의 배치 임베딩 호출 `{"galleryId": 1, "photoIds": [101, …]}`.
 
-wes 스위퍼가 배정한 사진 목록만 임베딩한다(운영 유일 경로, #73·#100). `LambdaStageInvoker.payloadOf` 의
-`StageCall.Embed` 가 이 모양으로만 보낸다. 잠금·샤딩·자기 재호출 없음 — 남거나 실패한 장은 wes 가
-`photos.dispatched_at` 을 되돌려 다시 배정한다.
-
-갤러리 전체는 로컬 CLI(`python -m embedder --gallery-id N`)의 일이다 — Lambda 로는 받지 않는다.
-15분 타임아웃 앞에서 배치 경계에서 멈춘다(`job.run` 의 `remaining_seconds`). 50장은 그 근처에 가지 않지만 코드 경로는 같다.
+배정받은 사진 목록만 임베딩한다. 잠금·샤딩·자기 재호출은 없고, 남거나 실패한 장은 wes 가 다시 배정한다.
+갤러리 전체는 로컬 CLI 의 일이라 Lambda 로는 받지 않는다.
 """
 
 from __future__ import annotations

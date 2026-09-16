@@ -1,10 +1,9 @@
-"""admin_processing_jobs · admin_photo_revisions 읽기/쓰기 — 관리자 사진 교체(exact-photo) 경로.
+"""admin_processing_jobs · admin_photo_revisions 읽기/쓰기 — 관리자 사진 교체 경로.
 
-wes 가 만든 잡 한 건을 attempt·revision 으로 CAS 하며 사진 결과와 잡 상태를 한 트랜잭션에 쓴다.
-취소·재시도·새 리비전이 먼저 이기면 `AdminJobClaimLost` 로 둘 다 버린다.
+사진 결과와 잡 상태를 한 트랜잭션에서 attempt·revision 으로 CAS 한다. 취소·재시도·새 리비전이
+먼저 이기면 `AdminJobClaimLost` 로 둘 다 버린다.
 
-사진 결과 컬럼(preview_key · EXIF · embedding)의 SET 절 순서는 `photos.metadata_params` 와 같아야 한다 — 일반 경로와
-같은 컬럼을 같은 순서로 쓴다.
+사진 결과 컬럼의 SET 절 순서는 `photos.metadata_params` 와 같아야 한다.
 """
 
 from __future__ import annotations
@@ -18,11 +17,11 @@ from embedder.repository.photos import metadata_params
 
 
 class AdminJobClaimLost(RuntimeError):
-    """이 이벤트가 가리키던 attempt/revision이 더는 현재 작업이 아닐 때."""
+    """이벤트가 가리키던 attempt/revision 이 더는 현재 작업이 아니다."""
 
 
 def verify_admin_photo_event(connection: psycopg.Connection, event: AdminPhotoEvent) -> bool:
-    """job·attempt·현재 사진·보존 리비전이 이벤트의 exact target과 모두 같은지 확인한다."""
+    """job·attempt·현재 사진·리비전이 이벤트와 전부 같은지 확인한다."""
     with connection.cursor() as cursor:
         cursor.execute(
             """
@@ -97,9 +96,8 @@ def complete_admin_embedding(
     vector: np.ndarray,
     model_id: str,
 ) -> None:
-    # 벡터는 photo_analysis에 산다(V45). CTE 한 문장인 이유 -- _complete_admin_photo_job이
-    # rowcount 1로 CAS 성공을 판정하므로, 사진 CAS가 빗나가면 벡터 upsert도 0행이어야 한다.
-    # status 는 쓰지 않는다(#100) — V15 부터 embedder 역할에 그 컬럼 UPDATE 권한이 없다. version 만 올려 CAS 한다.
+    # CTE 한 문장인 이유: 사진 CAS 가 빗나가면 벡터 upsert 도 0행이어야 rowcount 로 판정할 수 있다.
+    # photos.status 는 쓰지 않는다(권한 없음). version 만 올려 CAS 한다.
     _complete_admin_photo_job(
         connection,
         event,
@@ -131,7 +129,7 @@ def fail_admin_photo_job(
     event: AdminPhotoEvent,
     failure_code: str,
 ) -> int:
-    """현재 exact attempt만 명시 실패로 바꾼다. 취소·완료된 행은 덮어쓰지 않는다."""
+    """현재 attempt 만 FAILED 로 바꾼다. 취소·완료된 행은 덮어쓰지 않는다."""
     with connection.cursor() as cursor:
         cursor.execute(
             """
@@ -163,7 +161,7 @@ def _complete_admin_photo_job(
     photo_sql: str,
     photo_params: tuple,
 ) -> None:
-    """사진 결과와 job SUCCEEDED를 호출자의 한 DB transaction 안에서 CAS한다."""
+    """사진 결과와 job SUCCEEDED 를 호출자의 한 트랜잭션 안에서 CAS 한다."""
     with connection.cursor() as cursor:
         cursor.execute(photo_sql, photo_params)
         if cursor.rowcount != 1:
