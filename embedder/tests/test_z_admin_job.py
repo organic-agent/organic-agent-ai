@@ -76,19 +76,20 @@ _completed: list[str] = []
 _failed: list[str] = []
 _model_loads = 0
 
-db_module = types.ModuleType("embedder.repository.db")
-db_module.AdminJobClaimLost = _ClaimLost
+connection_module = types.ModuleType("embedder.repository.connection")
+admin_jobs_module = types.ModuleType("embedder.repository.admin_jobs")
+admin_jobs_module.AdminJobClaimLost = _ClaimLost
 def _connect(settings):
     connection = _Connection()
     _connections.append(connection)
     return connection
 
 
-db_module.connect = _connect
-db_module.verify_admin_photo_event = lambda connection, event: True
-db_module.complete_admin_derivative = lambda connection, event, preview, meta: _completed.append("DERIVATIVE")
-db_module.complete_admin_embedding = lambda connection, event, vector, model_id: _completed.append("EMBEDDING")
-db_module.fail_admin_photo_job = lambda connection, event, code: (_failed.append(code) or 1)
+connection_module.connect = _connect
+admin_jobs_module.verify_admin_photo_event = lambda connection, event: True
+admin_jobs_module.complete_admin_derivative = lambda connection, event, preview, meta: _completed.append("DERIVATIVE")
+admin_jobs_module.complete_admin_embedding = lambda connection, event, vector, model_id: _completed.append("EMBEDDING")
+admin_jobs_module.fail_admin_photo_job = lambda connection, event, code: (_failed.append(code) or 1)
 
 images_module = types.ModuleType("embedder.service.images")
 images_module.open_original = lambda data: _Image()
@@ -113,9 +114,10 @@ storage_module = types.ModuleType("embedder.repository.storage")
 storage_module.PhotoStorage = _Storage
 
 # admin_job 이 import 하는 이름 → (담는 하위 패키지, 가짜 모듈). sys.modules 와 패키지 속성을 함께 바꿔야
-# `from embedder.repository import db` 같은 문장이 가짜를 집는다.
+# `from embedder.repository import admin_jobs` 같은 문장이 가짜를 집는다.
 _replacements = {
-    "embedder.repository.db": (embedder.repository, "db", db_module),
+    "embedder.repository.connection": (embedder.repository, "connection", connection_module),
+    "embedder.repository.admin_jobs": (embedder.repository, "admin_jobs", admin_jobs_module),
     "embedder.service.images": (embedder.service, "images", images_module),
     "embedder.service.metadata": (embedder.service, "metadata", metadata_module),
     "embedder.infrastructure.model": (embedder.infrastructure, "model", model_module),
@@ -189,14 +191,14 @@ class AdminPhotoJobTest(unittest.TestCase):
         self.assertEqual(1, _connections[1].commits)
 
     def test_result_cas_loss_marks_still_current_job_failed(self) -> None:
-        original = admin_job.db.complete_admin_embedding
-        admin_job.db.complete_admin_embedding = lambda connection, event, vector, model_id: (_ for _ in ()).throw(
+        original = admin_job.admin_jobs.complete_admin_embedding
+        admin_job.admin_jobs.complete_admin_embedding = lambda connection, event, vector, model_id: (_ for _ in ()).throw(
             _ClaimLost("PHOTO_REVISION_MISMATCH")
         )
         try:
             result = admin_job.run(self.event("EMBEDDING"), self.settings())
         finally:
-            admin_job.db.complete_admin_embedding = original
+            admin_job.admin_jobs.complete_admin_embedding = original
 
         self.assertEqual("FAILED", result["status"])
         self.assertEqual(["PHOTO_REVISION_MISMATCH"], _failed)
@@ -205,17 +207,17 @@ class AdminPhotoJobTest(unittest.TestCase):
         self.assertEqual(1, _connections[2].commits)
 
     def test_late_previous_attempt_is_ignored_when_terminal_cas_is_lost(self) -> None:
-        original_complete = admin_job.db.complete_admin_embedding
-        original_fail = admin_job.db.fail_admin_photo_job
-        admin_job.db.complete_admin_embedding = lambda connection, event, vector, model_id: (_ for _ in ()).throw(
+        original_complete = admin_job.admin_jobs.complete_admin_embedding
+        original_fail = admin_job.admin_jobs.fail_admin_photo_job
+        admin_job.admin_jobs.complete_admin_embedding = lambda connection, event, vector, model_id: (_ for _ in ()).throw(
             _ClaimLost("JOB_ATTEMPT_MISMATCH")
         )
-        admin_job.db.fail_admin_photo_job = lambda connection, event, code: 0
+        admin_job.admin_jobs.fail_admin_photo_job = lambda connection, event, code: 0
         try:
             result = admin_job.run(self.event("EMBEDDING"), self.settings())
         finally:
-            admin_job.db.complete_admin_embedding = original_complete
-            admin_job.db.fail_admin_photo_job = original_fail
+            admin_job.admin_jobs.complete_admin_embedding = original_complete
+            admin_job.admin_jobs.fail_admin_photo_job = original_fail
 
         self.assertEqual("IGNORED", result["status"])
         self.assertEqual("JOB_ATTEMPT_MISMATCH", result["failureCode"])

@@ -49,17 +49,17 @@ class PhotoIdsHandlerTest(unittest.TestCase):
     """v2(#73·#100): 분석 페이로드는 {galleryId, photoIds} 하나다. 재호출·fan-out·갤러리 전수 스캔이 없다."""
 
     def setUp(self) -> None:
-        self._run = handler.job.run
+        self._run = handler.embed.job.run
         self.calls: list[dict] = []
 
         def run(gallery_id, settings, remaining_seconds=None, photo_ids=None, **kwargs):
             self.calls.append({"gallery_id": gallery_id, "photo_ids": photo_ids, "kwargs": kwargs,
                                "remaining": remaining_seconds() if remaining_seconds else None})
             return {"galleryId": gallery_id, "photoIds": len(photo_ids), "processed": len(photo_ids), "stopped": True}
-        handler.job.run = run
+        handler.embed.job.run = run
 
     def tearDown(self) -> None:
-        handler.job.run = self._run
+        handler.embed.job.run = self._run
 
     def test_photo_ids_go_to_job_without_fan_out_or_reinvoke(self) -> None:
         result = handler.handler({"galleryId": "7", "photoIds": [3, "1"]}, _Context(remaining_ms=120_000))

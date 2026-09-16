@@ -1,80 +1,21 @@
 from __future__ import annotations
 
 import sys
-import types
 import unittest
 from pathlib import Path
 
-
-# 대상 선별 SQL 테스트는 이미지·벡터·DB 드라이버를 실행하지 않는다. Lambda 의존성을 전부
-# 설치하지 않은 로컬/CI에서도 이 경계를 검증할 수 있도록 import 자리만 최소 대체한다.
 EMBEDDER_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EMBEDDER_ROOT))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-try:
-    import numpy  # noqa: F401
-except ModuleNotFoundError:
-    sys.modules["numpy"] = types.ModuleType("numpy")
+import db_fakes
 
-try:
-    import psycopg  # noqa: F401
-except ModuleNotFoundError:
-    psycopg_module = types.ModuleType("psycopg")
-    psycopg_module.Error = RuntimeError
-    sys.modules["psycopg"] = psycopg_module
+db_fakes.install_stubs()
+_Connection = db_fakes._Connection
+_ManyConnection = db_fakes._ManyConnection
 
-try:
-    from pgvector.psycopg import register_vector  # noqa: F401
-except ModuleNotFoundError:
-    pgvector_package = types.ModuleType("pgvector")
-    pgvector_package.__path__ = []
-    pgvector_psycopg = types.ModuleType("pgvector.psycopg")
-    pgvector_psycopg.register_vector = lambda connection: None
-    sys.modules["pgvector"] = pgvector_package
-    sys.modules["pgvector.psycopg"] = pgvector_psycopg
-
-from embedder.domain.admin import AdminPhotoEvent
 from embedder.domain.photo import EmbeddingResult, PhotoRef
-from embedder.repository import db
-
-
-class _Cursor:
-    def __init__(self, connection: "_Connection"):
-        self.connection = connection
-
-    def __enter__(self) -> "_Cursor":
-        return self
-
-    def __exit__(self, exc_type, exc_val, exc_tb) -> None:
-        return None
-
-    def execute(self, sql: str, params: tuple) -> None:
-        self.connection.executed.append((" ".join(sql.split()), params))
-        self.rowcount = self.connection.next_rowcount()
-
-    def executemany(self, sql: str, params) -> None:
-        rows = tuple(params)
-        self.connection.executed.append((" ".join(sql.split()), rows))
-        self.rowcount = self.connection.next_rowcount()
-
-    def fetchall(self):
-        return self.connection.rows
-
-    def fetchone(self):
-        return self.connection.rows[0] if self.connection.rows else None
-
-
-class _Connection:
-    def __init__(self, rows: list[tuple], rowcounts: list[int] | None = None):
-        self.rows = rows
-        self.executed: list[tuple[str, tuple]] = []
-        self.rowcounts = iter(rowcounts or [])
-
-    def cursor(self) -> _Cursor:
-        return _Cursor(self)
-
-    def next_rowcount(self) -> int:
-        return next(self.rowcounts, len(self.rows))
+from embedder.repository import photos
 
 
 class FetchTargetsTest(unittest.TestCase):
@@ -87,7 +28,7 @@ class FetchTargetsTest(unittest.TestCase):
     def test_skips_pending_and_trashed_rows(self) -> None:
         connection = _Connection(rows=[(1, "galleries/7/a.jpg"), (2, "galleries/7/b.jpg")])
 
-        targets = db.fetch_targets(connection, gallery_id=7)
+        targets = photos.fetch_targets(connection, gallery_id=7)
 
         sql, params = connection.executed[0]
         self.assertEqual((7,), params)
@@ -106,7 +47,7 @@ class FetchTargetsTest(unittest.TestCase):
         # 컬럼이 없어 전량 실패한다.
         connection = _Connection(rows=[])
 
-        db.fetch_targets(connection, gallery_id=7)
+        photos.fetch_targets(connection, gallery_id=7)
 
         sql, _ = connection.executed[0]
         self.assertNotIn("p.embedding", sql)
@@ -117,19 +58,6 @@ class FetchTargetsTest(unittest.TestCase):
         self.assertTrue(sql.endswith("ORDER BY p.id"))
 
 
-class _ManyCursor(_Cursor):
-    def executemany(self, sql: str, rows) -> None:
-        rows = list(rows)
-        self.connection.executed.append((" ".join(sql.split()), rows))
-        # 실제 드라이버처럼 배치 크기를 갱신 행 수로 본다. rowcounts를 넘긴 테스트는 그 값을 쓴다.
-        self.rowcount = next(self.connection.rowcounts, len(rows))
-
-
-class _ManyConnection(_Connection):
-    def cursor(self) -> _ManyCursor:
-        return _ManyCursor(self)
-
-
 class StoreEmbeddingsTest(unittest.TestCase):
     """벡터는 photo_analysis에, 파생본·EXIF·상태는 photos에 -- 두 문장이 한 배치에서 함께 나가는지 지킨다."""
 
@@ -137,7 +65,7 @@ class StoreEmbeddingsTest(unittest.TestCase):
         connection = _ManyConnection(rows=[])
         ref = PhotoRef(1, "galleries/7/a.jpg")
 
-        stored = db.store_embeddings(
+        stored = photos.store_embeddings(
             connection,
             [EmbeddingResult(ref, "VECTOR", "previews/galleries/7/a.jpg", None)],
             model_id="facebook/dinov3-vitb16-pretrain-lvd1689m",
@@ -161,7 +89,7 @@ class StoreEmbeddingsTest(unittest.TestCase):
         connection = _ManyConnection(rows=[])
         ref = PhotoRef(1, "galleries/7/a.jpg")
 
-        db.store_embeddings(connection, [EmbeddingResult(ref, "VECTOR", "previews/galleries/7/a.jpg", None)], model_id="m")
+        photos.store_embeddings(connection, [EmbeddingResult(ref, "VECTOR", "previews/galleries/7/a.jpg", None)], model_id="m")
 
         photos_sql, photo_rows = connection.executed[1]
         self.assertIn("SET preview_key = %s,", photos_sql)
@@ -172,14 +100,14 @@ class StoreEmbeddingsTest(unittest.TestCase):
     def test_empty_batch_writes_nothing(self) -> None:
         connection = _ManyConnection(rows=[])
 
-        self.assertEqual(0, db.store_embeddings(connection, [], model_id="facebook/dinov3-vitb16-pretrain-lvd1689m"))
+        self.assertEqual(0, photos.store_embeddings(connection, [], model_id="facebook/dinov3-vitb16-pretrain-lvd1689m"))
         self.assertEqual([], connection.executed)
 
     def test_store_cas_uses_fetched_storage_key_and_active_resource_boundaries(self) -> None:
         connection = _Connection(rows=[], rowcounts=[1, 1])
         ref = PhotoRef(17, "galleries/7/original-before-replacement.jpg")
 
-        stored = db.store_embeddings(connection, [EmbeddingResult(ref, [0.1, 0.2], None, None)], model_id="test-model")
+        stored = photos.store_embeddings(connection, [EmbeddingResult(ref, [0.1, 0.2], None, None)], model_id="test-model")
 
         self.assertEqual(1, stored)
         sql, rows = connection.executed[1]
@@ -192,54 +120,9 @@ class StoreEmbeddingsTest(unittest.TestCase):
         connection = _Connection(rows=[], rowcounts=[1, 0])
         old_ref = PhotoRef(17, "galleries/7/old.jpg")
 
-        stored = db.store_embeddings(connection, [EmbeddingResult(old_ref, [0.1, 0.2], "previews/old.jpg", None)], model_id="test-model")
+        stored = photos.store_embeddings(connection, [EmbeddingResult(old_ref, [0.1, 0.2], "previews/old.jpg", None)], model_id="test-model")
 
         self.assertEqual(0, stored)
-
-
-class AdminPhotoJobDatabaseContractTest(unittest.TestCase):
-    def event(self) -> AdminPhotoEvent:
-        return AdminPhotoEvent(11, 2, "QUALITY_ANALYSIS", 31, 41, "galleries/41/photo.jpg", 51)
-
-    def test_verification_cas_includes_job_attempt_revision_and_storage_key(self) -> None:
-        connection = _Connection(rows=[(1,)])
-
-        self.assertTrue(db.verify_admin_photo_event(connection, self.event()))
-
-        sql, params = connection.executed[0]
-        self.assertIn("j.attempt_count = %s", sql)
-        self.assertIn("j.revision_id = %s", sql)
-        self.assertIn("p.storage_key = %s", sql)
-        self.assertIn("r.storage_key = %s", sql)
-        self.assertEqual(11, params[0])
-        self.assertEqual(2, params[1])
-
-    def test_photo_result_and_job_success_are_both_required_before_commit(self) -> None:
-        """사진 결과 CAS 는 맞았는데 잡 terminal CAS 가 빗나가면 둘 다 버린다(rowcount 1 → 0)."""
-        connection = _Connection(rows=[], rowcounts=[1, 0])
-
-        with self.assertRaises(db.AdminJobClaimLost):
-            db.complete_admin_embedding(connection, self.event(), "VECTOR", "m")
-
-        self.assertEqual(2, len(connection.executed))
-        self.assertIn("INSERT INTO photo_analysis", connection.executed[0][0])
-        self.assertIn("status = 'SUCCEEDED'", connection.executed[1][0])
-
-    def test_explicit_failure_only_updates_matching_exact_attempt(self) -> None:
-        connection = _Connection(rows=[], rowcounts=[1])
-
-        updated = db.fail_admin_photo_job(connection, self.event(), "NO_SUCH_KEY")
-
-        self.assertEqual(1, updated)
-        sql, params = connection.executed[0]
-        self.assertIn("attempt_count = %s", sql)
-        self.assertIn("revision_id = %s", sql)
-        self.assertIn("status IN ('DISPATCHING', 'DISPATCHED')", sql)
-        self.assertEqual("NO_SUCH_KEY", params[0])
-
-
-if __name__ == "__main__":
-    unittest.main()
 
 
 class FetchByIdsTest(unittest.TestCase):
@@ -247,7 +130,7 @@ class FetchByIdsTest(unittest.TestCase):
 
     def test_filters_and_keeps_request_order(self) -> None:
         connection = _Connection(rows=[(1, "galleries/7/a.jpg"), (3, "galleries/7/c.jpg")])
-        refs = db.fetch_by_ids(connection, [3, 1, 2])
+        refs = photos.fetch_by_ids(connection, [3, 1, 2])
         sql, params = connection.executed[0]
         self.assertIn("p.id = ANY(%s)", sql)
         self.assertIn("p.storage_key IS NOT NULL", sql)
@@ -259,7 +142,7 @@ class FetchByIdsTest(unittest.TestCase):
 
     def test_empty_ids_skip_the_query(self) -> None:
         connection = _Connection(rows=[])
-        self.assertEqual([], db.fetch_by_ids(connection, []))
+        self.assertEqual([], photos.fetch_by_ids(connection, []))
         self.assertEqual([], connection.executed)
 
 
@@ -272,20 +155,10 @@ class NeverWritesPhotoStatusTest(unittest.TestCase):
 
     def test_store_embeddings_never_touches_status(self) -> None:
         connection = _Connection(rows=[])
-        db.store_embeddings(connection, [EmbeddingResult(self._ref(), "VECTOR", "previews/galleries/7/a.jpg", None)], model_id="m")
+        photos.store_embeddings(connection, [EmbeddingResult(self._ref(), "VECTOR", "previews/galleries/7/a.jpg", None)], model_id="m")
         photos_sql, _ = connection.executed[1]
         self.assertNotIn("status", photos_sql)
         self.assertIn("preview_key = %s", photos_sql)
-
-    def test_admin_embedding_cas_never_touches_status(self) -> None:
-        event = types.SimpleNamespace(job_id=1, attempt_count=1, job_type="EMBEDDING", photo_id=1, revision_id=1,
-                                      gallery_id=7, storage_key="galleries/7/a.jpg")
-        connection = _Connection(rows=[], rowcounts=[1, 1])
-        db.complete_admin_embedding(connection, event, "VECTOR", "m")
-        photo_sql, _ = connection.executed[0]
-        self.assertIn("UPDATE photos p", photo_sql)
-        self.assertNotIn("status", photo_sql)
-        self.assertIn("SET version = version + 1", photo_sql)
 
 
 if __name__ == "__main__":

@@ -148,7 +148,7 @@ def _settings(batch_size: int = 2, stop_margin: int = 60, download_workers: int 
 
 class GalleryJobTest(unittest.TestCase):
     def setUp(self) -> None:
-        self._saved = {name: getattr(job, name) for name in ("db", "images", "metadata", "model", "PhotoStorage")}
+        self._saved = {name: getattr(job, name) for name in ("connection", "photos", "images", "metadata", "model", "PhotoStorage")}
         _Storage.instances.clear()
         self.images = _Images()
         self.model = _Model()
@@ -163,7 +163,8 @@ class GalleryJobTest(unittest.TestCase):
 
     def _install_db(self, targets: list[_Ref]) -> _Db:
         fake = _Db(targets)
-        job.db = fake
+        job.connection = fake
+        job.photos = fake
         return fake
 
     def test_preview_is_uploaded_before_encode_and_encode_reads_uploaded_bytes(self) -> None:

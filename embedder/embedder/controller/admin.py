@@ -1,12 +1,15 @@
-"""관리자 사진 교체 outbox 페이로드 → `AdminPhotoEvent`. wes `StageCallDto.ExactPhoto` 계약의 검증이 여기다.
+"""어드민 경로 — 관리자 사진 교체 outbox 호출 `{"jobId", "attemptCount", "jobType", "photoId", "galleryId", "storageKey", "revisionId"}`.
 
-값 타입 자체는 `domain/admin.py` 에 있다. JSON 키 이름 · 허용 jobType · 길이 제한 같은 "계약의 모양"은
-전부 이 파일에만 있어서, wes 쪽 계약이 바뀌면 여기만 고친다.
+페이로드를 검증해 `AdminPhotoEvent` 로 바꾸고 `service.admin_job` 에 넘긴다. wes `StageCallDto.ExactPhoto` 계약의
+모양(JSON 키 이름 · 허용 jobType · 길이 제한)은 전부 이 파일에만 있어서, wes 쪽 계약이 바뀌면 여기만 고친다.
+값 타입 자체는 `domain/admin.py` 에 있다.
 """
 
 from __future__ import annotations
 
+from embedder.config.settings import Settings
 from embedder.domain.admin import AdminPhotoEvent
+from embedder.service import admin_job
 
 #: wes V15(#100)가 QUALITY_ANALYSIS 잡과 그 점수 컬럼을 지웠다 — 관리자 사진 교체는 파생본과 벡터 둘뿐이다.
 SUPPORTED_JOB_TYPES = frozenset({"DERIVATIVE", "EMBEDDING"})
@@ -16,6 +19,10 @@ class InvalidAdminPhotoEvent(ValueError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+def handle(event: dict, settings: Settings) -> dict:
+    return admin_job.run(parse_admin_photo_event(event), settings)
 
 
 def parse_admin_photo_event(payload: dict) -> AdminPhotoEvent:

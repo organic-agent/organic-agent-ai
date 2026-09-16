@@ -7,9 +7,9 @@ import re
 
 from embedder.config.settings import Settings
 from embedder.domain.admin import AdminPhotoEvent
-from embedder.domain.run import AdminJobResult
+from embedder.domain.admin import AdminJobResult
 from embedder.infrastructure import model
-from embedder.repository import db
+from embedder.repository import admin_jobs, connection
 from embedder.repository.storage import PhotoStorage
 from embedder.service import images, metadata
 
@@ -21,8 +21,8 @@ def run(event: AdminPhotoEvent, settings: Settings) -> dict:
         # 검증 SELECT가 여는 transaction은 이미지 다운로드·디코딩·모델 추론 전에 끝낸다.
         # 검증 뒤 대상이 바뀌는 race는 아래 final transaction의 exact attempt/revision CAS가
         # 막는다. 따라서 긴 S3/CPU 구간에는 DB connection도 transaction도 잡지 않는다.
-        with db.connect(settings) as verification_connection:
-            if not db.verify_admin_photo_event(verification_connection, event):
+        with connection.connect(settings) as verification_connection:
+            if not admin_jobs.verify_admin_photo_event(verification_connection, event):
                 raise AdminPhotoProcessingError("TARGET_REVISION_MISMATCH")
 
         storage = PhotoStorage(settings.s3_bucket)
@@ -53,14 +53,14 @@ def run(event: AdminPhotoEvent, settings: Settings) -> dict:
 
         # 결과 계산 뒤 새 connection/transaction에서 사진 결과와 job terminal CAS를 함께
         # commit한다. 취소·재시도·새 리비전이 먼저 이기면 둘 다 rollback된다.
-        with db.connect(settings) as final_connection:
+        with connection.connect(settings) as final_connection:
             if event.job_type == "DERIVATIVE":
-                db.complete_admin_derivative(final_connection, event, preview_key, photo_metadata)
+                admin_jobs.complete_admin_derivative(final_connection, event, preview_key, photo_metadata)
             else:
-                db.complete_admin_embedding(final_connection, event, vector, settings.model_id)
+                admin_jobs.complete_admin_embedding(final_connection, event, vector, settings.model_id)
             final_connection.commit()
         return AdminJobResult(event, "SUCCEEDED", result).to_dict()
-    except db.AdminJobClaimLost as error:
+    except admin_jobs.AdminJobClaimLost as error:
         code = _failure_code(AdminPhotoProcessingError(str(error)))
         updated = _persist_failure(event, settings, code, "CAS 실패 상태")
         if updated == 1:
@@ -80,8 +80,8 @@ def run(event: AdminPhotoEvent, settings: Settings) -> dict:
 
 def _persist_failure(event: AdminPhotoEvent, settings: Settings, code: str, label: str) -> int:
     try:
-        with db.connect(settings) as failure_connection:
-            updated = db.fail_admin_photo_job(failure_connection, event, code)
+        with connection.connect(settings) as failure_connection:
+            updated = admin_jobs.fail_admin_photo_job(failure_connection, event, code)
             failure_connection.commit()
             return updated
     except Exception:
