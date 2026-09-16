@@ -11,11 +11,15 @@ from __future__ import annotations
 import logging
 import time
 
-from preference.config import Settings
-from preference.evaluate import evaluate_gallery, gate
-from preference.features import SCALAR_NAMES, build
-from preference.store import DbStore, LabeledGallery, LocalStore, Store
-from preference.train import make_sample, train
+from preference.config.settings import Settings
+from preference.domain.features import SCALAR_NAMES
+from preference.domain.gallery import LabeledGallery
+from preference.repository.db_store import DbStore
+from preference.repository.local_store import LocalStore
+from preference.repository.store import Store
+from preference.service.evaluate import evaluate_gallery, gate
+from preference.service.features import build
+from preference.service.train import make_sample, train
 
 log = logging.getLogger(__name__)
 

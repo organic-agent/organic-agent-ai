@@ -8,15 +8,16 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from preference import FEATURE_SPEC
-from preference.config import Knobs, Settings
-from preference.evaluate import auc, evaluate_gallery, gate, logo, recall_at_k, recalls, sign_test
-from preference.features import N_EMB, N_SCALAR, build
-from preference.golden import load_golden
-from preference.model import PreferenceModel, lam, prior, z
-from preference.store import GalleryData, LabeledGallery, LocalStore
-from preference.train import make_sample, train
-from preference import job
+from preference.config.settings import Knobs, Settings
+from preference.domain.features import FEATURE_SPEC, N_EMB, N_SCALAR
+from preference.domain.gallery import GalleryData, LabeledGallery
+from preference.domain.model import PreferenceModel, lam, prior, z
+from preference.repository.golden import load_golden
+from preference.repository.local_store import LocalStore
+from preference.service import job
+from preference.service.evaluate import auc, evaluate_gallery, gate, logo, recall_at_k, recalls, sign_test
+from preference.service.features import build
+from preference.service.train import make_sample, train
 
 GOLDEN = Path(__file__).resolve().parent.parent / "golden" / "파일명_정리.xlsx"
 GOLDEN_JSON = Path(__file__).resolve().parent.parent / "golden" / "dataset1-golden.json"

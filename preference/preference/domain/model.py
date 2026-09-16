@@ -2,6 +2,8 @@
 
     pref(x) = w_scalar·x_scalar + w_emb·x_emb + bias
     score   = z(prior) + λ·z(pref)                  λ = n / (n + n0)
+
+λ · z · prior 는 wes 추천 쪽과 같은 정의여야 하는 계약식이라 여기(domain)에 둔다.
 """
 
 from __future__ import annotations
@@ -10,8 +12,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
-from preference import FEATURE_SPEC
-from preference.features import Features
+from preference.domain.features import FEATURE_SPEC, Features
 
 
 def lam(n_galleries: int, n0: float) -> float:

@@ -53,7 +53,7 @@ ML 모델 파일도, 숫자 하나도 아니다. **숫자 1,548개짜리 행 하
 추천이다 아니다를 가르는 문턱값은 없다. 벡터는 **순위**만 바꾸고, 몇 장을 어디서 고르느냐는 지금 있는 폴더 쿼터와
 MMR 이 정한다.
 
-**사진 → 특징 x (1,547개).** 전부 DB 에 이미 있는 것이다. 순서가 계약(`features.py`, `pref-v1`)이라 학습 쪽과 wes 가 똑같이 만든다.
+**사진 → 특징 x (1,547개).** 전부 DB 에 이미 있는 것이다. 순서가 계약(`domain/features.py`, `pref-v1`)이라 학습 쪽과 wes 가 똑같이 만든다.
 
 | 자리 | 내용 | 출처 |
 |---|---|---|
@@ -156,12 +156,13 @@ prior 의 0.5 가 기준선 — 지금 추천은 부부가 고른 장면의 절�
 ## 7. 실행 모양과 상태
 
 ```
-preference/preference/
-  handler.py     Lambda EVENT {"galleryId": N} → job.run_train        (galleryId 는 로그용, 학습은 CLOSED 전부)
-  __main__.py    export / sanity / train  CLI — 같은 job.run_*
-  store.py       읽기 photos ⋈ photo_analysis · photo_selection_items(읽기 전용) / 쓰기 preference_models · LocalStore(npz)
-  features.py → train.py → model.py       특징 → 로지스틱 → PreferenceModel(raw · fuse · to_row)
-  evaluate.py    recall · AUC · leave-one-gallery-out · gate
+preference/preference/                       (층 구조는 embedder 와 같다 — controller → service → repository, 모두 domain 을 본다)
+  controller/handler.py   Lambda EVENT {"galleryId": N} → service.job.run_train   (galleryId 는 로그용, 학습은 CLOSED 전부)
+  __main__.py             export / sanity / train  CLI — 같은 job.run_*
+  repository/db_store.py  읽기 photos ⋈ photo_analysis · photo_selection_items(읽기 전용) / 쓰기 preference_models
+  repository/local_store.py   npz 캐시 (export 로 받아둔 것)
+  service/features.py → service/train.py → domain/model.py   특징 → 로지스틱(infrastructure/solver.py) → PreferenceModel(raw · fuse · to_row)
+  service/evaluate.py     recall · AUC · leave-one-gallery-out · gate
 ```
 
 | | 상태 |

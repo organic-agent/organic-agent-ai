@@ -43,11 +43,23 @@ cd preference
 ../score/.venv/bin/python -m preference train [--gallery-ids 8,9] [--local]
 ```
 
-Lambda 는 `handler.handler`, 페이로드 `{"galleryId": N}` (wes 가 CLOSED 전이에서 부른다 — 2단계).
+Lambda 는 `controller/handler.handler`, 페이로드 `{"galleryId": N}` (wes 가 CLOSED 전이에서 부른다 — 2단계).
 `preference_models` 테이블은 wes Flyway 소유다. 이 repo 는 마이그레이션을 만들지 않는다.
 
-## 파일
+## 구조
 
-`config.py`(환경 · 손잡이) · `db.py` · `store.py`(GalleryData · Local/Db) · `golden.py`(xlsx · json) · `features.py` · `train.py` ·
-`evaluate.py`(recall · AUC · LOGO · 게이트) · `model.py`(PreferenceModel · λ · z · prior) · `job.py`(run_train · run_sanity) ·
-`handler.py` · `__main__.py`. 산출물·학습 순서·서비스 연결 설명은 `docs/preference-layer.md`(이 디렉토리). 상세 설계와 실측은 루트 `docs/photoselect/plan-preference-layer.md` · `preference-sanity-2026-09-07.md`(로컬).
+패키지는 embedder 와 같은 층으로 나뉘어 있다(#121 과 같은 규칙). 의존은 한 방향이다 — controller → service → repository,
+그리고 모두가 domain 을 본다. scipy.optimize 는 infrastructure 에서만, psycopg 는 repository 에서만 쓴다.
+
+```
+preference/
+├── __main__.py        로컬 CLI export / sanity / train (python -m 규약상 루트)
+├── controller/        handler.py(Lambda 진입 — {"galleryId"} → service.job.run_train)
+├── service/           job.py(run_train · run_sanity) · features.py(build) · train.py(make_sample · train) · evaluate.py(recall · AUC · LOGO · 게이트)
+├── domain/            gallery.py(GalleryData · LabeledGallery) · features.py(FEATURE_SPEC · SCALAR_NAMES · Features) · model.py(PreferenceModel · λ · z · prior) · golden.py(GoldenItem)
+├── repository/        connection.py(접속) · store.py(Store Protocol) · db_store.py(Postgres) · local_store.py(npz 캐시) · golden.py(xlsx · json 로더)
+├── infrastructure/    solver.py(L-BFGS 로지스틱 회귀 — scipy.optimize 는 여기서만)
+└── config/            settings.py(환경변수 → Settings · Knobs)
+```
+
+산출물·학습 순서·서비스 연결 설명은 `docs/preference-layer.md`(이 디렉토리). 상세 설계와 실측은 루트 `docs/photoselect/plan-preference-layer.md` · `preference-sanity-2026-09-07.md`(로컬).
