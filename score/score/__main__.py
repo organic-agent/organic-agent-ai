@@ -18,7 +18,7 @@ import json
 import logging
 import sys
 
-from score import job
+from score.service import job
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -39,33 +39,33 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s | %(message)s")
-    from score.config import Settings
+    from score.config.settings import Settings
     settings = Settings.from_env()
 
     if args.cmd == "train":
-        from score import sagemaker
+        from score.controller import sagemaker
         sys.exit(sagemaker.main())
 
     if args.cmd == "worker":
         if not args.gpu:
             sys.exit("worker 는 --gpu 로만 쓴다 (잡 폴링 워커는 wes 가 EVENT 로 부르면서 없어졌다, #98)")
-        from score import gpu_worker
-        summary = gpu_worker.loop(settings, once=args.once, stop_on_idle=not args.no_idle_stop)
+        from score.service import worker
+        summary = worker.loop(settings, once=args.once, stop_on_idle=not args.no_idle_stop)
         print(json.dumps(summary, ensure_ascii=False))
         if summary.get("aborted"):
             sys.exit(1)
         return
 
     if args.list:
-        from score.gallery import list_galleries
+        from score.repository.dataset import list_galleries
         for g, n in list_galleries(settings.dataset_root):
             print(f"{n:>6}  {g}")
         return
 
     if args.local:
-        from score import pipeline
-        from score.gallery import load_local
-        from score.store import LocalStore
+        from score.repository.dataset import load_local
+        from score.repository.store import LocalStore
+        from score.service import pipeline
         st = LocalStore(settings.out_root, dataset_root=settings.dataset_root)
         refs = load_local(settings.dataset_root, args.local, limit=args.limit, jpg_only=not args.all_formats)
         result = pipeline.run(st, args.local, refs, settings, force=args.force)

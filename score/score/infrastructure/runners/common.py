@@ -1,4 +1,4 @@
-"""러너 공통 — 가중치 캐시. 이미지 로드는 `score.images`(torch 없음)로 옮겼다(#51); 이름은 여기서도 재수출한다."""
+"""러너 공통 — 가중치 캐시(weights/). 이미지 로드는 같은 층의 `images.py`(torch 없음)."""
 
 from __future__ import annotations
 
@@ -6,8 +6,7 @@ import hashlib
 import urllib.request
 from pathlib import Path
 
-from score.config import MODULE_ROOT
-from score.images import PREVIEW_LONG_EDGE, as_image, fit_long_edge, load_image  # noqa: F401 — 호환 재수출
+from score.config.settings import MODULE_ROOT
 
 WEIGHTS_DIR = MODULE_ROOT / "weights"
 

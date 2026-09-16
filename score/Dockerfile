@@ -17,13 +17,13 @@ COPY score/ ${LAMBDA_TASK_ROOT}/score/
 
 # 가중치를 빌드 타임에 굽는다. NAT 없는 프라이빗 서브넷이라 런타임 다운로드는 전부 실패한다.
 #   · CLIP ViT-L/14 (openai)  → open_clip 캐시 ($HOME/.cache/clip)
-#   · LAION 미학 MLP           → score/weights/ (runners.common.fetch_weight)
+#   · LAION 미학 MLP           → score/weights/ (infrastructure/runners/common.py fetch_weight)
 #   · ARNIQA (hub 코드 + spaq 회귀기) → $TORCH_HOME/hub — arniqa.HUB_REPO 의 커밋 SHA 와 같은 ref
 # 런타임 파일시스템은 /tmp 말고 읽기 전용이라 캐시 위치를 /opt 아래로 못박고 같은 값을 ENV 로 남긴다.
 ENV HOME=/opt/home \
     TORCH_HOME=/opt/torch
 RUN mkdir -p /opt/home /opt/torch \
  && cd ${LAMBDA_TASK_ROOT} \
- && python -c "from score.runners import LaionRunner, ArniqaRunner; LaionRunner(); ArniqaRunner()"
+ && python -c "from score.infrastructure.runners import LaionRunner, ArniqaRunner; LaionRunner(); ArniqaRunner()"
 
-CMD ["score.handler.handler"]
+CMD ["score.controller.handler.handler"]

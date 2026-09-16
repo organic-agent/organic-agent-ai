@@ -14,9 +14,9 @@ import torch.nn as nn
 
 from PIL import Image
 
-from score.device import autocast, pick_device
-from score.images import as_image
-from score.runners.common import fetch_weight
+from score.infrastructure.device import autocast, pick_device
+from score.infrastructure.images import as_image
+from score.infrastructure.runners.common import fetch_weight
 
 MLP_COMMIT = "fe88a163f4661b4ddabba0751ff645e2e620746e"
 MLP_URL = (

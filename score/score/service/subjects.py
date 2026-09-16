@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from score.config import PARENT_PROMPTS, PARENTS
+from score.config.settings import PARENT_PROMPTS, PARENTS
 
 SUBJECTS = ("bride", "groom", "couple", "group")
 

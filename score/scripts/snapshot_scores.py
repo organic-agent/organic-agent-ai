@@ -16,8 +16,8 @@ import numpy as np
 
 
 def dump(gallery_id: int, path: str) -> None:
-    from score import db
-    from score.config import Settings
+    from score.config.settings import Settings
+    from score.repository import connection as db
 
     conn = db.connect(Settings.from_env())
     with conn.cursor() as cur:

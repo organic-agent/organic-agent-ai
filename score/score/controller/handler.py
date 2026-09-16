@@ -8,7 +8,7 @@
 멈추면 처리한 만큼은 commit 돼 있고, 남은 사진은 다음 스윕이 다시 보낸다.
 
 옛 갤러리 페이로드(`{"galleryId"}` 만, 또는 `jobId`·`shard`)는 **받지 않는다**: 조용히 갤러리 전수를 스캔하는 대신 에러로 드러낸다.
-갤러리 전체를 돌리는 것은 로컬 CLI(`python -m score --gallery-id N`)와 벤치마크(`score.sagemaker`)의 일이다.
+갤러리 전체를 돌리는 것은 로컬 CLI(`python -m score --gallery-id N`)와 벤치마크(`controller/sagemaker.py`)의 일이다.
 """
 
 from __future__ import annotations
@@ -16,8 +16,8 @@ from __future__ import annotations
 import json
 import logging
 
-from score import job
-from score.config import Settings
+from score.config.settings import Settings
+from score.service import job
 
 log = logging.getLogger(__name__)
 logging.getLogger().setLevel(logging.INFO)

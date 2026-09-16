@@ -22,47 +22,20 @@ from __future__ import annotations
 import logging
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable
 
 import numpy as np
 
-from score.config import MODEL_VERSION, Settings
-from score.gallery import PhotoRef
-from score.images import load_image
-from score.store import PhotoAnalysis, Store
+from score.config.settings import MODEL_VERSION, Settings
+from score.domain.photo import PhotoAnalysis, PhotoRef
+from score.domain.run import ScoreResult
+from score.infrastructure.images import load_image
+from score.repository.store import Store
 
 log = logging.getLogger(__name__)
 
 UNKNOWN = "unknown"
-
-
-@dataclass
-class ScoreResult:
-    gallery: str
-    pipeline: str = "v3"
-    mode: str = "score"
-    targets: int = 0
-    processed: int = 0
-    skipped: int = 0
-    failed: list[str] = field(default_factory=list)
-    #: 데드라인 때문에 배치 경계에서 멈췄다. 남은 사진은 remaining.
-    stopped: bool = False
-    remaining: int = 0
-    subjects_used: bool = False
-    elapsed_seconds: float = 0.0
-    per_stage_seconds: dict = field(default_factory=dict)
-
-    def to_dict(self) -> dict:
-        return {
-            "gallery": self.gallery, "pipeline": self.pipeline, "mode": self.mode,
-            "targets": self.targets, "processed": self.processed, "skipped": self.skipped,
-            "failed": self.failed, "stopped": self.stopped, "remaining": self.remaining,
-            "subjectsUsed": self.subjects_used,
-            "elapsedSeconds": round(self.elapsed_seconds, 1),
-            "perStageSeconds": {k: round(v, 1) for k, v in self.per_stage_seconds.items()},
-        }
 
 
 #: 디코드 스레드가 앞서 준비해 두는 묶음 수. 묶음 = clip_batch 장. 2 면 메모리의 PIL 이미지는 세 묶음을 넘지 않는다.
@@ -76,7 +49,7 @@ def _compute_env(device: str | None = None) -> str:
     try:
         import torch
 
-        from score.device import describe
+        from score.infrastructure.device import describe
 
         dev = f" device={describe(device)}" if device else ""
         return f"torch_threads={torch.get_num_threads()} interop={torch.get_num_interop_threads()} cpu_count={os.cpu_count()}{dev}"
@@ -94,9 +67,9 @@ def _load_runners():
         import torch
 
         torch.set_num_threads(int(threads))
-    from score import classical
-    from score.runners import ArniqaRunner, LaionRunner
-    from score.subjects import ParentTagger, SubjectsTagger
+    from score.infrastructure.runners import ArniqaRunner, LaionRunner
+    from score.service import classical
+    from score.service.subjects import ParentTagger, SubjectsTagger
     return classical, ArniqaRunner, LaionRunner, ParentTagger, SubjectsTagger
 
 
@@ -146,7 +119,7 @@ class Scorer:
         log.info("[score] 워밍 %.1fs", took)
         return took
 
-    def score(self, store: Store, gallery: str, todo: list[PhotoRef], settings: Settings, result: "ScoreResult",
+    def score(self, store: Store, gallery: str, todo: list[PhotoRef], settings: Settings, result: ScoreResult,
               stage: dict[str, float], remaining_seconds: Callable[[], float] | None = None) -> None:
         """`todo` 를 계산해 store 에 쓴다. result·stage 를 채운다(호출자가 만든 것)."""
         k = settings.knobs

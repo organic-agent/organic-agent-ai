@@ -1,6 +1,6 @@
-"""wes 공유 Postgres 접속. embedder/db.py의 connect()와 같은 모양이다.
+"""wes 공유 Postgres 접속. embedder 의 repository/connection.py 와 같은 모양이다.
 
-여기엔 SQL이 없다 — 테이블을 읽고 쓰는 SQL은 전부 `store.DbStore`(파이프라인 데이터)와 `gallery`(대상 조회)에 있다.
+여기엔 SQL이 없다 — 테이블을 읽고 쓰는 SQL은 전부 `store.DbStore`(파이프라인 데이터)와 `photos`(대상 조회)에 있다.
 잡 테이블은 건드리지 않는다(#98, wes 소유).
 """
 
@@ -9,7 +9,7 @@ from __future__ import annotations
 import psycopg
 from pgvector.psycopg import register_vector
 
-from score.config import Settings
+from score.config.settings import Settings
 
 
 def connect(settings: Settings) -> psycopg.Connection:

@@ -18,8 +18,8 @@ import torch
 
 from PIL import Image
 
-from score.device import autocast, pick_device
-from score.images import as_image
+from score.infrastructure.device import autocast, pick_device
+from score.infrastructure.images import as_image
 
 #: 커밋 SHA 고정 — Dockerfile 이 빌드 시 같은 ref 로 hub 캐시(TORCH_HOME)를 채운다. NAT 없는 Lambda 는 런타임에 받을 수 없다.
 HUB_REPO = "miccunifi/ARNIQA:66d16eb0ff1e1655872d32c0c233614a3922aaad"
