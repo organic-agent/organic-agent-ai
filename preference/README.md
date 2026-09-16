@@ -30,10 +30,11 @@ recall@K (K = 3 × 양성 수) 를 **연사 클러스터당 1장으로 dedup 한
 ```bash
 # venv 는 score/.venv 를 같이 쓴다 (numpy · scipy · psycopg · pgvector)
 cd preference
-../score/.venv/bin/python -m pytest -q                                                  # 11
+../score/.venv/bin/python -m pytest -q                                                  # 13
 
 # DB → 로컬 캐시 (터널: ../organic-agent-server/wes/scripts/db-tunnel.sh, 환경변수 DB_HOST=localhost DB_PORT=15432 …)
 ../score/.venv/bin/python -m preference export --gallery-id 8 --golden golden/파일명_정리.xlsx
+#   --golden 은 xlsx(구분·번호·파일명) 또는 json(파일명 목록) — 데이터셋1 은 golden/dataset1-golden.json
 
 # 요구사항 (1) sanity — in-sample 학습 → 재정렬 → 양성이 후보 범위에 드는가
 ../score/.venv/bin/python -m preference sanity --gallery-id 8 --local
@@ -47,6 +48,6 @@ Lambda 는 `handler.handler`, 페이로드 `{"galleryId": N}` (wes 가 CLOSED �
 
 ## 파일
 
-`config.py`(환경 · 손잡이) · `db.py` · `store.py`(GalleryData · Local/Db) · `golden.py`(xlsx) · `features.py` · `train.py` ·
+`config.py`(환경 · 손잡이) · `db.py` · `store.py`(GalleryData · Local/Db) · `golden.py`(xlsx · json) · `features.py` · `train.py` ·
 `evaluate.py`(recall · AUC · LOGO · 게이트) · `model.py`(PreferenceModel · λ · z · prior) · `job.py`(run_train · run_sanity) ·
 `handler.py` · `__main__.py`. 산출물·학습 순서·서비스 연결 설명은 `docs/preference-layer.md`(이 디렉토리). 상세 설계와 실측은 루트 `docs/photoselect/plan-preference-layer.md` · `preference-sanity-2026-09-07.md`(로컬).
