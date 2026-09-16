@@ -15,7 +15,9 @@ import json
 import logging
 import sys
 
-from categorize import job, llm as llm_mod
+from categorize.config.settings import Settings
+from categorize.infrastructure import bedrock
+from categorize.service import job, pipeline
 
 
 def main(argv: list[str] | None = None) -> None:
@@ -29,15 +31,13 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s | %(message)s")
-    from categorize.config import Settings
     settings = Settings.from_env()
     want_llm = args.llm or args.job_id is not None
-    llm = llm_mod.bedrock_client(settings) if want_llm else None
+    llm = bedrock.bedrock_client(settings) if want_llm else None
 
     if args.local:
-        from categorize import pipeline
-        from categorize.gallery import load_local
-        from categorize.store import LocalStore
+        from categorize.repository.local import LocalStore
+        from categorize.repository.photos import load_local
         st = LocalStore(settings.out_root, dataset_root=settings.dataset_root)
         refs = load_local(settings.dataset_root, args.local, limit=args.limit, jpg_only=not args.all_formats)
         result = pipeline.run(st, args.local, refs, settings, llm, job_id=None)

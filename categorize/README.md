@@ -11,7 +11,7 @@ wes ──EVENT {galleryId, jobId}──▶ [categorize] ──▶ ai_concept_as
                                                    실패하면 ai_analysis_jobs.error 한 컬럼만 (#95)
 ```
 
-## 무엇을 계산하나 (`pipeline.py` → `naming.py`)
+## 무엇을 계산하나 (`service/pipeline.py` → `service/naming.py`)
 
 ```
 갤러리 한 번 (E = DINOv3, C = CLIP, 원점수 — 전부 DB)
@@ -35,7 +35,7 @@ Bedrock 이미지 호출 수 ≤ ⌈대표 수/15⌉ + 1 로 비용 상한이 �
 
 | | |
 |---|---|
-| 진입점 | `handler.py`(Lambda EVENT `{"galleryId", "jobId"?}`) / `__main__.py`(CLI) → `job.run()` |
+| 진입점 | `controller/handler.py`(Lambda EVENT `{"galleryId", "jobId"?}`) / `__main__.py`(CLI) → `service/job.run()` |
 | 단위 | 갤러리. 데드라인·잠금 없음 (수 초 + Bedrock 몇 번) |
 | 잡 | **상태를 쓰지 않는다**(#95, wes V16). wes 가 ANALYZING→CATEGORIZING 으로 옮기며 부르고, 배정 행·백분위를 관측해 DONE 을 찍는다. 여기서 쓰는 것은 실패 시 `error` 하나 — photoselect 역할에도 `UPDATE (error, updated_at)` 만 있다 |
 | LLM | 잡(job_id)은 naming 까지가 산출물이라 Bedrock 없이 시작하지 않는다. `BEDROCK_REGION`·`BEDROCK_MODEL_ID`(기본 `global.anthropic.claude-sonnet-4-6`) |
@@ -43,22 +43,28 @@ Bedrock 이미지 호출 수 ≤ ⌈대표 수/15⌉ + 1 로 비용 상한이 �
 
 ## 구조
 
+패키지는 층으로 나뉘어 있다(#131, embedder #121 과 같은 모양). 의존은 한 방향이다 — controller → service → repository · infrastructure,
+그리고 모두가 domain 을 본다. `python -m categorize`(CLI)와 `controller/handler.py`(Lambda)는 같은 `service/job.run()` 을 부른다.
+
 ```
 categorize/
 ├── categorize/
-│   ├── handler.py      Lambda: {galleryId, jobId} → job.run (Bedrock 클라이언트 주입)
-│   ├── __main__.py     CLI: --gallery-id N --job-id J | --gallery-id N [--llm] | --local "갤러리" [--llm]
-│   ├── job.py          잡: 미리보기 있는 사진 목록(다운로드 없음) → pipeline → (실패면 jobs.error). 상태 전이는 wes(#95)
-│   ├── pipeline.py     백분위 · 연사 · 임베딩 그룹 → write_groups → naming
-│   ├── naming.py       Bedrock 이름 · 소그룹 최근접 · clip_parent 다수결(majority) → write_assignments
-│   ├── cluster.py      연사 union-find (카메라 파티션 ∧ 순서 창 ∧ 코사인)
-│   ├── concept.py      임베딩 그룹 — 평균연결 계층 클러스터, 적응 임계
-│   ├── llm.py          BedrockClient.complete_json — JSON 스키마 강제, 텍스트+이미지 블록
-│   ├── config.py       Settings · Knobs · LlmKnobs · MODEL_VERSION · PARENTS
-│   ├── store.py        LocalStore(out/v3/) · DbStore — read_gallery(행+벡터 한 쿼리) · write_groups · write_assignments · preview_paths(배치 SELECT+병렬 다운로드 · S3 풀 = 스레드 수)
-│   ├── gallery.py · storage.py · db.py · jobs.py(fail 하나 — ai_analysis_jobs.error, #95)
-├── tests/test_categorize.py   pytest 23 — concat 성질 · 카메라 파티션 · 적응 임계 · naming 4단계 · 컬럼 경계 · CLIP 폴백 · torch 미import · score 와의 상수 일치 · handler
-├── Dockerfile · deploy.sh     컨테이너 Lambda (torch 없음, 작다) · ECR 푸시 + update-function-code
+│   ├── __main__.py          CLI: --gallery-id N --job-id J | --gallery-id N [--llm] | --local "갤러리" [--llm] (python -m 규약상 루트)
+│   ├── controller/          handler.py — Lambda {galleryId, jobId} → service.job.run (Bedrock 클라이언트 주입)
+│   ├── service/             job.py(잡: 대상 조회 → pipeline → 실패면 error. 상태 전이는 wes #95)
+│   │                        pipeline.py(백분위 · 연사 · 임베딩 그룹 → write_groups → naming)
+│   │                        naming.py(Bedrock 이름 · 소그룹 최근접 · clip_parent 다수결 · 배경 검증 → write_assignments)
+│   │                        cluster.py(연사 union-find — 카메라 파티션 ∧ 순서 창 ∧ 코사인) · concept.py(평균연결 계층 클러스터, 적응 임계)
+│   ├── domain/              photo.py(PhotoRef) · analysis.py(PhotoAnalysis · ConceptAssignment · GalleryRead · Store 프로토콜)
+│   │                        run.py(Grouped · CategorizeResult) — 로직 없음
+│   ├── repository/          connection.py(접속) · analysis.py(DbStore — read_gallery 한 쿼리 · write_groups · write_assignments ·
+│   │                        preview_paths 배치 SELECT+병렬 다운로드) · local.py(LocalStore, out/v3/) · photos.py(load_db · load_local)
+│   │                        jobs.py(fail 하나 — ai_analysis_jobs.error) · storage.py(S3 미리보기, 풀 = 스레드 수)
+│   ├── infrastructure/      bedrock.py(LlmClient 프로토콜 · BedrockClient.complete_json — JSON 스키마 강제, 텍스트+이미지 블록 · jpeg_bytes)
+│   └── config/              settings.py(Settings · Knobs · LlmKnobs · MODEL_VERSION · PARENTS)
+├── tests/                   층별 파일(test_service_* · test_repository_* · test_controller_handler · test_boundaries) — pytest 41.
+│                            helpers.py(합성 갤러리 · FakeLlm) · db_fakes.py(커넥션 가짜). 모델 없음 · torch 미import 를 테스트로 고정
+├── Dockerfile · deploy.sh   컨테이너 Lambda (torch 없음, 작다) · ECR 푸시 + update-function-code
 └── requirements.txt · pyproject.toml
 ```
 
@@ -94,7 +100,7 @@ naming 이 닿는다. 메모리 2–3GB 면 7,000장(거리행렬 ~200MB)까지 
 - `ai_concept_assignments`: `job_id` · `embed_group_id` · `parent_name` · `concept_name` · `confidence` · `assigned_by` ·
   `proposed_parent` · `clip_parent` · `needs_review`
 - 용어: 이 repo 의 `parent_name`(큰 분류)이 wes `ConceptFolder`, `concept_name`(컨셉)이 wes `DetailFolder` 다.
-- 손잡이(`config.py`): 연사 0.96, 그룹 거리 0.2, 최근접 τ 0.25, 커버리지 0.85, review confidence 0.8. 연사·그룹 값은
+- 손잡이(`config/settings.py`): 연사 0.96, 그룹 거리 0.2, 최근접 τ 0.25, 커버리지 0.85, review confidence 0.8. 연사·그룹 값은
   CLIP/DINOv2 시절 실측이라 DINOv3 기준 재측정 대상 — 결과의 `similarityProfile` 이 근거.
 
 설계 근거·역사는 `docs/photoselect/`(review-v3-design.md, plan-v3-folder-compare.md, pipeline-history.md).

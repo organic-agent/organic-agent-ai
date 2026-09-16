@@ -32,10 +32,11 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from categorize.config import PARENTS, Settings
-from categorize.pipeline import Grouped, concat_space
-from categorize.llm import LlmClient, jpeg_bytes
-from categorize.store import ConceptAssignment, Store
+from categorize.config.settings import PARENTS, Settings
+from categorize.domain.analysis import ConceptAssignment, Store
+from categorize.domain.run import Grouped
+from categorize.infrastructure.bedrock import LlmClient, jpeg_bytes
+from categorize.service.pipeline import concat_space
 
 log = logging.getLogger(__name__)
 

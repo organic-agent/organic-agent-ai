@@ -13,8 +13,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# 모듈 루트 = `categorize/`. 로컬 산출물(out/)·데이터셋(../../dataset) 기본 경로의 기준점.
-MODULE_ROOT = Path(__file__).resolve().parents[1]
+# 모듈 루트 = `categorize/`(config/settings.py 에서 두 단계 위). 로컬 산출물(out/)·데이터셋(../../dataset) 기본 경로의 기준점.
+MODULE_ROOT = Path(__file__).resolve().parents[2]
 
 #: `photo_analysis.model_version`. **score 모듈의 같은 상수와 값이 같아야 한다** — 이 값과 같은 행만
 #: "점수 있음"으로 읽는다. 값은 v3 시절 그대로: 바꾸면 전 갤러리가 재점수 대상이 된다.
@@ -65,7 +65,7 @@ class Knobs:
 
 @dataclass(frozen=True)
 class LlmKnobs:
-    """Bedrock 호출(naming) — llm.py 머리말과 같은 제약 (Mantle 없음, global. 크로스 리전)."""
+    """Bedrock 호출(naming) — infrastructure/bedrock.py 머리말과 같은 제약 (Mantle 없음, global. 크로스 리전)."""
 
     aws_region: str = "ap-northeast-2"
     model_id: str = "global.anthropic.claude-sonnet-4-6"

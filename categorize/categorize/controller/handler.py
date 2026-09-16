@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import logging
 
-from categorize import job, llm
-from categorize.config import Settings
+from categorize.config.settings import Settings
+from categorize.infrastructure import bedrock
+from categorize.service import job
 
 log = logging.getLogger(__name__)
 logging.getLogger().setLevel(logging.INFO)
@@ -32,5 +33,5 @@ def handler(event: dict, context) -> dict:
         gallery_id=gallery_id,
         settings=_SETTINGS,
         job_id=job_id,
-        llm=llm.bedrock_client(_SETTINGS),
+        llm=bedrock.bedrock_client(_SETTINGS),
     )

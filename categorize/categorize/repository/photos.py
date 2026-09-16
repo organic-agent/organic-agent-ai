@@ -1,29 +1,20 @@
-"""갤러리 소스 — "이 갤러리에 어떤 사진이 있고 파일은 어디 있나".
+"""갤러리 소스 — "이 갤러리에 어떤 사진이 있고 파일은 어디 있나". `photos` 테이블(DB) 과 데이터셋 폴더(로컬).
 
 로컬 모드: 데이터셋 폴더. 갤러리 이름 = 스파이크 매니페스트의 group과 같은 규칙
 (`dataset1/류지혜고객님 (2)` 처럼 상위 2단계 경로). 사진 id = 루트 기준 상대 경로.
 
 DB 모드: `load_db` — `photos` 중 미리보기가 있는(임베더가 지난) 사진의 preview_key를 S3에서 내려받는다.
 원본이 아니라 미리보기(EXIF 회전·리사이즈 JPEG)다: HEIC 디코드를 피하고 용량이 1/10이며,
-점수·태그는 긴 변 1024면 충분하다. 이 모듈의 `PhotoRef`만 같으면 나머지 코드는 안 바뀐다.
+점수·태그는 긴 변 1024면 충분하다. 돌려주는 `PhotoRef`(domain/photo.py)만 같으면 나머지 코드는 안 바뀐다.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from pathlib import Path
 
+from categorize.domain.photo import PhotoRef
+
 IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".heic"}
-
-
-@dataclass(frozen=True)
-class PhotoRef:
-    photo_id: str     # 갤러리 안에서 유일. 로컬은 상대 경로, DB는 photos.id
-    path: str | None  # 로컬 파일 경로 (DB 모드에서는 임시 다운로드 경로, download=False 면 None)
-    #: EXIF 촬영 시각(datetime)·카메라 바디("make model"). 연사 클러스터의 순서·파티션 키 —
-    #: 임베더가 채운 photos.taken_at/camera_make/camera_model. 로컬 모드는 None(파일명 순 폴백).
-    taken_at: object | None = None
-    camera: str | None = None
 
 
 def list_galleries(dataset_root: Path) -> list[tuple[str, int]]:
