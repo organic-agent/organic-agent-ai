@@ -5,10 +5,13 @@ from __future__ import annotations
 import logging
 import re
 
-from embedder import db, images, metadata, model
-from embedder.admin_event import AdminPhotoEvent
-from embedder.config import Settings
-from embedder.storage import PhotoStorage
+from embedder.config.settings import Settings
+from embedder.domain.admin import AdminPhotoEvent
+from embedder.domain.run import AdminJobResult
+from embedder.infrastructure import model
+from embedder.repository import db
+from embedder.repository.storage import PhotoStorage
+from embedder.service import images, metadata
 
 log = logging.getLogger(__name__)
 
@@ -56,23 +59,23 @@ def run(event: AdminPhotoEvent, settings: Settings) -> dict:
             else:
                 db.complete_admin_embedding(final_connection, event, vector, settings.model_id)
             final_connection.commit()
-        return _response(event, "SUCCEEDED", result)
+        return AdminJobResult(event, "SUCCEEDED", result).to_dict()
     except db.AdminJobClaimLost as error:
         code = _failure_code(AdminPhotoProcessingError(str(error)))
         updated = _persist_failure(event, settings, code, "CAS 실패 상태")
         if updated == 1:
             log.warning("exact-photo 결과 CAS 실패: jobId=%s code=%s", event.job_id, code)
-            return _response(event, "FAILED", {"failureCode": code})
+            return AdminJobResult(event, "FAILED", {"failureCode": code}).to_dict()
         log.info("이미 끝났거나 취소된 exact-photo job 무시: jobId=%s code=%s", event.job_id, code)
-        return _response(event, "IGNORED", {"failureCode": code})
+        return AdminJobResult(event, "IGNORED", {"failureCode": code}).to_dict()
     except Exception as error:
         code = _failure_code(error)
         updated = _persist_failure(event, settings, code, "실패 상태")
         if updated != 1:
             log.info("실패 전이 전에 claim이 사라진 exact-photo job 무시: jobId=%s", event.job_id)
-            return _response(event, "IGNORED", {"failureCode": code})
+            return AdminJobResult(event, "IGNORED", {"failureCode": code}).to_dict()
         log.exception("exact-photo 처리 실패: jobId=%s type=%s code=%s", event.job_id, event.job_type, code)
-        return _response(event, "FAILED", {"failureCode": code})
+        return AdminJobResult(event, "FAILED", {"failureCode": code}).to_dict()
 
 
 def _persist_failure(event: AdminPhotoEvent, settings: Settings, code: str, label: str) -> int:
@@ -102,15 +105,3 @@ def _failure_code(error: Exception) -> str:
             raw = response.get("Error", {}).get("Code")
         raw = raw or type(error).__name__ or "PROCESSING_FAILED"
     return re.sub(r"[^A-Za-z0-9_.-]", "_", str(raw)).upper()[:80]
-
-
-def _response(event: AdminPhotoEvent, status: str, result: dict) -> dict:
-    return {
-        "jobId": event.job_id,
-        "attemptCount": event.attempt_count,
-        "jobType": event.job_type,
-        "photoId": event.photo_id,
-        "revisionId": event.revision_id,
-        "status": status,
-        **result,
-    }

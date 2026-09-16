@@ -12,7 +12,7 @@ from PIL import Image
 EMBEDDER_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EMBEDDER_ROOT))
 
-from embedder import images
+from embedder.service import images
 
 ORIENTATION_TAG = 274
 ROTATE_270 = 6  # 세로로 찍은 사진의 흔한 값 -- 파일은 가로, 보는 방향은 세로

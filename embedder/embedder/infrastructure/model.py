@@ -14,7 +14,7 @@ from functools import lru_cache
 import numpy as np
 from PIL import Image
 
-from embedder.config import Settings
+from embedder.config.settings import Settings
 
 log = logging.getLogger(__name__)
 

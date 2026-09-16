@@ -15,7 +15,7 @@ import argparse
 import json
 import logging
 
-from embedder import job
+from embedder.service import job
 
 
 def main() -> None:

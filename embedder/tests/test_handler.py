@@ -22,16 +22,16 @@ for name, value in {
 # 트릭이 깨진다(패키지 속성에 이미 잡혀 있어 재import가 안 된다). 가짜를 끼우고 import한 뒤 지운다.
 import types
 
-import embedder as _package
+import embedder.service as _package
 
-_fake_admin_job = types.ModuleType("embedder.admin_job")
+_fake_admin_job = types.ModuleType("embedder.service.admin_job")
 _fake_admin_job.run = lambda event, settings: {"status": "FAKE"}
-sys.modules["embedder.admin_job"] = _fake_admin_job
+sys.modules["embedder.service.admin_job"] = _fake_admin_job
 _package.admin_job = _fake_admin_job
 try:
-    from embedder import handler
+    from embedder.controller import handler
 finally:
-    sys.modules.pop("embedder.admin_job", None)
+    sys.modules.pop("embedder.service.admin_job", None)
     delattr(_package, "admin_job")
 
 

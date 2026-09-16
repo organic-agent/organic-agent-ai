@@ -16,9 +16,9 @@ from __future__ import annotations
 import json
 import logging
 
-from embedder import admin_job, job
-from embedder.admin_event import AdminPhotoEvent
-from embedder.config import Settings
+from embedder.config.settings import Settings
+from embedder.controller.admin_event import parse_admin_photo_event
+from embedder.service import admin_job, job
 
 log = logging.getLogger(__name__)
 logging.getLogger().setLevel(logging.INFO)
@@ -30,7 +30,7 @@ _SETTINGS = Settings.from_env()
 
 def handler(event: dict, context) -> dict:
     if "jobId" in event:
-        return admin_job.run(AdminPhotoEvent.from_payload(event), _SETTINGS)
+        return admin_job.run(parse_admin_photo_event(event), _SETTINGS)
 
     gallery_id = event.get("galleryId")
     if gallery_id is None:
