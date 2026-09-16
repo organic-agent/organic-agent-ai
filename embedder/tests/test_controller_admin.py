@@ -8,7 +8,7 @@ from pathlib import Path
 EMBEDDER_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EMBEDDER_ROOT))
 
-from embedder.controller.admin_event import InvalidAdminPhotoEvent, parse_admin_photo_event
+from embedder.controller.admin import InvalidAdminPhotoEvent, parse_admin_photo_event
 from embedder.domain.admin import AdminPhotoEvent
 
 
