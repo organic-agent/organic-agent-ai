@@ -13,10 +13,11 @@ from __future__ import annotations
 import logging
 import time
 
-from categorize import db, jobs, pipeline
-from categorize.config import Settings
-from categorize.gallery import load_db
-from categorize.store import DbStore
+from categorize.config.settings import Settings
+from categorize.repository import connection, jobs
+from categorize.repository.analysis import DbStore
+from categorize.repository.photos import load_db
+from categorize.service import pipeline
 
 log = logging.getLogger(__name__)
 
@@ -28,20 +29,20 @@ def run(gallery_id: int, settings: Settings | None = None, job_id: int | None = 
     if llm is None and job_id is not None:
         raise RuntimeError("잡은 naming(Bedrock)까지가 산출물이다 — llm 없이 시작하지 않는다")
 
-    connection = db.connect(settings)
+    conn = connection.connect(settings)
     try:
         try:
-            refs = load_db(connection, None, gallery_id, settings.work_dir, limit=limit, download=False)
+            refs = load_db(conn, None, gallery_id, settings.work_dir, limit=limit, download=False)
             if not refs:
                 raise RuntimeError(f"갤러리 {gallery_id} 에 미리보기 있는 사진이 없다 — embedder 가 먼저다")
-            store = DbStore(settings, connection)
+            store = DbStore(settings, conn)
             result = pipeline.run(store, str(gallery_id), refs, settings, llm, job_id=job_id)
         except BaseException as exc:  # noqa: BLE001 — SystemExit 포함, 잡에 실패를 남긴다
             if job_id is not None:
-                jobs.fail(connection, job_id, f"{type(exc).__name__}: {exc}")
+                jobs.fail(conn, job_id, f"{type(exc).__name__}: {exc}")
             raise
         result["elapsedSeconds"] = round(time.monotonic() - started, 1)
         log.info("완료: %s", result)
         return result
     finally:
-        connection.close()
+        conn.close()

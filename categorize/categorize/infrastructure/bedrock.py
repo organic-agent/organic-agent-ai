@@ -10,7 +10,7 @@
 다시 줄인 JPEG(긴 변 768 안팎)이고, 크로스 리전 프로필이므로 **국외로 나간다**.
 
 `LlmClient`는 프로토콜이다. 실제 구현은 `BedrockClient`, 테스트는 tests 의 Fake.
-호출부(naming)는 이 프로토콜만 본다. 추천 이유·비교샷 호출은 wes로 갔다(#25).
+호출부(service/naming)는 이 프로토콜만 본다. 추천 이유·비교샷 호출은 wes로 갔다(#25).
 """
 
 from __future__ import annotations

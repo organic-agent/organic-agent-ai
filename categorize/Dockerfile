@@ -12,4 +12,4 @@ RUN mkdir -p /opt/rds-ca \
 
 COPY categorize/ ${LAMBDA_TASK_ROOT}/categorize/
 
-CMD ["categorize.handler.handler"]
+CMD ["categorize.controller.handler.handler"]

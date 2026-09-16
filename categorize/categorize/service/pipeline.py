@@ -22,51 +22,16 @@ from __future__ import annotations
 import logging
 import math
 import time
-from dataclasses import dataclass, field
 
 import numpy as np
 
-from categorize.config import MODEL_VERSION, Settings
-from categorize import cluster, concept
-from categorize.gallery import PhotoRef
-from categorize.store import PhotoAnalysis, Store
+from categorize.config.settings import MODEL_VERSION, Settings
+from categorize.domain.analysis import PhotoAnalysis, Store
+from categorize.domain.photo import PhotoRef
+from categorize.domain.run import CategorizeResult, Grouped
+from categorize.service import cluster, concept
 
 log = logging.getLogger(__name__)
-
-
-@dataclass
-class Grouped:
-    """그룹화가 끝난 갤러리 — naming 의 입력. [rows] 와 [X] 는 같은 순서(화면 순)다."""
-
-    rows: list[PhotoAnalysis]   # 점수·벡터가 다 있는 사진, cluster_id·embed_group_id 채워짐
-    X: np.ndarray               # concat(DINOv3 ⊕ CLIP) 정규화 공간, rows 와 행이 맞는다
-
-
-@dataclass
-class CategorizeResult:
-    gallery: str
-    pipeline: str = "v3"
-    mode: str = "categorize"
-    photos: int = 0
-    clusters: int = 0
-    groups: dict = field(default_factory=dict)
-    group_distance: float = 0.0
-    similarity_profile: dict = field(default_factory=dict)
-    embeddings_source: str = "dinov3"
-    naming: dict | str | None = None
-    elapsed_seconds: float = 0.0
-
-    def to_dict(self) -> dict:
-        return {
-            "gallery": self.gallery, "pipeline": self.pipeline, "mode": self.mode,
-            "photos": self.photos, "clusters": self.clusters,
-            "groups": {k: round(v, 3) for k, v in self.groups.items()},
-            "groupDistance": self.group_distance,
-            "similarityProfile": {k: round(v, 3) for k, v in self.similarity_profile.items()},
-            "embeddingsSource": self.embeddings_source,
-            "naming": self.naming,
-            "elapsedSeconds": round(self.elapsed_seconds, 1),
-        }
 
 
 def percentile(values: list[float]) -> list[float]:
@@ -183,7 +148,7 @@ def group(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings) 
 def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, llm,
         job_id: int | None = None) -> dict:
     """그룹화 뒤 naming 까지. llm 이 None 이면 그룹화만 하고 naming 은 skipped."""
-    from categorize import naming
+    from categorize.service import naming
 
     started = time.monotonic()
     grouped, result = group(store, gallery, refs, settings)
