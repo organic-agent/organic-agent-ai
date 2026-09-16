@@ -14,7 +14,7 @@ from types import SimpleNamespace
 EMBEDDER_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EMBEDDER_ROOT))
 
-from embedder import job
+from embedder.service import job
 
 
 class _Ref:
@@ -41,7 +41,7 @@ class _Db:
     def __init__(self, targets: list[_Ref]) -> None:
         self.targets = targets
         self.connection = _Connection()
-        self.stored: list[list[tuple]] = []
+        self.stored: list[list] = []
         self.fetch_calls: list[dict] = []
 
     def connect(self, settings):
@@ -185,7 +185,7 @@ class GalleryJobTest(unittest.TestCase):
         )
         # 적재 행에는 preview_key가 항상 있다.
         rows = fake_db.stored[0]
-        self.assertEqual(["previews/galleries/7/a.jpg", "previews/galleries/7/b.jpg"], [r[2] for r in rows])
+        self.assertEqual(["previews/galleries/7/a.jpg", "previews/galleries/7/b.jpg"], [r.preview_key for r in rows])
         self.assertEqual(2, result["processed"])
         self.assertEqual(0, result["remaining"])
         self.assertFalse(result["stopped"])
@@ -201,7 +201,7 @@ class GalleryJobTest(unittest.TestCase):
         self.assertEqual(1, result["processed"])
         # 실패한 사진은 encode에도, store에도 들어가지 않는다 -- 벡터만 남는 사진이 없다.
         self.assertEqual(1, len(self.model.encoded[0]))
-        self.assertEqual([1], [row[0].photo_id for row in fake_db.stored[0]])
+        self.assertEqual([1], [row.ref.photo_id for row in fake_db.stored[0]])
         # 데드라인과 무관하게 전부 시도했으므로 remaining은 0이다 (실패는 다음 호출이 다시 집는다).
         self.assertEqual(0, result["remaining"])
 
@@ -212,7 +212,7 @@ class GalleryJobTest(unittest.TestCase):
 
         self.assertEqual(["galleries/7/missing.jpg"], result["failed"])
         self.assertEqual(1, result["processed"])
-        self.assertEqual([2], [row[0].photo_id for row in fake_db.stored[0]])
+        self.assertEqual([2], [row.ref.photo_id for row in fake_db.stored[0]])
         # GET에 실패한 사진은 open_original 이전에 접혔다 -- 이미지 호출은 성공한 한 장 몫뿐이다.
         self.assertEqual(["open_original", "prepare", "to_jpeg", "open_preview"], self.images.calls)
 
@@ -241,8 +241,8 @@ class GalleryJobTest(unittest.TestCase):
         # 메인 스레드가 아니라 풀 스레드가 받았다.
         self.assertTrue(all(name.startswith("s3-get") for name in storage.read_threads), storage.read_threads)
         # 순서·짝은 그대로다: 벡터는 대상 순서대로 적재된다.
-        self.assertEqual([1, 2], [row[0].photo_id for row in fake_db.stored[0]])
-        self.assertEqual([3, 4], [row[0].photo_id for row in fake_db.stored[1]])
+        self.assertEqual([1, 2], [row.ref.photo_id for row in fake_db.stored[0]])
+        self.assertEqual([3, 4], [row.ref.photo_id for row in fake_db.stored[1]])
 
     def test_metadata_failure_does_not_drop_the_photo(self) -> None:
         fake_db = self._install_db([_Ref(1, "galleries/7/noexif.jpg")])
@@ -253,7 +253,7 @@ class GalleryJobTest(unittest.TestCase):
         self.assertEqual(["galleries/7/noexif.jpg"], result["metadataFailed"])
         self.assertEqual([], result["failed"])
         self.assertEqual(1, result["processed"])
-        self.assertIsNone(fake_db.stored[0][0][3])
+        self.assertIsNone(fake_db.stored[0][0].metadata)
 
     def test_stops_at_batch_boundary_when_remaining_time_is_short(self) -> None:
         targets = [_Ref(i, f"galleries/7/{i}.jpg") for i in range(1, 6)]
@@ -294,7 +294,7 @@ class PhotoIdsJobTest(GalleryJobTest):
         self.assertEqual(2, result["processed"])
         self.assertEqual(3, result["photoIds"])
         rows = fake_db.stored[0]
-        self.assertEqual(["previews/galleries/7/c.jpg", "previews/galleries/7/a.jpg"], [r[2] for r in rows])
+        self.assertEqual(["previews/galleries/7/c.jpg", "previews/galleries/7/a.jpg"], [r.preview_key for r in rows])
 
     def test_gallery_path_scans_targets_without_photo_ids(self) -> None:
         """로컬 CLI(wes local-ai.sh)는 목록 없이 부른다 — 벡터 없는 사진 전체."""

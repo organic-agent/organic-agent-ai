@@ -8,7 +8,8 @@ from pathlib import Path
 EMBEDDER_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EMBEDDER_ROOT))
 
-from embedder.admin_event import AdminPhotoEvent, InvalidAdminPhotoEvent
+from embedder.controller.admin_event import InvalidAdminPhotoEvent, parse_admin_photo_event
+from embedder.domain.admin import AdminPhotoEvent
 
 
 class AdminPhotoEventTest(unittest.TestCase):
@@ -26,7 +27,7 @@ class AdminPhotoEventTest(unittest.TestCase):
         return value
 
     def test_parses_exact_photo_contract(self) -> None:
-        event = AdminPhotoEvent.from_payload(self.payload())
+        event = parse_admin_photo_event(self.payload())
 
         self.assertEqual(11, event.job_id)
         self.assertEqual(2, event.attempt_count)
@@ -35,16 +36,16 @@ class AdminPhotoEventTest(unittest.TestCase):
 
     def test_only_two_external_job_types_are_allowed(self) -> None:
         with self.assertRaisesRegex(InvalidAdminPhotoEvent, "UNSUPPORTED_JOB_TYPE"):
-            AdminPhotoEvent.from_payload(self.payload(jobType="MOCK_RECALCULATION"))
+            parse_admin_photo_event(self.payload(jobType="MOCK_RECALCULATION"))
 
     def test_positive_ids_and_attempt_are_required(self) -> None:
         for field in ("jobId", "attemptCount", "photoId", "galleryId", "revisionId"):
             with self.subTest(field=field):
                 with self.assertRaises(InvalidAdminPhotoEvent):
-                    AdminPhotoEvent.from_payload(self.payload(**{field: 0}))
+                    parse_admin_photo_event(self.payload(**{field: 0}))
 
         with self.assertRaises(InvalidAdminPhotoEvent):
-            AdminPhotoEvent.from_payload(self.payload(attemptCount=1.5))
+            parse_admin_photo_event(self.payload(attemptCount=1.5))
 
 
 if __name__ == "__main__":

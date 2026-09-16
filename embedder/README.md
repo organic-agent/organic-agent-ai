@@ -6,9 +6,22 @@ DINOv3 벡터를 본다.
 Lambda로 배포되지만 **로컬에서도 같은 코드가 그대로 돈다** — 진입점만 다르다.
 
 ```
-handler.py    Lambda      {"galleryId": 1, "photoIds": [101, …]} (#73) | 관리자 사진 교체 {"jobId": …}
-__main__.py   로컬 CLI    python -m embedder --gallery-id 1 [--photo-ids 1,2,3]
-     └─────── 둘 다 job.run() 하나를 부른다
+controller/handler.py   Lambda      {"galleryId": 1, "photoIds": [101, …]} (#73) | 관리자 사진 교체 {"jobId": …}
+__main__.py             로컬 CLI    python -m embedder --gallery-id 1 [--photo-ids 1,2,3]
+     └─────── 둘 다 service/job.run() 하나를 부른다
+```
+
+패키지는 층으로 나뉘어 있다(#121). 의존은 한 방향이다 — controller → service → repository, 그리고 모두가 domain 을 본다.
+
+```
+embedder/
+├── __main__.py        로컬 CLI (python -m 규약상 루트)
+├── controller/        handler.py(Lambda) · admin_event.py(교체 페이로드 검증 → AdminPhotoEvent)
+├── service/           job.py(배치 본체) · admin_job.py(한 장 교체) · images.py(다듬기) · metadata.py(EXIF)
+├── domain/            photo.py(PhotoRef · PhotoMetadata · EmbeddingResult) · admin.py(AdminPhotoEvent) — 로직 없음
+├── repository/        db.py(Postgres) · storage.py(S3)
+├── infrastructure/    model.py(DINOv3 로드·추론, torch 는 여기서만)
+└── config/            settings.py(환경변수 → Settings)
 ```
 
 ## 흐름

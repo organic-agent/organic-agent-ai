@@ -10,8 +10,10 @@ from types import SimpleNamespace
 EMBEDDER_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(EMBEDDER_ROOT))
 
-import embedder as embedder_package
-from embedder.admin_event import AdminPhotoEvent
+import embedder.infrastructure
+import embedder.repository
+import embedder.service
+from embedder.domain.admin import AdminPhotoEvent
 
 
 class _ClaimLost(RuntimeError):
@@ -74,7 +76,7 @@ _completed: list[str] = []
 _failed: list[str] = []
 _model_loads = 0
 
-db_module = types.ModuleType("embedder.db")
+db_module = types.ModuleType("embedder.repository.db")
 db_module.AdminJobClaimLost = _ClaimLost
 def _connect(settings):
     connection = _Connection()
@@ -88,16 +90,16 @@ db_module.complete_admin_derivative = lambda connection, event, preview, meta: _
 db_module.complete_admin_embedding = lambda connection, event, vector, model_id: _completed.append("EMBEDDING")
 db_module.fail_admin_photo_job = lambda connection, event, code: (_failed.append(code) or 1)
 
-images_module = types.ModuleType("embedder.images")
+images_module = types.ModuleType("embedder.service.images")
 images_module.open_original = lambda data: _Image()
 images_module.prepare = lambda image, long_edge: _Image()
 images_module.preview_key_for = lambda key: f"previews/{key}.jpg"
 images_module.to_jpeg = lambda image, quality: b"jpeg"
 
-metadata_module = types.ModuleType("embedder.metadata")
+metadata_module = types.ModuleType("embedder.service.metadata")
 metadata_module.extract = lambda original, byte_size: object()
 
-model_module = types.ModuleType("embedder.model")
+model_module = types.ModuleType("embedder.infrastructure.model")
 
 
 def _load_model(settings):
@@ -107,37 +109,37 @@ def _load_model(settings):
 
 
 model_module.load_from = _load_model
-quality_module = types.ModuleType("embedder.quality")
-quality_module.analyze = lambda image, size: SimpleNamespace(score=88.0, signals={"algorithmVersion": "test"})
-storage_module = types.ModuleType("embedder.storage")
+storage_module = types.ModuleType("embedder.repository.storage")
 storage_module.PhotoStorage = _Storage
 
+# admin_job 이 import 하는 이름 → (담는 하위 패키지, 가짜 모듈). sys.modules 와 패키지 속성을 함께 바꿔야
+# `from embedder.repository import db` 같은 문장이 가짜를 집는다.
 _replacements = {
-    "db": db_module,
-    "images": images_module,
-    "metadata": metadata_module,
-    "model": model_module,
-    "quality": quality_module,
-    "storage": storage_module,
+    "embedder.repository.db": (embedder.repository, "db", db_module),
+    "embedder.service.images": (embedder.service, "images", images_module),
+    "embedder.service.metadata": (embedder.service, "metadata", metadata_module),
+    "embedder.infrastructure.model": (embedder.infrastructure, "model", model_module),
+    "embedder.repository.storage": (embedder.repository, "storage", storage_module),
 }
-_saved_modules = {name: sys.modules.get(f"embedder.{name}") for name in _replacements}
-_saved_attributes = {name: getattr(embedder_package, name, None) for name in _replacements}
-for name, module in _replacements.items():
-    sys.modules[f"embedder.{name}"] = module
-    setattr(embedder_package, name, module)
+_saved_modules = {name: sys.modules.get(name) for name in _replacements}
+_saved_attributes = {name: getattr(package, attr, None) for name, (package, attr, _) in _replacements.items()}
+for name, (package, attr, module) in _replacements.items():
+    sys.modules[name] = module
+    setattr(package, attr, module)
 
-from embedder import admin_job
+from embedder.service import admin_job
 
-for name, previous in _saved_modules.items():
+for name, (package, attr, _) in _replacements.items():
+    previous = _saved_modules[name]
     if previous is None:
-        sys.modules.pop(f"embedder.{name}", None)
+        sys.modules.pop(name, None)
     else:
-        sys.modules[f"embedder.{name}"] = previous
-for name, previous in _saved_attributes.items():
-    if previous is None:
-        delattr(embedder_package, name)
+        sys.modules[name] = previous
+    previous_attr = _saved_attributes[name]
+    if previous_attr is None:
+        delattr(package, attr)
     else:
-        setattr(embedder_package, name, previous)
+        setattr(package, attr, previous_attr)
 
 
 class AdminPhotoJobTest(unittest.TestCase):

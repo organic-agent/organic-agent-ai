@@ -33,12 +33,9 @@ except ModuleNotFoundError:
     sys.modules["pgvector"] = pgvector_package
     sys.modules["pgvector.psycopg"] = pgvector_psycopg
 
-metadata_module = types.ModuleType("embedder.metadata")
-metadata_module.PhotoMetadata = type("PhotoMetadata", (), {})
-sys.modules.setdefault("embedder.metadata", metadata_module)
-
-from embedder import db
-from embedder.admin_event import AdminPhotoEvent
+from embedder.domain.admin import AdminPhotoEvent
+from embedder.domain.photo import EmbeddingResult, PhotoRef
+from embedder.repository import db
 
 
 class _Cursor:
@@ -100,7 +97,7 @@ class FetchTargetsTest(unittest.TestCase):
         self.assertIn("g.deleted_at IS NULL", sql)
         self.assertNotIn("studio_deletion_claims", sql)
         self.assertEqual(
-            [db.PhotoRef(1, "galleries/7/a.jpg"), db.PhotoRef(2, "galleries/7/b.jpg")],
+            [PhotoRef(1, "galleries/7/a.jpg"), PhotoRef(2, "galleries/7/b.jpg")],
             targets,
         )
 
@@ -138,11 +135,11 @@ class StoreEmbeddingsTest(unittest.TestCase):
 
     def test_writes_vector_to_photo_analysis_and_status_to_photos(self) -> None:
         connection = _ManyConnection(rows=[])
-        ref = db.PhotoRef(1, "galleries/7/a.jpg")
+        ref = PhotoRef(1, "galleries/7/a.jpg")
 
         stored = db.store_embeddings(
             connection,
-            [(ref, "VECTOR", "previews/galleries/7/a.jpg", None)],
+            [EmbeddingResult(ref, "VECTOR", "previews/galleries/7/a.jpg", None)],
             model_id="facebook/dinov3-vitb16-pretrain-lvd1689m",
         )
 
@@ -162,9 +159,9 @@ class StoreEmbeddingsTest(unittest.TestCase):
         # 벡터는 이번에 올린 미리보기 파일에서 나오므로(#24) preview_key는 이전 값을 지킬 이유가
         # 없다. EXIF만 추출 실패 시 이전 값을 지키는 COALESCE다.
         connection = _ManyConnection(rows=[])
-        ref = db.PhotoRef(1, "galleries/7/a.jpg")
+        ref = PhotoRef(1, "galleries/7/a.jpg")
 
-        db.store_embeddings(connection, [(ref, "VECTOR", "previews/galleries/7/a.jpg", None)], model_id="m")
+        db.store_embeddings(connection, [EmbeddingResult(ref, "VECTOR", "previews/galleries/7/a.jpg", None)], model_id="m")
 
         photos_sql, photo_rows = connection.executed[1]
         self.assertIn("SET preview_key = %s,", photos_sql)
@@ -180,9 +177,9 @@ class StoreEmbeddingsTest(unittest.TestCase):
 
     def test_store_cas_uses_fetched_storage_key_and_active_resource_boundaries(self) -> None:
         connection = _Connection(rows=[], rowcounts=[1, 1])
-        ref = db.PhotoRef(17, "galleries/7/original-before-replacement.jpg")
+        ref = PhotoRef(17, "galleries/7/original-before-replacement.jpg")
 
-        stored = db.store_embeddings(connection, [(ref, [0.1, 0.2], None, None)], model_id="test-model")
+        stored = db.store_embeddings(connection, [EmbeddingResult(ref, [0.1, 0.2], None, None)], model_id="test-model")
 
         self.assertEqual(1, stored)
         sql, rows = connection.executed[1]
@@ -193,9 +190,9 @@ class StoreEmbeddingsTest(unittest.TestCase):
 
     def test_store_ignores_stale_photo_replaced_after_fetch(self) -> None:
         connection = _Connection(rows=[], rowcounts=[1, 0])
-        old_ref = db.PhotoRef(17, "galleries/7/old.jpg")
+        old_ref = PhotoRef(17, "galleries/7/old.jpg")
 
-        stored = db.store_embeddings(connection, [(old_ref, [0.1, 0.2], "previews/old.jpg", None)], model_id="test-model")
+        stored = db.store_embeddings(connection, [EmbeddingResult(old_ref, [0.1, 0.2], "previews/old.jpg", None)], model_id="test-model")
 
         self.assertEqual(0, stored)
 
@@ -271,11 +268,11 @@ class NeverWritesPhotoStatusTest(unittest.TestCase):
     적재 경로 어디에서도 status 를 쓰지 않는다."""
 
     def _ref(self):
-        return db.PhotoRef(photo_id=1, storage_key="galleries/7/a.jpg")
+        return PhotoRef(photo_id=1, storage_key="galleries/7/a.jpg")
 
     def test_store_embeddings_never_touches_status(self) -> None:
         connection = _Connection(rows=[])
-        db.store_embeddings(connection, [(self._ref(), "VECTOR", "previews/galleries/7/a.jpg", None)], model_id="m")
+        db.store_embeddings(connection, [EmbeddingResult(self._ref(), "VECTOR", "previews/galleries/7/a.jpg", None)], model_id="m")
         photos_sql, _ = connection.executed[1]
         self.assertNotIn("status", photos_sql)
         self.assertIn("preview_key = %s", photos_sql)

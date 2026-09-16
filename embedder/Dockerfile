@@ -38,4 +38,4 @@ ENV HF_HUB_OFFLINE=1 \
 
 COPY embedder/ ${LAMBDA_TASK_ROOT}/embedder/
 
-CMD ["embedder.handler.handler"]
+CMD ["embedder.controller.handler.handler"]

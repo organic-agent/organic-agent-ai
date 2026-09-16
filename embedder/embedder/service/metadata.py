@@ -11,11 +11,12 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import datetime
 
 from PIL import Image
 from PIL.ExifTags import IFD, Base as ExifTag
+
+from embedder.domain.photo import PhotoMetadata
 
 #: 90도 회전이 걸린 Orientation. 이 값이면 파일에 적힌 가로·세로가 사람이 보는 방향과 반대다.
 _ROTATED_ORIENTATIONS = frozenset({5, 6, 7, 8})
@@ -26,21 +27,6 @@ _MAX_TEXT_LENGTH = 100
 
 #: photos.exposure_time 이 VARCHAR(30).
 _MAX_EXPOSURE_LENGTH = 30
-
-
-@dataclass(frozen=True)
-class PhotoMetadata:
-    """photos의 EXIF 컬럼과 1:1로 대응한다. 값이 없으면 None -- 컬럼도 전부 nullable이다."""
-
-    taken_at: datetime | None = None
-    camera_make: str | None = None
-    camera_model: str | None = None
-    exposure_time: str | None = None
-    f_number: float | None = None
-    iso: int | None = None
-    width: int | None = None
-    height: int | None = None
-    byte_size: int | None = None
 
 
 def extract(image: Image.Image, byte_size: int) -> PhotoMetadata:

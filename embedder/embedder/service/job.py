@@ -37,19 +37,30 @@ import logging
 import time
 from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import dataclass, field
-from typing import Callable
+from typing import Callable, NamedTuple
 
 from PIL import Image
 
-from embedder import db, images, metadata, model
-from embedder.config import Settings
-from embedder.storage import PhotoStorage
+from embedder.config.settings import Settings
+from embedder.domain.photo import EmbeddingResult, PhotoMetadata, PhotoRef
+from embedder.infrastructure import model
+from embedder.repository import db
+from embedder.repository.storage import PhotoStorage
+from embedder.service import images, metadata
 
 log = logging.getLogger(__name__)
 
 #: 지금 처리하는 배치보다 몇 배치 앞까지 원본 GET을 미리 걸어 두는가. 2면 메모리에 원본이 최대
 #: 세 배치(24장, 13MB 원본이면 ~300MB) 올라간다. Lambda 3GB에서 모델과 함께 두어도 남는다.
 PREFETCH_BATCHES = 2
+
+
+class _Prepared(NamedTuple):
+    """벡터가 나오기 전까지 사진 한 장에 대해 알아낸 것. encode 뒤 벡터와 합쳐 EmbeddingResult 가 된다."""
+
+    ref: PhotoRef
+    preview_key: str
+    metadata: PhotoMetadata | None
 
 
 @dataclass
@@ -159,10 +170,10 @@ def run(
                 downloads = prefetched.pop(index)
 
                 batch_started = time.monotonic()
-                loaded_refs = []
-                loaded_images = []
-                loaded_keys = []
-                loaded_metadata = []
+                # 벡터는 배치 단위로 나오므로, 그 전까지는 사진마다 (ref · 미리보기 키 · EXIF) 와 모델 입력을 같은
+                # 순서로 모아 둔다. 아래 encode 뒤에 둘을 짝지어 EmbeddingResult 가 된다.
+                pending: list[_Prepared] = []
+                loaded_images: list[Image.Image] = []
 
                 for ref, download in zip(batch, downloads):
                     result.attempted += 1
@@ -187,12 +198,10 @@ def run(
                         # 전 픽셀을 임베딩하게 되어 photoselect가 보는 파일과 어긋난다.
                         model_input = images.open_preview(jpeg)
 
-                        # 네 리스트를 여기서 함께 늘린다. 위 어느 줄에서 실패해도 이 사진은 어느
+                        # 두 리스트를 여기서 함께 늘린다. 위 어느 줄에서 실패해도 이 사진은 어느
                         # 리스트에도 들어가지 않아, 아래에서 벡터와 짝이 어긋날 일이 없다.
-                        loaded_refs.append(ref)
+                        pending.append(_Prepared(ref, key, photo_metadata))
                         loaded_images.append(model_input)
-                        loaded_keys.append(key)
-                        loaded_metadata.append(photo_metadata)
                     except Exception:
                         # 한 장이 잡 전체를 죽이지 않게 한다. 실패한 사진은 photo_analysis에 벡터가
                         # 없는 채로 남으므로, 다시 호출하면 fetch_targets가 자연히 다시 집어 온다.
@@ -204,7 +213,10 @@ def run(
 
                     stored = db.store_embeddings(
                         connection,
-                        zip(loaded_refs, vectors, loaded_keys, loaded_metadata),
+                        [
+                            EmbeddingResult(item.ref, vector, item.preview_key, item.metadata)
+                            for item, vector in zip(pending, vectors)
+                        ],
                         model_id=settings.model_id,
                     )
 
@@ -231,11 +243,11 @@ def run(
 
 
 def _read_metadata(
-    ref: db.PhotoRef,
+    ref: PhotoRef,
     original: Image.Image,
     byte_size: int,
     result: RunResult,
-) -> metadata.PhotoMetadata | None:
+) -> PhotoMetadata | None:
     """원본에서 촬영 정보를 읽는다. 실패하면 None.
 
     바깥 try와 분리된 것이 핵심이다. 여기서 예외를 그대로 올려보내면 사진이 '처리하지

@@ -5,10 +5,12 @@ from __future__ import annotations
 import logging
 import re
 
-from embedder import db, images, metadata, model
-from embedder.admin_event import AdminPhotoEvent
-from embedder.config import Settings
-from embedder.storage import PhotoStorage
+from embedder.config.settings import Settings
+from embedder.domain.admin import AdminPhotoEvent
+from embedder.infrastructure import model
+from embedder.repository import db
+from embedder.repository.storage import PhotoStorage
+from embedder.service import images, metadata
 
 log = logging.getLogger(__name__)
 

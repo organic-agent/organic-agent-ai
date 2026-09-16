@@ -23,26 +23,17 @@ from __future__ import annotations
 import json
 import logging
 import re
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Iterable, Sequence
+from typing import Iterable, Sequence
 
 import numpy as np
 import psycopg
 from pgvector.psycopg import register_vector
 
-from embedder.config import Settings
-from embedder.metadata import PhotoMetadata
-
-if TYPE_CHECKING:
-    from embedder.admin_event import AdminPhotoEvent
+from embedder.config.settings import Settings
+from embedder.domain.admin import AdminPhotoEvent
+from embedder.domain.photo import EmbeddingResult, PhotoMetadata, PhotoRef
 
 log = logging.getLogger(__name__)
-
-
-@dataclass(frozen=True)
-class PhotoRef:
-    photo_id: int
-    storage_key: str
 
 
 class AdminJobClaimLost(RuntimeError):
@@ -137,7 +128,7 @@ def fetch_by_ids(connection: psycopg.Connection, photo_ids: list[int]) -> list[P
 
 def store_embeddings(
     connection: psycopg.Connection,
-    results: Iterable[tuple[PhotoRef, np.ndarray, str, PhotoMetadata | None]],
+    results: Iterable[EmbeddingResult],
     model_id: str,
 ) -> int:
     """계산된 벡터와 파생본 위치, 촬영 정보를 배치로 적재한다.
@@ -169,17 +160,17 @@ def store_embeddings(
     """
     results = list(results)
     analysis_rows: Sequence[tuple] = [
-        (ref.photo_id, vector, model_id)
-        for ref, vector, _, _ in results
+        (result.ref.photo_id, result.vector, model_id)
+        for result in results
     ]
     rows: Sequence[tuple] = [
         (
-            preview_key,
-            *_metadata_params(meta),
-            ref.photo_id,
-            ref.storage_key,
+            result.preview_key,
+            *_metadata_params(result.metadata),
+            result.ref.photo_id,
+            result.ref.storage_key,
         )
-        for ref, _, preview_key, meta in results
+        for result in results
     ]
     if not rows:
         return 0
@@ -226,7 +217,7 @@ def store_embeddings(
         return max(cursor.rowcount, 0)
 
 
-def verify_admin_photo_event(connection: psycopg.Connection, event: "AdminPhotoEvent") -> bool:
+def verify_admin_photo_event(connection: psycopg.Connection, event: AdminPhotoEvent) -> bool:
     """job·attempt·현재 사진·보존 리비전이 이벤트의 exact target과 모두 같은지 확인한다."""
     with connection.cursor() as cursor:
         cursor.execute(
@@ -264,7 +255,7 @@ def verify_admin_photo_event(connection: psycopg.Connection, event: "AdminPhotoE
 
 def complete_admin_derivative(
     connection: psycopg.Connection,
-    event: "AdminPhotoEvent",
+    event: AdminPhotoEvent,
     preview_key: str,
     meta: PhotoMetadata | None,
 ) -> None:
@@ -298,7 +289,7 @@ def complete_admin_derivative(
 
 def complete_admin_embedding(
     connection: psycopg.Connection,
-    event: "AdminPhotoEvent",
+    event: AdminPhotoEvent,
     vector: np.ndarray,
     model_id: str,
 ) -> None:
@@ -333,7 +324,7 @@ def complete_admin_embedding(
 
 def fail_admin_photo_job(
     connection: psycopg.Connection,
-    event: "AdminPhotoEvent",
+    event: AdminPhotoEvent,
     failure_code: str,
 ) -> int:
     """현재 exact attempt만 명시 실패로 바꾼다. 취소·완료된 행은 덮어쓰지 않는다."""
@@ -364,7 +355,7 @@ def fail_admin_photo_job(
 
 def _complete_admin_photo_job(
     connection: psycopg.Connection,
-    event: "AdminPhotoEvent",
+    event: AdminPhotoEvent,
     photo_sql: str,
     photo_params: tuple,
 ) -> None:
@@ -397,7 +388,7 @@ def _complete_admin_photo_job(
             raise AdminJobClaimLost("JOB_ATTEMPT_MISMATCH")
 
 
-def _photo_identity_params(event: "AdminPhotoEvent") -> tuple:
+def _photo_identity_params(event: AdminPhotoEvent) -> tuple:
     return (event.photo_id, event.gallery_id, event.storage_key, event.revision_id)
 
 
