@@ -18,7 +18,7 @@ embedder/
 ├── __main__.py        로컬 CLI (python -m 규약상 루트)
 ├── controller/        handler.py(Lambda) · admin_event.py(교체 페이로드 검증 → AdminPhotoEvent)
 ├── service/           job.py(배치 본체) · admin_job.py(한 장 교체) · images.py(다듬기) · metadata.py(EXIF)
-├── domain/            photo.py(PhotoRef · PhotoMetadata · EmbeddingResult) · admin.py(AdminPhotoEvent) — 로직 없음
+├── domain/            photo.py(PhotoRef · PhotoMetadata · EmbeddingResult) · admin.py(AdminPhotoEvent) · run.py(RunResult · AdminJobResult) — 로직 없음
 ├── repository/        db.py(Postgres) · storage.py(S3)
 ├── infrastructure/    model.py(DINOv3 로드·추론, torch 는 여기서만)
 └── config/            settings.py(환경변수 → Settings)
