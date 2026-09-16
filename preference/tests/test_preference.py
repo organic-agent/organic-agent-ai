@@ -19,6 +19,7 @@ from preference.train import make_sample, train
 from preference import job
 
 GOLDEN = Path(__file__).resolve().parent.parent / "golden" / "파일명_정리.xlsx"
+GOLDEN_JSON = Path(__file__).resolve().parent.parent / "golden" / "dataset1-golden.json"
 
 
 # ── 합성 갤러리 ─────────────────────────────────────────────────────────────
@@ -176,3 +177,17 @@ def test_golden_loader_reads_30():
     assert len(items) == 30
     assert sum(1 for it in items if it.cut == "A") == 20 and sum(1 for it in items if it.cut == "B") == 10
     assert items[0].file_name == "LWH00032.JPG" and all(it.file_name.endswith(".JPG") for it in items)
+
+
+def test_golden_loader_reads_json_20():
+    items = load_golden(GOLDEN_JSON)
+    assert len(items) == 20
+    assert all(it.cut == "A" for it in items)            # 컷 구분이 없는 데이터셋은 전부 A컷
+    assert items[0].file_name == "1BE00033.JPG"
+
+
+def test_golden_loader_json_accepts_bare_list_and_cuts(tmp_path):
+    p = tmp_path / "g.json"
+    p.write_text('["a.JPG", {"cut": "b", "file": "b.JPG"}]', encoding="utf-8")
+    items = load_golden(p)
+    assert [(it.cut, it.file_name) for it in items] == [("A", "a.JPG"), ("B", "b.JPG")]

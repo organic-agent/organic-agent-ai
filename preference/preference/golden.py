@@ -1,12 +1,17 @@
-"""golden 로더 — `golden/파일명_정리.xlsx` (구분 · 번호 · 파일명 세 열, A컷=전체 보정 · B컷=배경 보정).
+"""golden 로더 — 두 형식.
 
-openpyxl 없이 zipfile + 정규식으로 읽는다(인라인 문자열 xlsx). 두 컷 모두 학습에서는 양성이다 — 부부가 고른 사진이라는
-사실이 라벨이고, 보정 종류는 선호가 아니라 후처리 요청이다.
+- `.xlsx` (`golden/파일명_정리.xlsx`): 구분 · 번호 · 파일명 세 열, A컷=전체 보정 · B컷=배경 보정.
+  openpyxl 없이 zipfile + 정규식으로 읽는다(인라인 문자열 xlsx).
+- `.json` (`golden/dataset1-golden.json`): 파일명 목록. `{"files": [...]}` 또는 `[...]`,
+  컷을 적고 싶으면 `[{"cut": "A", "file": "..."}]`. 컷이 없으면 A컷으로 본다.
+
+두 컷 모두 학습에서는 양성이다 — 부부가 고른 사진이라는 사실이 라벨이고, 보정 종류는 선호가 아니라 후처리 요청이다.
 """
 
 from __future__ import annotations
 
 import html
+import json
 import re
 import zipfile
 from dataclasses import dataclass
@@ -24,6 +29,26 @@ class GoldenItem:
 
 
 def load_golden(path: Path) -> list[GoldenItem]:
+    path = Path(path)
+    if path.suffix.lower() == ".json":
+        return _load_json(path)
+    return _load_xlsx(path)
+
+
+def _load_json(path: Path) -> list[GoldenItem]:
+    doc = json.loads(path.read_text(encoding="utf-8"))
+    rows = doc.get("files", []) if isinstance(doc, dict) else doc
+    out = [
+        GoldenItem(cut=str(r.get("cut", "A")).upper()[:1], file_name=str(r["file"]))
+        if isinstance(r, dict) else GoldenItem(cut="A", file_name=str(r))
+        for r in rows
+    ]
+    if not out:
+        raise ValueError(f"{path}: 파일명을 하나도 못 읽었다")
+    return out
+
+
+def _load_xlsx(path: Path) -> list[GoldenItem]:
     with zipfile.ZipFile(path) as z:
         sheet = next(n for n in sorted(z.namelist()) if n.startswith("xl/worksheets/sheet"))
         xml = z.read(sheet).decode("utf-8")
