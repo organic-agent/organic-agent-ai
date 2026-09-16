@@ -6,7 +6,7 @@
 못 따라갈 때의 폴백). 잡 테이블·체인·샤딩·잠금은 wes 가 소유하므로 여기 없다 — 잡을 열고 닫는 것도, categorize 를 부르는 것도 wes 다.
 
 갤러리 전체 경로는 **로컬·벤치마크 전용**으로 남는다: wes `scripts/local-ai.sh` 가 사진 목록 없이 CLI 를 부르고,
-`score.sagemaker`(GPU 벤치마크)도 갤러리 하나를 통째로 돌린다. 그 경로도 점수만 쓰고 끝난다.
+`controller/sagemaker.py`(GPU 벤치마크)도 갤러리 하나를 통째로 돌린다. 그 경로도 점수만 쓰고 끝난다.
 """
 
 from __future__ import annotations
@@ -15,29 +15,27 @@ import logging
 import time
 from typing import Callable
 
-from score import db, pipeline
-from score.config import Settings
-from score.gallery import download_previews, load_by_ids, load_db
-from score.storage import PreviewStorage
-from score.store import DbStore
+from score.config.settings import Settings
+from score.domain.errors import PREVIEW_MISSING, SCORE_FAILED
+from score.repository import connection
+from score.repository.photos import load_by_ids, load_db
+from score.repository.storage import PreviewStorage, download_previews
+from score.repository.store import DbStore
+from score.service import pipeline
 
 log = logging.getLogger(__name__)
-
-#: 사진 단위 결정적 실패 표시(#85) — `photo_analysis.error`. gpu_worker 와 같은 값.
-PREVIEW_MISSING = "PREVIEW_MISSING"
-SCORE_FAILED = "SCORE_FAILED"
 
 
 def _run_photo_ids(gallery_id: int, photo_ids: list[int], settings: Settings,
                    remaining_seconds: Callable[[], float] | None, started: float) -> dict:
-    connection = db.connect(settings)
+    conn = connection.connect(settings)
     try:
         storage = PreviewStorage(settings.s3_bucket)
-        refs = load_by_ids(connection, photo_ids)
+        refs = load_by_ids(conn, photo_ids)
         missing: list[str] = []
         refs = download_previews(storage, refs, settings.work_dir / str(gallery_id), workers=settings.download_workers,
                                  missing=missing)
-        store = DbStore(settings, connection)
+        store = DbStore(settings, conn)
         result = pipeline.run(store, str(gallery_id), refs, settings, force=True, remaining_seconds=remaining_seconds)
         # 결정적 실패는 워커와 같은 표시(#85) — wes 가 그 장을 기대 장수에서 뺀다.
         failed = [str(pid) for pid in result.get("failed", [])]
@@ -54,7 +52,7 @@ def _run_photo_ids(gallery_id: int, photo_ids: list[int], settings: Settings,
                  len(result["failed"]), result["elapsedSeconds"])
         return result
     finally:
-        connection.close()
+        conn.close()
 
 
 def run(gallery_id: int, force: bool = False, settings: Settings | None = None,
@@ -70,17 +68,17 @@ def run(gallery_id: int, force: bool = False, settings: Settings | None = None,
     if photo_ids is not None:
         return _run_photo_ids(gallery_id, photo_ids, settings, remaining_seconds, started)
 
-    connection = db.connect(settings)
+    conn = connection.connect(settings)
     try:
         storage = PreviewStorage(settings.s3_bucket)
-        refs = load_db(connection, storage, gallery_id, settings.work_dir, limit=limit, download=False)
+        refs = load_db(conn, storage, gallery_id, settings.work_dir, limit=limit, download=False)
         if not refs:
             raise RuntimeError(f"갤러리 {gallery_id} 에 미리보기 있는 사진이 없다 — embedder 가 먼저다")
         t_dl = time.monotonic()
         refs = download_previews(storage, refs, settings.work_dir / str(gallery_id), workers=settings.download_workers)
         log.info("갤러리 %s: 미리보기 %d장 다운로드 %.1fs (workers=%d)", gallery_id, len(refs), time.monotonic() - t_dl,
                  settings.download_workers)
-        store = DbStore(settings, connection)
+        store = DbStore(settings, conn)
         result = pipeline.run(store, str(gallery_id), refs, settings, force=force, remaining_seconds=remaining_seconds)
         result["elapsedSeconds"] = round(time.monotonic() - started, 1)
         log.info("완료: %s", result)
@@ -88,4 +86,4 @@ def run(gallery_id: int, force: bool = False, settings: Settings | None = None,
                  len(result.get("failed", [])), result["elapsedSeconds"])
         return result
     finally:
-        connection.close()
+        conn.close()

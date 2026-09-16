@@ -12,8 +12,9 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-# 모듈 루트 = `score/`. 로컬 산출물(out/)·가중치 캐시(weights/)·데이터셋(../../dataset) 기본 경로의 기준점.
-MODULE_ROOT = Path(__file__).resolve().parents[1]
+# 모듈 루트 = `score/`(이 파일은 score/score/config/ 아래라 세 단계 위). 로컬 산출물(out/)·가중치 캐시(weights/)·
+# 데이터셋(../../dataset) 기본 경로의 기준점.
+MODULE_ROOT = Path(__file__).resolve().parents[2]
 
 #: `photo_analysis.model_version`. **categorize 모듈의 같은 상수와 값이 같아야 한다** — categorize 는
 #: 이 값과 같은 행만 "점수 있음"으로 읽는다. 값은 v3 시절 그대로 둔다: 이미 적재된 행과 재개(스킵) 판정이

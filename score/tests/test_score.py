@@ -13,10 +13,11 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from score import handler, job, pipeline
-from score.config import MODEL_VERSION, MODULE_ROOT, PARENTS, Knobs, Settings
-from score.gallery import PhotoRef
-from score.store import LocalStore, PhotoAnalysis
+from score.config.settings import MODEL_VERSION, MODULE_ROOT, PARENTS, Knobs, Settings
+from score.controller import handler
+from score.domain.photo import PhotoAnalysis, PhotoRef
+from score.repository.store import LocalStore
+from score.service import job, pipeline
 
 
 def _unit(v):
@@ -75,11 +76,20 @@ class _FakeArniqa:
         return self.score_batch(tensors)
 
 
+def _fake_module(monkeypatch, name: str, module: types.ModuleType) -> None:
+    """`sys.modules[name]` 과 부모 패키지의 속성을 함께 바꾼다 — `from score.service import classical` 은 부모 속성을 먼저 본다."""
+    import importlib
+
+    parent, _, attr = name.rpartition(".")
+    monkeypatch.setitem(sys.modules, name, module)
+    monkeypatch.setattr(importlib.import_module(parent), attr, module, raising=False)
+
+
 @pytest.fixture
 def fake_runners(monkeypatch):
     """pipeline.run 이 함수 안에서 import 하는 torch 러너·classical 을 가짜로 바꾼다."""
     laion = _FakeLaion()
-    runners = types.ModuleType("score.runners")
+    runners = types.ModuleType("score.infrastructure.runners")
     runners.LaionRunner = lambda **kw: laion
     laion.arniqa = _FakeArniqa()
 
@@ -88,10 +98,10 @@ def fake_runners(monkeypatch):
         return laion.arniqa
 
     runners.ArniqaRunner = make_arniqa
-    classical = types.ModuleType("score.classical")
+    classical = types.ModuleType("score.service.classical")
     classical.measure = lambda source: {"sharpness": 100.0, "highlight_clip": 0.0, "shadow_clip": 0.0, "mean_luma": 120.0}
-    monkeypatch.setitem(sys.modules, "score.runners", runners)
-    monkeypatch.setitem(sys.modules, "score.classical", classical)
+    _fake_module(monkeypatch, "score.infrastructure.runners", runners)
+    _fake_module(monkeypatch, "score.service.classical", classical)
     return laion
 
 
@@ -251,7 +261,7 @@ def test_arniqa_batches_group_by_shape_and_keep_order(tmp_path):
     """실제 ArniqaRunner.score_batch — 모델은 가짜(입력 합을 점수로), 크기가 다른 장이 섞여도 순서가 지켜진다."""
     import torch
 
-    from score.runners.arniqa import ArniqaRunner
+    from score.infrastructure.runners.arniqa import ArniqaRunner
 
     calls = []
 
@@ -280,7 +290,7 @@ def test_arniqa_batches_group_by_shape_and_keep_order(tmp_path):
 
 
 def test_images_fit_long_edge_never_upscales_and_accepts_paths_or_images(tmp_path):
-    from score import images
+    from score.infrastructure import images
 
     big = Image.new("RGB", (3200, 1600))
     small = Image.new("RGB", (300, 200))
@@ -293,7 +303,8 @@ def test_images_fit_long_edge_never_upscales_and_accepts_paths_or_images(tmp_pat
 
 
 def test_classical_measure_same_for_path_and_decoded_image(tmp_path):
-    from score import classical, images
+    from score.infrastructure import images
+    from score.service import classical
 
     rng = np.random.default_rng(0)
     path = tmp_path / "n.jpg"
@@ -303,7 +314,7 @@ def test_classical_measure_same_for_path_and_decoded_image(tmp_path):
 
 def test_bg_luma_reads_the_border_not_the_subject():
     """검은 배경 + 큰 흰 피사체 — mean_luma 는 밝다고 하고 bg_luma 는 어둡다고 한다(#117)."""
-    from score import classical
+    from score.service import classical
 
     a = np.zeros((400, 600), dtype=np.uint8)
     a[80:320, 150:450] = 255                      # 가운데 흰 드레스 (화면의 30%)
@@ -318,7 +329,7 @@ def test_bg_luma_reads_the_border_not_the_subject():
 
 def test_bg_luma_ignores_a_subject_touching_the_border():
     """링에 팔 하나가 걸려도 median 이라 배경 값이 유지된다."""
-    from score import classical
+    from score.service import classical
 
     a = np.zeros((400, 600), dtype=np.uint8)
     a[:, 280:320] = 255                           # 위아래 테두리를 관통하는 밝은 띠
@@ -337,6 +348,7 @@ def _literal(path: Path, name: str):
 
 def test_model_version_and_parents_match_categorize_module():
     other = MODULE_ROOT.parent / "categorize" / "categorize" / "config.py"
+    assert MODULE_ROOT.name == "score" and (MODULE_ROOT / "Dockerfile").is_file()   # parents[2] 가 모듈 루트
     assert _literal(other, "MODEL_VERSION") == MODEL_VERSION
     assert _literal(other, "PARENTS") == PARENTS
 
@@ -380,7 +392,7 @@ def test_handler_rejects_legacy_gallery_payload(fake_handler):
 # ── v2 (#75): Scorer 재사용 · claim_batch · GPU 워커 루프 · photoIds 폴백 ─────────────────────────────
 def test_scorer_is_reused_across_runs(tmp_path, fake_runners, monkeypatch):
     store, refs, _, settings = _world(tmp_path, n=6)
-    fake_mod = sys.modules["score.runners"]          # fixture 가 끼운 가짜 모듈
+    fake_mod = sys.modules["score.infrastructure.runners"]          # fixture 가 끼운 가짜 모듈
     made = []
     original = fake_mod.LaionRunner
     monkeypatch.setattr(fake_mod, "LaionRunner", lambda **kw: made.append(1) or original(**kw))
@@ -437,7 +449,7 @@ class _Conn:
 
 
 def test_claim_batch_locks_photo_analysis_rows_without_embedding_and_skips_locked():
-    from score.store import DbStore
+    from score.repository.store import DbStore
 
     conn = _Conn(rows=[(11, "previews/a.jpg", None, "Canon", "R5"), (12, "previews/b.jpg", None, None, None)])
     store = DbStore(SimpleNamespace(), conn)
@@ -455,7 +467,7 @@ def test_claim_batch_locks_photo_analysis_rows_without_embedding_and_skips_locke
 
 
 def test_load_db_and_load_by_ids_do_not_depend_on_embedded_status():
-    from score.gallery import load_by_ids, load_db
+    from score.repository.photos import load_by_ids, load_db
 
     conn = _Conn(rows=[(5, "previews/e.jpg", None, None, None), (3, "previews/c.jpg", None, "Sony", "A7")])
     refs = load_by_ids(conn, [3, 5, 8])
@@ -471,8 +483,8 @@ def test_load_db_and_load_by_ids_do_not_depend_on_embedded_status():
 
 @pytest.fixture
 def fake_worker(monkeypatch, tmp_path):
-    """gpu_worker 의 바깥(DB·S3·러너)을 전부 가짜로. claim 은 큐에서 꺼내고, run 은 처리 장수를 돌려준다."""
-    from score import gpu_worker
+    """worker 의 바깥(DB·S3·러너)을 전부 가짜로. claim 은 큐에서 꺼내고, run 은 처리 장수를 돌려준다."""
+    from score.service import worker as gpu_worker
 
     state = {"claims": [], "queue": [], "runs": [], "rollbacks": 0, "stopped": 0, "excludes": []}
 
@@ -502,7 +514,7 @@ def fake_worker(monkeypatch, tmp_path):
         failed = [r.photo_id for r in refs if r.photo_id == "7"]
         return {"processed": len(refs) - len(failed), "failed": failed}
 
-    monkeypatch.setattr(gpu_worker.db, "connect", lambda s: _Conn())
+    monkeypatch.setattr(gpu_worker.connection, "connect", lambda s: _Conn())
     monkeypatch.setattr(gpu_worker, "DbStore", Store)
     monkeypatch.setattr(gpu_worker, "PreviewStorage", lambda bucket: None)
     monkeypatch.setattr(gpu_worker, "download_previews", lambda storage, refs, d, workers=8, missing=None: refs)
@@ -549,7 +561,7 @@ def test_gpu_worker_rolls_back_failed_batch_and_excludes_poison_photos(fake_work
 
 def test_claim_batch_skips_rows_marked_with_error():
     """wes V15(#85): error 가 찍힌 행은 집지 않는다 — 부분 인덱스 idx_photo_analysis_unscored 와 같은 조건."""
-    from score.store import DbStore
+    from score.repository.store import DbStore
 
     conn = _Conn(rows=[])
     DbStore(SimpleNamespace(), conn).claim_batch(32)
@@ -558,7 +570,7 @@ def test_claim_batch_skips_rows_marked_with_error():
 
 
 def test_write_errors_upserts_error_and_leaves_commit_to_caller():
-    from score.store import DbStore
+    from score.repository.store import DbStore
 
     conn = _Conn()
     store = DbStore(SimpleNamespace(), conn)
@@ -579,7 +591,7 @@ def _client_error(code):
 
 
 def test_download_previews_drops_missing_keys_but_raises_other_errors(tmp_path):
-    from score.gallery import download_previews
+    from score.repository.storage import download_previews
 
     class Storage:
         def download(self, key, dest):
@@ -674,7 +686,7 @@ def test_handler_photo_ids_scores_only(fake_handler):
 
 def test_job_photo_ids_path_downloads_and_scores(monkeypatch, tmp_path):
     conn = _Conn()
-    monkeypatch.setattr(job.db, "connect", lambda s: conn)
+    monkeypatch.setattr(job.connection, "connect", lambda s: conn)
     monkeypatch.setattr(job, "PreviewStorage", lambda bucket: None)
     monkeypatch.setattr(job, "load_by_ids", lambda c, ids: _refs(*ids))
     monkeypatch.setattr(job, "download_previews", lambda storage, refs, d, workers=8, missing=None: refs)
@@ -693,7 +705,7 @@ def test_job_photo_ids_path_downloads_and_scores(monkeypatch, tmp_path):
 def test_job_photo_ids_path_writes_errors_for_missing_and_failed(monkeypatch, tmp_path):
     """Lambda 폴백도 워커와 같은 표시(#85): 404 는 PREVIEW_MISSING, 점수 실패는 SCORE_FAILED."""
     conn = _Conn()
-    monkeypatch.setattr(job.db, "connect", lambda s: conn)
+    monkeypatch.setattr(job.connection, "connect", lambda s: conn)
     monkeypatch.setattr(job, "PreviewStorage", lambda bucket: None)
     monkeypatch.setattr(job, "load_by_ids", lambda c, ids: _refs(*ids))
 
@@ -715,7 +727,7 @@ def test_job_photo_ids_path_writes_errors_for_missing_and_failed(monkeypatch, tm
 def test_gpu_worker_runs_real_pipeline_with_label_gallery(fake_runners, tmp_path, monkeypatch):
     """#81 회귀: 워커는 gallery 자리에 라벨 "worker" 를 넘긴다 — 실제 pipeline.run 이 DbStore 의 int(gallery) 조회를 타면 안 된다.
     가짜 DbStore 는 실제처럼 read_* 에서 int() 캐스팅을 한다."""
-    from score import gpu_worker
+    from score.service import worker as gpu_worker
 
     img_root = tmp_path / "imgs"
     img_root.mkdir()
@@ -746,7 +758,7 @@ def test_gpu_worker_runs_real_pipeline_with_label_gallery(fake_runners, tmp_path
         def rollback(self):
             pass
 
-    monkeypatch.setattr(gpu_worker.db, "connect", lambda s: _Conn())
+    monkeypatch.setattr(gpu_worker.connection, "connect", lambda s: _Conn())
     monkeypatch.setattr(gpu_worker, "DbStore", Store)
     monkeypatch.setattr(gpu_worker, "PreviewStorage", lambda bucket: None)
     monkeypatch.setattr(gpu_worker, "download_previews", lambda storage, refs, d, workers=8, missing=None: refs)
@@ -774,7 +786,7 @@ def test_gpu_worker_aborts_after_consecutive_failures(fake_worker):
 def test_gpu_worker_stop_self_pins_region_from_imds(monkeypatch):
     """워커 컨테이너에는 AWS_REGION 이 없다 — 리전을 IMDS 에서 읽어 ec2 클라이언트에 명시해야 StopInstances 가 된다
     (2026-09-09 운영 NoRegionError)."""
-    from score import gpu_worker
+    from score.infrastructure import ec2
 
     calls = {}
 
@@ -786,17 +798,17 @@ def test_gpu_worker_stop_self_pins_region_from_imds(monkeypatch):
         calls["service"], calls["region"] = service, region_name
         return Ec2()
 
-    monkeypatch.setattr(gpu_worker, "_imds", lambda path: {"instance-id": "i-1", "placement/region": "ap-northeast-2"}[path])
+    monkeypatch.setattr(ec2, "_imds", lambda path: {"instance-id": "i-1", "placement/region": "ap-northeast-2"}[path])
     monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=client))
 
-    assert gpu_worker.stop_self() is True
+    assert ec2.stop_self() is True
     assert calls == {"service": "ec2", "region": "ap-northeast-2", "ids": ["i-1"]}
 
 
 def test_gpu_worker_stop_self_skips_outside_ec2(monkeypatch):
-    from score import gpu_worker
+    from score.infrastructure import ec2
 
-    monkeypatch.setattr(gpu_worker, "_imds", lambda path: None)
+    monkeypatch.setattr(ec2, "_imds", lambda path: None)
     monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda *a, **k: pytest.fail("boto3 를 부르면 안 된다")))
 
-    assert gpu_worker.stop_self() is False
+    assert ec2.stop_self() is False

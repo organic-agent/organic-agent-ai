@@ -13,30 +13,16 @@ import json
 from datetime import datetime, timezone
 import logging
 import math
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict
 from pathlib import Path
 from typing import Protocol
 
 import numpy as np
 
+from score.domain.photo import PhotoAnalysis, PhotoRef
+from score.repository import connection
+
 log = logging.getLogger(__name__)
-
-
-@dataclass
-class PhotoAnalysis:
-    """`photo_analysis` 한 행. 컬럼 이름을 그대로 필드로 쓴다. SCORE 는 subjects · sub_scores · model_version 만 채운다."""
-
-    photo_id: str
-    subjects: str = "unknown"
-    technical_pct: float = 50.0
-    aesthetic_pct: float = 50.0
-    sub_scores: dict = field(default_factory=dict)   # technical_score, aesthetic_score, sharpness, clip_parent …
-    cluster_id: int = -1
-    cluster_rank: int = 0
-    embed_group_id: int = -1
-    model_version: str = ""
-    #: 마지막으로 점수를 쓴 시각(DB timestamptz | 로컬 ISO 문자열). force 재계산의 "이번 실행 전 점수" 판정(#54).
-    analyzed_at: object | None = None
 
 
 class Store(Protocol):
@@ -124,9 +110,8 @@ def _jsonb(value) -> str:
 class DbStore:
     """wes 공유 Postgres. id 규약: 읽을 때 str(), 쓸 때 int(). 트랜잭션은 write_scores 가 배치마다 commit."""
 
-    def __init__(self, settings, connection=None) -> None:
-        from score import db as db_mod
-        self.conn = connection or db_mod.connect(settings)
+    def __init__(self, settings, conn=None) -> None:
+        self.conn = conn or connection.connect(settings)
 
     def read_analysis(self, gallery: str) -> list[PhotoAnalysis]:
         """재개 판정에 필요한 것만 — photo_id · model_version · analyzed_at."""
@@ -161,8 +146,6 @@ class DbStore:
         photos 가 아니라 photo_analysis 를 잠그는 이유: photoselect 유저에게 photos UPDATE 권한이 없다.
         `exclude` 는 이 프로세스에서 계속 실패하는 사진(독성)을 빼는 용도. `a.error IS NULL`(#85, wes V15): 실패 표시된 사진은
         집지 않는다 — wes 의 부분 인덱스 `idx_photo_analysis_unscored` 가 같은 조건이라 이 절이 있어야 인덱스를 탄다."""
-        from score.gallery import PhotoRef
-
         with self.conn.cursor() as cur:
             cur.execute(
                 """

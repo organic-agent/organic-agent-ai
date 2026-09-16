@@ -11,7 +11,7 @@
 
 잡 상태·categorize 호출·재시도는 **wes 가 소유한다**(#98, wes V16). score 는 어느 경로로 불려도 점수만 쓴다.
 
-## 무엇을 계산하나 (`pipeline.py`)
+## 무엇을 계산하나 (`service/pipeline.py`)
 
 ```
 사진마다 (embedder 가 만든 미리보기 JPEG 입력)
@@ -31,7 +31,7 @@ categorize 의 컬럼이라 UPSERT 의 SET 절에 없다 — 이 경계가 곧 �
 
 | | |
 |---|---|
-| 진입점 | `handler.py`(Lambda EVENT `{"galleryId", "photoIds"}` — 다른 페이로드는 에러) / `__main__.py`(CLI, 갤러리 전체 가능) → `job.run()` |
+| 진입점 | `controller/handler.py`(Lambda EVENT `{"galleryId", "photoIds"}` — 다른 페이로드는 에러) / `__main__.py`(CLI, 갤러리 전체 가능) → `service/job.py` 의 `run()` |
 | 단위 · 재개 | 사진. 같은 `MODEL_VERSION` 이고 CLIP 이 저장된 사진은 건너뛴다. `write_batch`(32)장마다 commit |
 | 속도 손잡이 | 한 장은 한 번만 디코드해 세 러너에 넘긴다. CLIP 은 `CLIP_BATCH`(8)장씩 한 forward, ARNIQA 입력 긴 변은 `ARNIQA_LONG_EDGE`(1024 — 1600 대비 연산 1/2.4, 순위 상관 0.93) (#51) |
 | 데드라인 | 15분 앞에서 배치 경계에서 멈추고(`STOP_MARGIN_SECONDS`) commit 한다. 남은 사진은 wes 스윕이 다시 보낸다 |
@@ -41,26 +41,26 @@ categorize 의 컬럼이라 UPSERT 의 SET 절에 없다 — 이 경계가 곧 �
 
 ## 구조
 
+패키지는 층으로 나뉘어 있다(#130, embedder #121 과 같은 모양). 의존은 한 방향이다 — controller → service → repository,
+service → infrastructure, 모두가 domain·config 를 본다. torch 는 infrastructure 에서만 import 한다.
+
 ```
 score/
 ├── score/
-│   ├── handler.py      Lambda: {galleryId, photoIds} 하나. 데드라인 앞 배치 경계 정지
-│   ├── __main__.py     CLI: --gallery-id N [--job-id J] [--force] | --local "갤러리" | --list | worker
-│   ├── job.py          photoIds 경로(운영 폴백: 목록 → 미리보기 다운로드 → pipeline → write_errors) / 갤러리 경로(로컬 CLI·벤치마크). 잡·체인 없음(#98)
-│   ├── pipeline.py     SCORE 본체 (위 그림). Scorer(러너 1회 로드, #75) · 디코드 1회 · CLIP/ARNIQA 배치 · 배치 쓰기 · 데드라인 정지
-│   ├── images.py       이미지 로드 (torch 없음) — load_image · fit_long_edge · as_image
-│   ├── subjects.py     CLIP zero-shot — SubjectsTagger · ParentTagger
-│   ├── classical.py    Laplacian 선명도 · 노출 클립
-│   ├── runners/        ArniqaRunner(torch.hub, SHA 고정, score_batch) · LaionRunner(open_clip + MLP) — torch 는 여기만
-│   ├── gpu_worker.py   v2 GPU 워커 루프(#75): photo_analysis SKIP LOCKED 32장 집기 → 점수 → commit, 유휴면 자기 정지
-│   ├── device.py       cuda → mps → cpu 선택 · cuda fp16 autocast (#68)
-│   ├── sagemaker.py    SageMaker training 진입점 — GPU 벤치마크 전용, GPU 사용률 표본
-│   ├── config.py       Settings · Knobs · MODEL_VERSION · PARENTS · PARENT_PROMPTS
-│   ├── store.py        LocalStore(out/v3/) · DbStore — write_scores 하나
-│   ├── gallery.py      PhotoRef — 로컬 폴더 / DB(preview_key 있는 사진) · load_by_ids · download_previews(404 → missing)
-│   ├── storage.py      S3 미리보기 다운로드    ├── db.py  접속    ├── device.py  cuda|mps|cpu
-├── tests/test_score.py   pytest 29 — 재개 · 컬럼 경계 · 배치/데드라인 · CLIP/ARNIQA 배치·실패 격리 · 프리페치 · 집기(SKIP LOCKED·error) · GPU 워커 루프 · photoIds 폴백 · handler 계약 · categorize 와의 상수 일치
-├── Dockerfile · deploy.sh   컨테이너 Lambda (가중치 빌드 시 번들) · ECR 푸시 + update-function-code
+│   ├── __main__.py            CLI (python -m 규약상 루트): --gallery-id N [--photo-ids] [--force] | --local "갤러리" | --list | worker --gpu | train
+│   ├── controller/            handler.py(Lambda: {galleryId, photoIds} 하나, 데드라인 앞 배치 경계 정지) · sagemaker.py(SageMaker train — GPU 벤치마크 전용)
+│   ├── service/               job.py(photoIds 경로 = 운영 폴백 / 갤러리 경로 = 로컬·벤치마크, 잡·체인 없음 #98)
+│   │                          · pipeline.py(SCORE 본체 — 위 그림. Scorer 러너 1회 로드 · 디코드 1회 · CLIP/ARNIQA 배치 · 배치 쓰기 · 데드라인 정지)
+│   │                          · worker.py(GPU 워커 루프 #75: photo_analysis SKIP LOCKED 32장 집기 → 점수 → commit, 유휴면 자기 정지)
+│   │                          · classical.py(Laplacian 선명도 · 노출 클립 · bg_luma) · subjects.py(CLIP zero-shot — SubjectsTagger · ParentTagger)
+│   ├── domain/                photo.py(PhotoRef · PhotoAnalysis) · run.py(ScoreResult) · errors.py(PREVIEW_MISSING · SCORE_FAILED) — 로직 없음
+│   ├── repository/            connection.py(Postgres 접속) · photos.py(대상 조회: load_db · load_by_ids) · store.py(LocalStore(out/v3/) · DbStore — write_scores · claim_batch · write_errors)
+│   │                          · storage.py(S3 미리보기 · download_previews, 404 → missing) · dataset.py(로컬 데이터셋 폴더: list_galleries · load_local)
+│   ├── infrastructure/        runners/(ArniqaRunner — torch.hub SHA 고정 · LaionRunner — open_clip + MLP) · device.py(cuda → mps → cpu · fp16 autocast)
+│   │                          · images.py(PIL 로드 — load_image · fit_long_edge · as_image) · ec2.py(IMDS · StopInstances) · gpu.py(NVML 사용률 표본)
+│   └── config/settings.py     Settings · Knobs · MODEL_VERSION · PARENTS · PARENT_PROMPTS · MODULE_ROOT
+├── tests/test_score.py   pytest 35 — 재개 · 컬럼 경계 · 배치/데드라인 · CLIP/ARNIQA 배치·실패 격리 · 프리페치 · 집기(SKIP LOCKED·error) · GPU 워커 루프 · photoIds 폴백 · handler 계약 · categorize 와의 상수 일치
+├── Dockerfile · deploy.sh   컨테이너 Lambda (가중치 빌드 시 번들, CMD `score.controller.handler.handler`) · ECR 푸시 + update-function-code
 ├── Dockerfile.gpu           GPU 워커·벤치마크 이미지 (cu121 torch). main 의 score/** 변경마다 CI 가 ECR :gpu(이동) + :gpu-<sha>(불변) 로 민다(#77)
 ├── scripts/sagemaker_benchmark.py   SageMaker training job 제출·대기·로그 요약 · ec2_benchmark.py  EC2 stop/start 실측 · snapshot_scores.py  점수 스냅샷·비교(fp16 검증)
 ├── scripts/compare_local.py         CPU 경로 회귀(#89): 두 커밋을 같은 venv 로 로컬 데이터셋 N장 돌려 점수·CLIP 벡터 비트 동일 검사 — `check "dataset1/데이터셋1" --rev main --limit 16`

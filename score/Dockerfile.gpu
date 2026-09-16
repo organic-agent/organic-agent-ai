@@ -25,7 +25,7 @@ ENV HOME=/opt/home \
     SCORE_WORK=/tmp/score \
     PYTHONUNBUFFERED=1
 RUN mkdir -p /opt/home /opt/torch \
- && SCORE_DEVICE=cpu python -c "from score.runners import LaionRunner, ArniqaRunner; LaionRunner(); ArniqaRunner()"
+ && SCORE_DEVICE=cpu python -c "from score.infrastructure.runners import LaionRunner, ArniqaRunner; LaionRunner(); ArniqaRunner()"
 
 # 기본은 GPU 워커(#75): `docker run --gpus all <image>` → `python -m score worker --gpu`.
 # SageMaker 벤치마크는 `docker run <image> train` 으로 띄우므로 CMD 가 `train` 으로 바뀌어 sagemaker 진입점이 돈다.

@@ -1,4 +1,4 @@
-"""이미지 로드 — torch 없는 공통 모듈. 러너·classical·pipeline 이 같은 픽셀을 본다.
+"""이미지 로드(PIL · pillow_heif) — torch 없는 공통 모듈. 러너·classical·pipeline 이 같은 픽셀을 본다.
 
 서비스에서는 embedder 가 만든 preview JPEG(긴 변 **1024** = embedder `RESIZE_LONG_EDGE` 기본값, EXIF 회전 반영)을
 읽는다. 로컬 데이터셋의 원본은 여기서 같은 모양으로 맞춘다 — 해상도가 바뀌면 점수가 바뀐다(study/00 step2).

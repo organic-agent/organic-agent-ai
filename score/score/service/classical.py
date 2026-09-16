@@ -18,7 +18,7 @@ from scipy.ndimage import laplace
 
 from PIL import Image
 
-from score.images import as_image
+from score.infrastructure.images import as_image
 
 #: 선명도 계산 해상도. 리사이즈가 달라지면 값 스케일이 달라지므로 고정한다.
 LONG_EDGE = 1024
