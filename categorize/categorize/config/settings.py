@@ -39,7 +39,7 @@ class Knobs:
     group_distance: float = 0.2
     group_min_groups: int = 4
     group_max_share: float = 0.5
-    #: 과분할 가드 — 그룹 수가 n×이 값을 넘으면 임계를 올린다 (concept.concept_groups, 대칭 규칙).
+    #: 과분할 가드 — 그룹 수가 n×이 값을 넘으면 임계를 올린다 (grouping.embed_groups, 대칭 규칙).
     group_frag_share: float = 0.35
 
     # ── naming ──

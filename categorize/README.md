@@ -54,7 +54,7 @@ categorize/
 │   ├── service/             job.py(잡: 대상 조회 → pipeline → 실패면 error. 상태 전이는 wes #95)
 │   │                        pipeline.py(백분위 · 연사 · 임베딩 그룹 → write_groups → naming)
 │   │                        naming.py(Bedrock 이름 · 소그룹 최근접 · clip_parent 다수결 · 배경 검증 → write_assignments)
-│   │                        cluster.py(연사 union-find — 카메라 파티션 ∧ 순서 창 ∧ 코사인) · concept.py(평균연결 계층 클러스터, 적응 임계)
+│   │                        cluster.py(연사 union-find — 카메라 파티션 ∧ 순서 창 ∧ 코사인) · grouping.py(평균연결 계층 클러스터, 적응 임계)
 │   ├── domain/              photo.py(PhotoRef) · analysis.py(PhotoAnalysis · ConceptAssignment · GalleryRead · Store 프로토콜)
 │   │                        run.py(Grouped · CategorizeResult) — 로직 없음
 │   ├── repository/          connection.py(접속) · analysis.py(DbStore — read_gallery 한 쿼리 · write_groups · write_assignments ·

@@ -6,7 +6,7 @@ embedder·score 와 같은 층 구조(#131): controller → service → reposito
     service/pipeline        백분위 · 연사 클러스터 · concat(DINOv3⊕CLIP) 임베딩 그룹 → photo_analysis (pct · cluster · group) → naming
     service/naming          ② 이름(Bedrock, 부모는 닫힌 목록) ③ 소그룹 최근접 배정 ④ 저장된 clip_parent 다수결 검증 → ai_concept_assignments
     service/cluster         연사(burst) union-find — 카메라 파티션 ∧ 순서 창 ∧ 코사인 임계
-    service/concept         임베딩 그룹 경계 — 평균연결 계층 클러스터, 적응 임계
+    service/grouping        임베딩 그룹 경계 — 평균연결 계층 클러스터, 적응 임계
     domain/                 photo(PhotoRef) · analysis(PhotoAnalysis · ConceptAssignment · GalleryRead · Store) · run(Grouped · CategorizeResult)
     repository/             connection · analysis(DbStore) · local(LocalStore) · photos(대상 조회) · jobs(error 한 컬럼) · storage(S3)
     infrastructure/bedrock  BedrockClient.complete_json (JSON 스키마 강제, 이미지 블록)

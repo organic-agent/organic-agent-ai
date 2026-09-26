@@ -8,7 +8,7 @@ from PIL import Image
 from categorize.config.settings import MODEL_VERSION, Knobs, Settings
 from categorize.domain.analysis import PhotoAnalysis
 from categorize.repository.local import LocalStore
-from categorize.service import concept
+from categorize.service import grouping
 from categorize.service.pipeline import assign_ranks, concat_space, percentile
 
 
@@ -43,7 +43,7 @@ def world(tmp_path, n_groups=3, per_group=10, seed=0, clip_parent="실내 스튜
     for r, t in zip(rows, percentile([r.sub_scores["technical_score"] for r in rows])):
         r.technical_pct = t
     X = concat_space(E, C)
-    gids, _ = concept.concept_groups(X, 0.4, min_groups=2, max_share=0.6)
+    gids, _ = grouping.embed_groups(X, 0.4, min_groups=2, max_share=0.6)
     for i, (r, g) in enumerate(zip(rows, gids)):
         r.embed_group_id = int(g)
         r.cluster_id = i          # 연사 없음 — 전부 단독 클러스터

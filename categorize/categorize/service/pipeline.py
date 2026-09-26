@@ -29,7 +29,7 @@ from categorize.config.settings import MODEL_VERSION, Settings
 from categorize.domain.analysis import PhotoAnalysis, Store
 from categorize.domain.photo import PhotoRef
 from categorize.domain.run import CategorizeResult, Grouped
-from categorize.service import cluster, concept
+from categorize.service import cluster, grouping
 
 log = logging.getLogger(__name__)
 
@@ -124,7 +124,7 @@ def group(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings) 
     cids = cluster.cluster_bursts_partitioned(E, parts, k.burst_threshold, k.burst_window)
     t1 = time.monotonic()
     X = concat_space(E, C)
-    gids, used_d = concept.concept_groups(X, k.group_distance, k.group_min_groups,
+    gids, used_d = grouping.embed_groups(X, k.group_distance, k.group_min_groups,
                                           k.group_max_share, k.group_frag_share)
     for r, c, g in zip(ordered, cids, gids):
         r.cluster_id, r.embed_group_id = int(c), int(g)
@@ -138,7 +138,7 @@ def group(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings) 
 
     result.photos = len(ordered)
     result.clusters = int(cids.max()) + 1 if len(cids) else 0
-    result.groups = concept.group_profile(gids)
+    result.groups = grouping.group_profile(gids)
     result.group_distance = used_d
     result.similarity_profile = cluster.similarity_profile(E, k.burst_window) if len(E) > 1 else {}
     result.elapsed_seconds = time.monotonic() - started

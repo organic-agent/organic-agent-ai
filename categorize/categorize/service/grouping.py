@@ -1,4 +1,4 @@
-"""컨셉 그룹 — 같은 배경·구도로 찍은 사진 묶음. 이름은 없다, 경계만 있다.
+"""임베딩 그룹 — 같은 배경·구도로 찍은 사진 묶음. 이름은 없다, 경계만 있다.
 
 VLM scene 태그의 자리를 대신한다. 연사 클러스터(`service/cluster.py`, 코사인 ≥ 0.96·순서 창)보다
 훨씬 느슨하게, 순서 제약 없이 임베딩만으로 묶는다. 2026-08-29 갤러리 1 실측(DINOv2, 822장):
@@ -14,7 +14,7 @@ from __future__ import annotations
 import numpy as np
 
 
-def concept_groups(emb: np.ndarray, distance: float, min_groups: int = 4,
+def embed_groups(emb: np.ndarray, distance: float, min_groups: int = 4,
                    max_share: float = 0.5, frag_share: float = 0.35,
                    raise_cap: float = 0.15) -> tuple[np.ndarray, float]:
     """(N,) 그룹 id(등장 순서로 0..G-1), 실제로 쓴 거리 임계. emb 는 L2 정규화돼 있어야 한다.
