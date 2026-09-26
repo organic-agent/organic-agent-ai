@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 import numpy as np
 
 from categorize.config.settings import MODEL_VERSION
@@ -20,10 +22,13 @@ def test_local_store_roundtrip(tmp_path):
     np.testing.assert_allclose(E2, E, atol=1e-6)
     np.testing.assert_allclose(C2, C, atol=1e-6)
 
-    a = [ConceptAssignment(embed_group_id=0, parent_name="야외 자연", concept_name="해변",
+    a = [ConceptAssignment(embed_group_id=0, parent_name="야외 자연", detail_name="해변",
                            confidence=0.9, assigned_by="vlm")]
     store.write_assignments("g", None, a)
     assert store.read_assignments("g") == a
+    # 캐시 파일의 키는 DB 컬럼 이름 그대로 — 필드 이름이 바뀌어도 기존 out/ 파일을 읽는다
+    saved = json.loads((tmp_path / "out" / "v3" / "g" / "assignments.jsonl").read_text(encoding="utf-8"))
+    assert (saved["parent_name"], saved["concept_name"]) == ("야외 자연", "해변")
 
 
 def test_write_groups_keeps_score_columns(tmp_path):

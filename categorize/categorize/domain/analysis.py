@@ -31,11 +31,15 @@ class PhotoAnalysis:
 
 @dataclass
 class ConceptAssignment:
-    """`ai_concept_assignments` 한 행 — 임베딩 그룹 → (큰 분류, 컨셉)."""
+    """`ai_concept_assignments` 한 행 — 임베딩 그룹 → (큰 분류, 세부 이름).
+
+    필드는 wes 의 폴더 층 이름을 따른다(2층 = detail). 컬럼 이름과 다른 필드는 repository/analysis.py 가 옮긴다:
+    detail_name → concept_name 컬럼.
+    """
 
     embed_group_id: int
     parent_name: str
-    concept_name: str
+    detail_name: str
     confidence: float
     assigned_by: str                     # 'vlm' | 'nearest'
     proposed_parent: str | None = None   # parent_name='기타'일 때 VLM 제안

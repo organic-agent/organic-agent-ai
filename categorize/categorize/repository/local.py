@@ -13,6 +13,10 @@ import numpy as np
 
 from categorize.domain.analysis import ConceptAssignment, GalleryRead, PhotoAnalysis
 
+#: 배정 필드 → assignments.jsonl 키. 키는 DB 컬럼 이름(ai_concept_assignments)을 그대로 쓴다.
+_CACHE_KEY = {"detail_name": "concept_name"}
+_FIELD = {v: k for k, v in _CACHE_KEY.items()}
+
 
 class LocalStore:
     """out/v3/<갤러리 slug>/ 아래 파일 — score 의 LocalStore 와 같은 규약. 로컬은 임베더가 없어 CLIP 이 임베딩 역할을 겸한다."""
@@ -92,10 +96,12 @@ class LocalStore:
 
     def write_assignments(self, gallery: str, job_id: int | None,
                           rows: list[ConceptAssignment]) -> None:
+        """캐시 키는 DB 컬럼 이름 그대로 — 필드 이름이 바뀌어도 기존 out/ 의 파일을 그대로 읽는다."""
         p = self._dir(gallery) / "assignments.jsonl"
         with p.open("w", encoding="utf-8") as f:
             for r in rows:
-                f.write(json.dumps({"job_id": job_id, **asdict(r)}, ensure_ascii=False) + "\n")
+                d = {_CACHE_KEY.get(k, k): v for k, v in asdict(r).items()}
+                f.write(json.dumps({"job_id": job_id, **d}, ensure_ascii=False) + "\n")
 
     def read_assignments(self, gallery: str) -> list[ConceptAssignment]:
         p = self._dir(gallery) / "assignments.jsonl"
@@ -107,5 +113,5 @@ class LocalStore:
                 if line.strip():
                     d = json.loads(line)
                     d.pop("job_id", None)
-                    out.append(ConceptAssignment(**d))
+                    out.append(ConceptAssignment(**{_FIELD.get(k, k): v for k, v in d.items()}))
         return out

@@ -318,7 +318,7 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
         clip_parent = majority([rows[i].sub_scores.get("clip_parent") for i in g.members])
         if g.gid in named:
             d = named[g.gid]
-            parent, concept = str(d["parent"]), str(d["concept"])
+            parent, detail = str(d["parent"]), str(d["concept"])
             conf = min(1.0, max(0.0, float(d["confidence"])))
             # 이름은 대표 사진을 보고 지었다 — 대표와 배경이 다른 멤버는 그 이름이 안 맞을 수 있다.
             bg_off = _bg_outliers(rows, g.members, rows[g.rep_row].sub_scores.get("bg_luma"))
@@ -329,7 +329,7 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
             review = conf < k.review_confidence or bg_off > 0 or (
                 parent != ETC and clip_parent is not None and clip_parent != parent)
             assignments.append(ConceptAssignment(
-                embed_group_id=g.gid, parent_name=parent, concept_name=concept,
+                embed_group_id=g.gid, parent_name=parent, detail_name=detail,
                 confidence=conf, assigned_by="vlm",
                 proposed_parent=(str(d["proposed_parent"]) if parent == ETC and d.get("proposed_parent") else None),
                 clip_parent=clip_parent, needs_review=review))
@@ -339,10 +339,10 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
             j = int(np.argmax(sims))
             dist = 1.0 - float(sims[j])
             if dist > k.nearest_tau:
-                parent, concept, review = ETC, ETC, True
+                parent, detail, review = ETC, ETC, True
             else:
                 src = named[named_groups[j].gid]
-                parent, concept = str(src["parent"]), str(src["concept"])
+                parent, detail = str(src["parent"]), str(src["concept"])
                 review = parent != ETC and clip_parent is not None and clip_parent != parent
                 # 이름을 빌려온 그룹과 배경 밝기가 다르면, 가까워도 같은 세트가 아니다 —
                 # 부모(실내 스튜디오)는 검은 스튜디오와 흰 스튜디오를 함께 덮어 clip_parent 로는 안 잡힌다.
@@ -352,9 +352,9 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
                     counts["bg"] += 1
                     review = True
                     log.info("[naming] 그룹 %d(배경 %.0f): 그룹 %d '%s'(배경 %.0f) 의 이름을 빌렸지만 배경이 다르다 — 확인 필요",
-                             g.gid, own_bg, named_groups[j].gid, concept, src_bg)
+                             g.gid, own_bg, named_groups[j].gid, detail, src_bg)
             assignments.append(ConceptAssignment(
-                embed_group_id=g.gid, parent_name=parent, concept_name=concept,
+                embed_group_id=g.gid, parent_name=parent, detail_name=detail,
                 # confidence 는 vlm 의 자기 확신이 아니라 1 - 중심 거리다 — 다른 축의 값이 한 컬럼에 온다.
                 confidence=round(max(0.0, 1.0 - dist), 3), assigned_by="nearest",
                 clip_parent=clip_parent, needs_review=review))

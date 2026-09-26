@@ -170,7 +170,7 @@ class DbStore:
         params = [
             (
                 int(job_id), int(gallery), int(r.embed_group_id), r.parent_name,
-                r.proposed_parent, r.concept_name, float(r.confidence), r.clip_parent,
+                r.proposed_parent, r.detail_name, float(r.confidence), r.clip_parent,
                 r.assigned_by, bool(r.needs_review),
             )
             for r in rows

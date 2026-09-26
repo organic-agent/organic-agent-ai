@@ -34,7 +34,7 @@ def test_naming_nearest_inherits_and_flags_far_groups(tmp_path):
         if a.parent_name == "기타":
             assert a.needs_review
         else:
-            assert a.concept_name.startswith("세트")
+            assert a.detail_name.startswith("세트")
 
 
 def test_naming_low_confidence_and_clip_mismatch_need_review(tmp_path):
@@ -54,7 +54,7 @@ def test_naming_merge_call_unifies_names_across_chunks(tmp_path):
     kinds = [kind for kind, _ in llm.calls]
     assert kinds.count("vision") == 3 and kinds.count("merge") == 1
     assert result["llmCalls"] == 4
-    assert all(a.concept_name.endswith("(통일)") for a in store.read_assignments("g"))
+    assert all(a.detail_name.endswith("(통일)") for a in store.read_assignments("g"))
 
 
 def test_naming_chunk_calls_run_concurrently(tmp_path):
@@ -84,7 +84,7 @@ def test_naming_chunk_calls_run_concurrently(tmp_path):
 
     assert result["llmCalls"] == 4 and [k for k, _ in llm.calls].count("vision") == 3
     assert len(llm.threads) > 1 and elapsed < 0.14
-    assert all(a.concept_name.endswith("(통일)") for a in store.read_assignments("g"))   # 결과 계약 불변
+    assert all(a.detail_name.endswith("(통일)") for a in store.read_assignments("g"))   # 결과 계약 불변
 
     # naming_parallel=1 이면 직렬로 돌아간다 — 스로틀 때의 손잡이
     settings_serial = with_knobs(settings, naming_chunk=2, naming_spread_extra=9.0, naming_parallel=1)

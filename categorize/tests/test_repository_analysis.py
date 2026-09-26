@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pytest
 
 from categorize.config.settings import MODEL_VERSION, Settings
+from categorize.domain.analysis import ConceptAssignment
 from categorize.repository.analysis import PREVIEW_DOWNLOAD_WORKERS, DbStore
 from categorize.repository.storage import PreviewStorage
-from tests.db_fakes import RowConn
+from tests.db_fakes import JobConn, RowConn
 
 
 def _db_store(tmp_path, conn, bucket=None):
@@ -87,3 +90,20 @@ def test_preview_storage_pool_matches_download_workers(monkeypatch):
     pooled = PreviewStorage("bkt", max_concurrency=PREVIEW_DOWNLOAD_WORKERS)
     assert pooled._client._client_config.max_pool_connections == PREVIEW_DOWNLOAD_WORKERS == 16
     assert PreviewStorage("bkt")._client._client_config.max_pool_connections == 10   # 기본값은 boto 기본(10) 아래로 안 내려간다
+
+
+def test_write_assignments_maps_layers_to_old_columns(tmp_path):
+    """필드는 wes 층 이름, 컬럼은 옛 이름 — 1층 이름은 parent_name, 2층 이름은 concept_name 컬럼에 들어간다.
+    컬럼 이름을 바꿀 때(wes Flyway) 이 테스트가 같이 바뀌어야 한다."""
+    conn = JobConn()
+    row = ConceptAssignment(embed_group_id=4, parent_name="야외 자연", detail_name="해변",
+                            confidence=0.9, assigned_by="vlm")
+    _db_store(tmp_path, conn).write_assignments("7", 3, [row])
+
+    sql, params = conn.executed[0]
+    cols = [c.strip() for c in re.search(r"INSERT INTO ai_concept_assignments \((.*?)\)", sql).group(1).split(",")]
+    written = dict(zip(cols, params[0]))
+    assert written["parent_name"] == "야외 자연"   # 1층
+    assert written["concept_name"] == "해변"       # 2층
+    assert (written["job_id"], written["gallery_id"], written["embed_group_id"]) == (3, 7, 4)
+    assert conn.commits == 1
