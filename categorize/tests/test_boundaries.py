@@ -1,4 +1,4 @@
-"""경계 — torch 없음 · score 와 공유하는 상수(MODEL_VERSION · PARENTS)가 같은 값인가."""
+"""경계 — torch 없음 · score 와 공유하는 상수(MODEL_VERSION · 1층 목록)이 같은 값인가."""
 
 from __future__ import annotations
 
@@ -7,13 +7,17 @@ import subprocess
 import sys
 from pathlib import Path
 
-from categorize.config.settings import MODEL_VERSION, MODULE_ROOT, PARENTS
+from categorize.config.settings import CONCEPTS, MODEL_VERSION, MODULE_ROOT
 
 
 def test_module_never_imports_torch():
     code = ("import sys; import categorize.service.pipeline, categorize.service.naming, categorize.service.job, "
             "categorize.controller.handler; assert 'torch' not in sys.modules, 'torch imported'")
     subprocess.run([sys.executable, "-c", code], check=True, cwd=MODULE_ROOT)
+
+
+#: score 설정 파일에서 1층 목록의 변수 이름 — score 가 정한 이름이다.
+SCORE_CONCEPTS_NAME = "PARENTS"
 
 
 def _literal(path: Path, name: str):
@@ -34,8 +38,8 @@ def _score_settings() -> Path:
     raise AssertionError(f"score 설정 파일이 없다: {base}")
 
 
-def test_model_version_and_parents_match_score_module():
+def test_model_version_and_concepts_match_score_module():
     other = _score_settings()
     assert _literal(other, "MODEL_VERSION") == MODEL_VERSION
-    assert _literal(other, "PARENTS") == PARENTS
-    assert "기타" in PARENTS and len(PARENTS) == len(set(PARENTS))
+    assert _literal(other, SCORE_CONCEPTS_NAME) == CONCEPTS
+    assert "기타" in CONCEPTS and len(CONCEPTS) == len(set(CONCEPTS))

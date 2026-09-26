@@ -22,7 +22,7 @@ class PhotoAnalysis:
     subjects: str = "unknown"
     technical_pct: float = 50.0
     aesthetic_pct: float = 50.0
-    sub_scores: dict = field(default_factory=dict)   # technical_score, aesthetic_score, sharpness, rank_reason, clip_parent …
+    sub_scores: dict = field(default_factory=dict)   # technical_score, aesthetic_score, sharpness, rank_reason, clip_parent(score 의 키) …
     cluster_id: int = -1
     cluster_rank: int = 0
     embed_group_id: int = -1
@@ -34,7 +34,8 @@ class ConceptAssignment:
     """`ai_concept_assignments` 한 행 — 임베딩 그룹 → (큰 분류, 세부 이름).
 
     필드는 wes 의 폴더 층 이름을 따른다(1층 = concept, 2층 = detail). 컬럼 이름과 다른 필드는 repository/analysis.py 가
-    옮긴다: concept_name → parent_name 컬럼, detail_name → concept_name 컬럼.
+    옮긴다: concept_name → parent_name, detail_name → concept_name, proposed_concept → proposed_parent,
+    clip_concept → clip_parent 컬럼.
     """
 
     embed_group_id: int
@@ -42,8 +43,8 @@ class ConceptAssignment:
     detail_name: str
     confidence: float
     assigned_by: str                     # 'vlm' | 'nearest'
-    proposed_parent: str | None = None   # concept_name='기타'일 때 VLM 제안
-    clip_parent: str | None = None       # CLIP zero-shot 다수결 (검증)
+    proposed_concept: str | None = None  # concept_name='기타'일 때 VLM 이 제안한 1층 이름
+    clip_concept: str | None = None      # CLIP zero-shot 1층 라벨의 그룹 다수결 (검증)
     needs_review: bool = False
 
 

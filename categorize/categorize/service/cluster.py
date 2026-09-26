@@ -13,17 +13,17 @@ from __future__ import annotations
 import numpy as np
 
 
-def _find(parent: list[int], i: int) -> int:
-    while parent[i] != i:
-        parent[i] = parent[parent[i]]
-        i = parent[i]
+def _find(leader: list[int], i: int) -> int:
+    while leader[i] != i:
+        leader[i] = leader[leader[i]]
+        i = leader[i]
     return i
 
 
 def cluster_bursts(emb: np.ndarray, threshold: float, window: int) -> np.ndarray:
     """(N,) cluster_id. 입력 순서 = 파일명 순서여야 한다. emb는 L2 정규화돼 있어야 한다."""
     n = len(emb)
-    parent = list(range(n))
+    leader = list(range(n))
     for i in range(n):
         hi = min(n, i + window + 1)
         if hi <= i + 1:
@@ -31,10 +31,10 @@ def cluster_bursts(emb: np.ndarray, threshold: float, window: int) -> np.ndarray
         sims = emb[i + 1:hi] @ emb[i]
         for k, s in enumerate(sims):
             if s >= threshold:
-                a, b = _find(parent, i), _find(parent, i + 1 + k)
+                a, b = _find(leader, i), _find(leader, i + 1 + k)
                 if a != b:
-                    parent[b] = a
-    roots = [_find(parent, i) for i in range(n)]
+                    leader[b] = a
+    roots = [_find(leader, i) for i in range(n)]
     # 등장 순서대로 0,1,2,… 로 다시 번호를 매긴다
     remap: dict[int, int] = {}
     return np.array([remap.setdefault(r, len(remap)) for r in roots], dtype=int)

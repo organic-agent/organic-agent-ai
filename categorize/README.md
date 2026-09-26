@@ -2,7 +2,7 @@
 
 갤러리 하나를 **한 번에** 읽어 백분위 · 연사 클러스터 · 임베딩 그룹을 만들고, 그룹에 (1층 concept, 2층 detail) 이름을 붙여
 `photo_analysis`(pct · cluster · group) 와 `ai_concept_assignments` 에 적재한다. 입력은 전부 DB 에 저장된 것이다 —
-[`embedder/`](../embedder/README.md) 의 DINOv3, [`score/`](../score/README.md) 의 원점수·CLIP·clip_parent. 그래서
+[`embedder/`](../embedder/README.md) 의 DINOv3, [`score/`](../score/README.md) 의 원점수·CLIP·CLIP 1층 라벨. 그래서
 numpy · scipy · Bedrock 만으로 돌고 torch 가 없다(테스트가 고정). 실제 폴더(`concept_folders` · `detail_folders` ·
 `photo_category_assignments`)는 wes 가 배정을 읽어 만든다(`POST /concept-folders/ai`).
 
@@ -22,9 +22,9 @@ wes ──EVENT {galleryId, jobId}──▶ [categorize] ──▶ ai_concept_as
 → store.write_groups  (pct · cluster · group · sub_scores 만 — subjects · clip_embedding · model_version 은 score 의 것)
 → naming.run
   ② 크기순 커버리지 85%(상한 120그룹)까지 대표 1~2장(spread > 0.12 면 최원점 추가)을 15장 청크로 Sonnet
-     → {parent(enum 강제), concept(열린 한국어), confidence}. 청크는 동시에 보내고(`NAMING_PARALLEL` 4, 1 이면 직렬) 둘 이상이면 통합 텍스트 호출 1회
+     → {1층(enum 강제), 2층(열린 한국어), confidence}. 청크는 동시에 보내고(`NAMING_PARALLEL` 4, 1 이면 직렬) 둘 이상이면 통합 텍스트 호출 1회
   ③ VLM 안 간 소그룹 → concat 공간 최근접 이름 상속. 거리 > 0.25 → 기타/기타 + needs_review
-  ④ 저장된 clip_parent 그룹 다수결 ≠ VLM 부모, 또는 confidence < 0.8 → needs_review
+  ④ 저장된 CLIP 1층 라벨 그룹 다수결 ≠ VLM 1층, 또는 confidence < 0.8 → needs_review
 → store.write_assignments (ai_concept_assignments, job_id 에 매달림)
 ```
 
@@ -53,7 +53,7 @@ categorize/
 │   ├── controller/          handler.py — Lambda {galleryId, jobId} → service.job.run (Bedrock 클라이언트 주입)
 │   ├── service/             job.py(잡: 대상 조회 → pipeline → 실패면 error. 상태 전이는 wes #95)
 │   │                        pipeline.py(백분위 · 연사 · 임베딩 그룹 → write_groups → naming)
-│   │                        naming.py(Bedrock 이름 · 소그룹 최근접 · clip_parent 다수결 · 배경 검증 → write_assignments)
+│   │                        naming.py(Bedrock 이름 · 소그룹 최근접 · CLIP 1층 라벨 다수결 · 배경 검증 → write_assignments)
 │   │                        cluster.py(연사 union-find — 카메라 파티션 ∧ 순서 창 ∧ 코사인) · grouping.py(평균연결 계층 클러스터, 적응 임계)
 │   ├── domain/              photo.py(PhotoRef) · analysis.py(PhotoAnalysis · ConceptAssignment · GalleryRead · Store 프로토콜)
 │   │                        run.py(Grouped · CategorizeResult) — 로직 없음
@@ -61,7 +61,7 @@ categorize/
 │   │                        preview_paths 배치 SELECT+병렬 다운로드) · local.py(LocalStore, out/v3/) · photos.py(load_db · load_local)
 │   │                        jobs.py(fail 하나 — ai_analysis_jobs.error) · storage.py(S3 미리보기, 풀 = 스레드 수)
 │   ├── infrastructure/      bedrock.py(LlmClient 프로토콜 · BedrockClient.complete_json — JSON 스키마 강제, 텍스트+이미지 블록 · jpeg_bytes)
-│   └── config/              settings.py(Settings · Knobs · LlmKnobs · MODEL_VERSION · PARENTS)
+│   └── config/              settings.py(Settings · Knobs · LlmKnobs · MODEL_VERSION · CONCEPTS)
 ├── tests/                   층별 파일(test_service_* · test_repository_* · test_controller_handler · test_boundaries) — pytest 41.
 │                            helpers.py(합성 갤러리 · FakeLlm) · db_fakes.py(커넥션 가짜). 모델 없음 · torch 미import 를 테스트로 고정
 ├── Dockerfile · deploy.sh   컨테이너 Lambda (torch 없음, 작다) · ECR 푸시 + update-function-code
@@ -101,7 +101,8 @@ naming 이 닿는다. 메모리 2–3GB 면 7,000장(거리행렬 ~200MB)까지 
   `proposed_parent` · `clip_parent` · `needs_review`
 - 용어: 코드는 wes 층 이름을 따른다 — `ConceptAssignment.concept_name`(1층) = wes `ConceptFolder`, `detail_name`(2층) = wes
   `DetailFolder`. 컬럼 이름은 옛것 그대로라 1층은 `parent_name`, 2층은 `concept_name` 컬럼에 저장된다(`repository/analysis.py`,
-  테스트가 고정). Bedrock 프롬프트의 JSON 키(`parent` · `concept`)와 로컬 캐시 키도 옛 이름이다.
+  테스트가 고정). `proposed_concept`·`clip_concept` 필드도 같은 식으로 옛 컬럼에 간다. 옛 이름은 경계에만 남는다 —
+  SQL 컬럼, Bedrock 프롬프트의 JSON 키, 로컬 캐시 키, score 가 쓰는 `sub_scores` 키(`CLIP_CONCEPT_KEY`)와 score 의 목록 변수 이름.
 - 손잡이(`config/settings.py`): 연사 0.96, 그룹 거리 0.2, 최근접 τ 0.25, 커버리지 0.85, review confidence 0.8. 연사·그룹 값은
   CLIP/DINOv2 시절 실측이라 DINOv3 기준 재측정 대상 — 결과의 `similarityProfile` 이 근거.
 

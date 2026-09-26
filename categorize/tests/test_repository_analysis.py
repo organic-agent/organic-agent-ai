@@ -93,17 +93,20 @@ def test_preview_storage_pool_matches_download_workers(monkeypatch):
 
 
 def test_write_assignments_maps_layers_to_old_columns(tmp_path):
-    """필드는 wes 층 이름, 컬럼은 옛 이름 — 1층 이름은 parent_name, 2층 이름은 concept_name 컬럼에 들어간다.
+    """필드는 wes 층 이름, 컬럼은 옛 이름 — 1층 이름은 parent_name, 2층 이름은 concept_name 컬럼에 들어간다
+    (proposed_concept → proposed_parent, clip_concept → clip_parent).
     컬럼 이름을 바꿀 때(wes Flyway) 이 테스트가 같이 바뀌어야 한다."""
     conn = JobConn()
-    row = ConceptAssignment(embed_group_id=4, concept_name="야외 자연", detail_name="해변",
-                            confidence=0.9, assigned_by="vlm")
+    row = ConceptAssignment(embed_group_id=4, concept_name="기타", detail_name="해변",
+                            confidence=0.9, assigned_by="vlm", proposed_concept="수영장", clip_concept="야외 자연")
     _db_store(tmp_path, conn).write_assignments("7", 3, [row])
 
     sql, params = conn.executed[0]
     cols = [c.strip() for c in re.search(r"INSERT INTO ai_concept_assignments \((.*?)\)", sql).group(1).split(",")]
     written = dict(zip(cols, params[0]))
-    assert written["parent_name"] == "야외 자연"   # 1층
-    assert written["concept_name"] == "해변"       # 2층
+    assert written["parent_name"] == "기타"          # 1층
+    assert written["concept_name"] == "해변"         # 2층
+    assert written["proposed_parent"] == "수영장"    # 1층 제안
+    assert written["clip_parent"] == "야외 자연"     # 1층 검증 라벨
     assert (written["job_id"], written["gallery_id"], written["embed_group_id"]) == (3, 7, 4)
     assert conn.commits == 1

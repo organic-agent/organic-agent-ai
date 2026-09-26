@@ -5,14 +5,14 @@ ai-folder-structure.md의 ②~④ 구현. 층마다 잘하는 도구:
     ② 이름   크기순으로 사진 커버리지 목표(naming_coverage, 상한 naming_max_groups)까지 고른
              그룹 + **이름을 빌려올 이웃이 없는 고립 그룹**(#118)의 대표 1~2장(spread 크면 2장)을
              Bedrock Sonnet에 (청크 호출 → 통합 텍스트 호출 1회)
-             · 부모 = 닫힌 고정 목록 (JSON 스키마 enum으로 강제, 목록 밖이면 '기타'+proposed)
+             · 1층(concept) = 닫힌 고정 목록 (JSON 스키마 enum으로 강제, 목록 밖이면 '기타'+proposed)
              · 세부(detail) = 열린 이름
     ③ 배정   K 밖 소그룹 → concat 공간에서 이름 붙은 그룹 중심과 최근접. 거리 > τ 면 '기타/기타'
              + needs_review. CLIP 텍스트는 안 쓴다 — 세부 층은 텍스트로 못 가른다
-    ④ 검증   score 가 사진마다 저장한 CLIP zero-shot 부모 라벨(sub_scores.clip_parent) → 그룹 다수결.
-             VLM 부모와 다르거나 confidence < 기준이면 needs_review. 검증 전용 — 판정은 VLM의 것.
+    ④ 검증   score 가 사진마다 저장한 CLIP zero-shot 1층 라벨(sub_scores[CLIP_CONCEPT_KEY]) → 그룹 다수결.
+             VLM 의 1층과 다르거나 confidence < 기준이면 needs_review. 검증 전용 — 판정은 VLM의 것.
              여기서 CLIP 텍스트 인코더를 올리지 않는다 — 이 모듈은 torch 없이 돈다(#26·#35)
-             배경 밝기(sub_scores.bg_luma, score #117)도 같은 자리에서 본다 — 부모는 배경색을 모른다.
+             배경 밝기(sub_scores.bg_luma, score #117)도 같은 자리에서 본다 — 1층은 배경색을 모른다.
              '실내 스튜디오'라는 큰 분류는 검은 스튜디오와 흰 스튜디오를 함께 덮으므로, 이름이 가리키는
              배경과 사진의 배경이 어긋나는 것은 이 값으로만 드러난다(#118)
 
@@ -32,7 +32,7 @@ from dataclasses import dataclass
 
 import numpy as np
 
-from categorize.config.settings import PARENTS, Settings
+from categorize.config.settings import CONCEPTS, Settings
 from categorize.domain.analysis import ConceptAssignment, Store
 from categorize.domain.run import Grouped
 from categorize.infrastructure.bedrock import LlmClient, jpeg_bytes
@@ -41,6 +41,9 @@ from categorize.service.pipeline import concat_space
 log = logging.getLogger(__name__)
 
 ETC = "기타"
+
+#: score 가 사진마다 sub_scores 에 남기는 CLIP zero-shot 1층 라벨의 키. score 가 정한 이름이라 옛 이름 그대로다.
+CLIP_CONCEPT_KEY = "clip_parent"
 
 #: 배경 밝기(0~255)가 이만큼 어긋나면 "다른 배경"으로 본다 — 검증 전용이고 배정은 바꾸지 않는다.
 #: 운영 갤러리 25 실측: 검은 스튜디오 5 · 화이트 벽 199 · 흰 배경 243 (차이 190+), 같은 세트 안의
@@ -68,7 +71,7 @@ def _bg_outliers(rows, idxs, ref: float | None) -> int:
 
 
 def majority(labels: list[str | None]) -> str | None:
-    """score 가 사진마다 저장한 clip_parent 의 그룹 다수결. None 은 표에서 뺀다. 표가 없으면 None.
+    """score 가 사진마다 저장한 CLIP 1층 라벨의 그룹 다수결. None 은 표에서 뺀다. 표가 없으면 None.
     CLIP 텍스트 인코더는 올리지 않는다 — 이 모듈은 torch 없이 돈다."""
     votes = [lab for lab in labels if lab]
     if not votes:
@@ -97,10 +100,10 @@ MERGE_SYSTEM = """웨딩 갤러리 폴더 이름 목록을 정리한다. 같은 
 않는다. 다른 세트를 억지로 합치지 않는다. 모든 그룹을 다시 돌려준다."""
 
 
-def _schema(parents: list[str], with_confidence: bool = True) -> dict:
+def _schema(concepts: list[str], with_confidence: bool = True) -> dict:
     props: dict = {
         "group_id": {"type": "integer"},
-        "parent": {"type": "string", "enum": parents},
+        "parent": {"type": "string", "enum": concepts},
         "proposed_parent": {"type": ["string", "null"]},
         "concept": {"type": "string"},
     }
@@ -150,13 +153,13 @@ def _build_groups(gids: np.ndarray, X: np.ndarray) -> list[_Group]:
     return out
 
 
-def _vlm_name(llm: LlmClient, chunks: list[list[tuple[_Group, list[bytes]]]], parents: list[str],
+def _vlm_name(llm: LlmClient, chunks: list[list[tuple[_Group, list[bytes]]]], concepts: list[str],
               k) -> tuple[dict[int, dict], int]:
     """청크 vision 호출들 → {gid: {parent, proposed_parent, concept, confidence}}, 호출 수."""
-    schema = _schema(parents)
+    schema = _schema(concepts)
 
     def one(chunk: list[tuple[_Group, list[bytes]]]) -> dict[int, dict]:
-        parts: list = [("text", f"큰 분류 목록: {', '.join(parents)}\n그룹 {len(chunk)}개의 대표 사진이다.")]
+        parts: list = [("text", f"큰 분류 목록: {', '.join(concepts)}\n그룹 {len(chunk)}개의 대표 사진이다.")]
         for g, imgs in chunk:
             suffix = " — 대표 2장" if len(imgs) > 1 else ""
             parts.append(("text", f"[그룹 {g.gid}] {len(g.members)}장{suffix}"))
@@ -178,13 +181,13 @@ def _vlm_name(llm: LlmClient, chunks: list[list[tuple[_Group, list[bytes]]]], pa
     return named, len(chunks)
 
 
-def _merge_names(llm: LlmClient, named: dict[int, dict], sizes: dict[int, int], parents: list[str],
+def _merge_names(llm: LlmClient, named: dict[int, dict], sizes: dict[int, int], concepts: list[str],
                  k) -> dict[int, dict]:
     """통합 텍스트 호출 1회 — 청크 사이 concept 표기 통일. 실패하면 원본 유지."""
     lines = [f"그룹 {gid}: parent={d['parent']}, concept={d['concept']}, {sizes[gid]}장"
              for gid, d in sorted(named.items())]
     try:
-        out = llm.complete_json(MERGE_SYSTEM, "\n".join(lines), _schema(parents, with_confidence=False),
+        out = llm.complete_json(MERGE_SYSTEM, "\n".join(lines), _schema(concepts, with_confidence=False),
                                 k.naming_max_tokens)
     except Exception as exc:  # noqa: BLE001 — 통합은 다듬기다. 실패해도 청크 결과로 간다
         log.warning("이름 통합 호출 실패 (%s) — 청크 결과 유지", exc)
@@ -229,7 +232,7 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
         raise RuntimeError("naming 은 Bedrock 이 필요하다 — --llm 으로 실행하라 (AWS 자격 필요)")
     started = time.monotonic()
     k = settings.knobs
-    parents = PARENTS
+    concepts = CONCEPTS
 
     if grouped is None:
         grouped = _load(store, gallery)
@@ -300,9 +303,9 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
         cur_imgs += len(item[1])
     if cur:
         chunks.append(cur)
-    named, calls = _vlm_name(llm, chunks, parents, k)
+    named, calls = _vlm_name(llm, chunks, concepts, k)
     if len(chunks) > 1 and named:
-        named = _merge_names(llm, named, {g.gid: len(g.members) for g in groups}, parents, k)
+        named = _merge_names(llm, named, {g.gid: len(g.members) for g in groups}, concepts, k)
         calls += 1
 
     named_groups = [g for g in groups if g.gid in named]
@@ -314,8 +317,8 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
     assignments: list[ConceptAssignment] = []
     counts = {"vlm": 0, "nearest": 0, "review": 0, "bg": 0}
     for g in groups:
-        # ④ 저장된 사진별 CLIP 부모 라벨의 그룹 다수결 — SCORE 가 계산해 둔 것
-        clip_parent = majority([rows[i].sub_scores.get("clip_parent") for i in g.members])
+        # ④ 저장된 사진별 CLIP 1층 라벨의 그룹 다수결 — SCORE 가 계산해 둔 것
+        clip_concept = majority([rows[i].sub_scores.get(CLIP_CONCEPT_KEY) for i in g.members])
         if g.gid in named:
             d = named[g.gid]
             concept, detail = str(d["parent"]), str(d["concept"])
@@ -327,12 +330,12 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
                 log.info("[naming] 그룹 %d: 대표와 배경이 %.0f 넘게 다른 사진 %d장 — 확인 필요",
                          g.gid, BG_GAP, bg_off)
             review = conf < k.review_confidence or bg_off > 0 or (
-                concept != ETC and clip_parent is not None and clip_parent != concept)
+                concept != ETC and clip_concept is not None and clip_concept != concept)
             assignments.append(ConceptAssignment(
                 embed_group_id=g.gid, concept_name=concept, detail_name=detail,
                 confidence=conf, assigned_by="vlm",
-                proposed_parent=(str(d["proposed_parent"]) if concept == ETC and d.get("proposed_parent") else None),
-                clip_parent=clip_parent, needs_review=review))
+                proposed_concept=(str(d["proposed_parent"]) if concept == ETC and d.get("proposed_parent") else None),
+                clip_concept=clip_concept, needs_review=review))
             counts["vlm"] += 1
         else:
             sims = named_centroids @ g.centroid
@@ -343,9 +346,9 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
             else:
                 src = named[named_groups[j].gid]
                 concept, detail = str(src["parent"]), str(src["concept"])
-                review = concept != ETC and clip_parent is not None and clip_parent != concept
+                review = concept != ETC and clip_concept is not None and clip_concept != concept
                 # 이름을 빌려온 그룹과 배경 밝기가 다르면, 가까워도 같은 세트가 아니다 —
-                # 부모(실내 스튜디오)는 검은 스튜디오와 흰 스튜디오를 함께 덮어 clip_parent 로는 안 잡힌다.
+                # 1층(실내 스튜디오)은 검은 스튜디오와 흰 스튜디오를 함께 덮어 CLIP 1층 라벨로는 안 잡힌다.
                 src_bg = _bg_median(rows, named_groups[j].members)
                 own_bg = _bg_median(rows, g.members)
                 if src_bg is not None and own_bg is not None and abs(own_bg - src_bg) > BG_GAP:
@@ -357,22 +360,22 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
                 embed_group_id=g.gid, concept_name=concept, detail_name=detail,
                 # confidence 는 vlm 의 자기 확신이 아니라 1 - 중심 거리다 — 다른 축의 값이 한 컬럼에 온다.
                 confidence=round(max(0.0, 1.0 - dist), 3), assigned_by="nearest",
-                clip_parent=clip_parent, needs_review=review))
+                clip_concept=clip_concept, needs_review=review))
             counts["nearest"] += 1
         if assignments[-1].needs_review:
             counts["review"] += 1
 
     store.write_assignments(gallery, job_id, assignments)
 
-    per_parent: dict[str, int] = {}
+    per_concept: dict[str, int] = {}
     for a in assignments:
-        per_parent[a.concept_name] = per_parent.get(a.concept_name, 0) + 1
+        per_concept[a.concept_name] = per_concept.get(a.concept_name, 0) + 1
     return {
         "gallery": gallery, "pipeline": "v3", "mode": "naming",
         "photos": len(rows), "groups": len(groups),
         "vlmGroups": counts["vlm"], "nearestGroups": counts["nearest"],
         "isolatedGroups": isolated, "bgMismatchGroups": counts["bg"],
-        "needsReview": counts["review"], "parents": per_parent,
+        "needsReview": counts["review"], "concepts": per_concept,
         "coverage": round(covered / total_photos, 3) if total_photos else 0.0,
         "extraReps": extra_reps,
         "llmCalls": calls, "elapsedSeconds": round(time.monotonic() - started, 1),

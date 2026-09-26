@@ -1,6 +1,6 @@
 """DB 저장소 — `photo_analysis` 와 `ai_concept_assignments` 중 CATEGORIZE 가 읽고 쓰는 부분.
 
-읽기: `read_gallery` **한 쿼리** — score 의 원점수·subjects·clip_parent(sub_scores)·clip_embedding 과 embedder 의
+읽기: `read_gallery` **한 쿼리** — score 의 원점수·subjects·CLIP 1층 라벨(sub_scores)·clip_embedding 과 embedder 의
 embedding(DINOv3) 을 한 번에. 그룹화와 naming 이 같은 결과를 나눠 쓰므로 갤러리당 한 번만 읽는다(7천 장이면 벡터 두 종류 44MB).
 쓰기: `write_groups`(technical_pct · aesthetic_pct · sub_scores · cluster_id · cluster_rank · embed_group_id — UPDATE,
 행은 score 가 만들어 두었다)와 `write_assignments`(ai_concept_assignments, job_id 에 매달림).
@@ -170,7 +170,7 @@ class DbStore:
         params = [
             (
                 int(job_id), int(gallery), int(r.embed_group_id), r.concept_name,
-                r.proposed_parent, r.detail_name, float(r.confidence), r.clip_parent,
+                r.proposed_concept, r.detail_name, float(r.confidence), r.clip_concept,
                 r.assigned_by, bool(r.needs_review),
             )
             for r in rows

@@ -20,9 +20,9 @@ MODULE_ROOT = Path(__file__).resolve().parents[2]
 #: "점수 있음"으로 읽는다. 값은 v3 시절 그대로: 바꾸면 전 갤러리가 재점수 대상이 된다.
 MODEL_VERSION = "photoselect-v3-a-0.1"
 
-#: 큰 분류(부모) 고정 목록 — naming 이 Bedrock 스키마 enum 으로 강제한다. score 의 ParentTagger 가 같은 목록으로
-#: 사진마다 clip_parent 를 저장하므로 두 모듈이 같아야 한다. '기타'는 목록에 항상 있다.
-PARENTS: list[str] = ["실내 스튜디오", "하우스·인테리어", "한옥·전통", "야외 정원·건물",
+#: 1층(concept) 고정 목록 — naming 이 Bedrock 스키마 enum 으로 강제한다. score 의 zero-shot 태거가 같은 목록으로
+#: 사진마다 1층 라벨을 저장하므로 두 모듈이 같아야 한다(tests/test_boundaries.py). '기타'는 목록에 항상 있다.
+CONCEPTS: list[str] = ["실내 스튜디오", "하우스·인테리어", "한옥·전통", "야외 정원·건물",
                       "야외 자연", "도심·거리", "기타"]
 
 
