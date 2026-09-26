@@ -1,4 +1,4 @@
-"""v3 naming — 임베딩 그룹에 (큰 분류, 컨셉 이름)을 붙여 `ai_concept_assignments`에 남긴다.
+"""v3 naming — 임베딩 그룹에 (1층 concept, 2층 detail) 이름을 붙여 `ai_concept_assignments`에 남긴다.
 
 ai-folder-structure.md의 ②~④ 구현. 층마다 잘하는 도구:
 
@@ -6,9 +6,9 @@ ai-folder-structure.md의 ②~④ 구현. 층마다 잘하는 도구:
              그룹 + **이름을 빌려올 이웃이 없는 고립 그룹**(#118)의 대표 1~2장(spread 크면 2장)을
              Bedrock Sonnet에 (청크 호출 → 통합 텍스트 호출 1회)
              · 부모 = 닫힌 고정 목록 (JSON 스키마 enum으로 강제, 목록 밖이면 '기타'+proposed)
-             · 컨셉 = 열린 이름
+             · 세부(detail) = 열린 이름
     ③ 배정   K 밖 소그룹 → concat 공간에서 이름 붙은 그룹 중심과 최근접. 거리 > τ 면 '기타/기타'
-             + needs_review. CLIP 텍스트는 안 쓴다 — 컨셉 층은 텍스트로 못 가른다
+             + needs_review. CLIP 텍스트는 안 쓴다 — 세부 층은 텍스트로 못 가른다
     ④ 검증   score 가 사진마다 저장한 CLIP zero-shot 부모 라벨(sub_scores.clip_parent) → 그룹 다수결.
              VLM 부모와 다르거나 confidence < 기준이면 needs_review. 검증 전용 — 판정은 VLM의 것.
              여기서 CLIP 텍스트 인코더를 올리지 않는다 — 이 모듈은 torch 없이 돈다(#26·#35)
@@ -318,7 +318,7 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
         clip_parent = majority([rows[i].sub_scores.get("clip_parent") for i in g.members])
         if g.gid in named:
             d = named[g.gid]
-            parent, detail = str(d["parent"]), str(d["concept"])
+            concept, detail = str(d["parent"]), str(d["concept"])
             conf = min(1.0, max(0.0, float(d["confidence"])))
             # 이름은 대표 사진을 보고 지었다 — 대표와 배경이 다른 멤버는 그 이름이 안 맞을 수 있다.
             bg_off = _bg_outliers(rows, g.members, rows[g.rep_row].sub_scores.get("bg_luma"))
@@ -327,11 +327,11 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
                 log.info("[naming] 그룹 %d: 대표와 배경이 %.0f 넘게 다른 사진 %d장 — 확인 필요",
                          g.gid, BG_GAP, bg_off)
             review = conf < k.review_confidence or bg_off > 0 or (
-                parent != ETC and clip_parent is not None and clip_parent != parent)
+                concept != ETC and clip_parent is not None and clip_parent != concept)
             assignments.append(ConceptAssignment(
-                embed_group_id=g.gid, parent_name=parent, detail_name=detail,
+                embed_group_id=g.gid, concept_name=concept, detail_name=detail,
                 confidence=conf, assigned_by="vlm",
-                proposed_parent=(str(d["proposed_parent"]) if parent == ETC and d.get("proposed_parent") else None),
+                proposed_parent=(str(d["proposed_parent"]) if concept == ETC and d.get("proposed_parent") else None),
                 clip_parent=clip_parent, needs_review=review))
             counts["vlm"] += 1
         else:
@@ -339,11 +339,11 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
             j = int(np.argmax(sims))
             dist = 1.0 - float(sims[j])
             if dist > k.nearest_tau:
-                parent, detail, review = ETC, ETC, True
+                concept, detail, review = ETC, ETC, True
             else:
                 src = named[named_groups[j].gid]
-                parent, detail = str(src["parent"]), str(src["concept"])
-                review = parent != ETC and clip_parent is not None and clip_parent != parent
+                concept, detail = str(src["parent"]), str(src["concept"])
+                review = concept != ETC and clip_parent is not None and clip_parent != concept
                 # 이름을 빌려온 그룹과 배경 밝기가 다르면, 가까워도 같은 세트가 아니다 —
                 # 부모(실내 스튜디오)는 검은 스튜디오와 흰 스튜디오를 함께 덮어 clip_parent 로는 안 잡힌다.
                 src_bg = _bg_median(rows, named_groups[j].members)
@@ -354,7 +354,7 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
                     log.info("[naming] 그룹 %d(배경 %.0f): 그룹 %d '%s'(배경 %.0f) 의 이름을 빌렸지만 배경이 다르다 — 확인 필요",
                              g.gid, own_bg, named_groups[j].gid, detail, src_bg)
             assignments.append(ConceptAssignment(
-                embed_group_id=g.gid, parent_name=parent, detail_name=detail,
+                embed_group_id=g.gid, concept_name=concept, detail_name=detail,
                 # confidence 는 vlm 의 자기 확신이 아니라 1 - 중심 거리다 — 다른 축의 값이 한 컬럼에 온다.
                 confidence=round(max(0.0, 1.0 - dist), 3), assigned_by="nearest",
                 clip_parent=clip_parent, needs_review=review))
@@ -366,7 +366,7 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
 
     per_parent: dict[str, int] = {}
     for a in assignments:
-        per_parent[a.parent_name] = per_parent.get(a.parent_name, 0) + 1
+        per_parent[a.concept_name] = per_parent.get(a.concept_name, 0) + 1
     return {
         "gallery": gallery, "pipeline": "v3", "mode": "naming",
         "photos": len(rows), "groups": len(groups),

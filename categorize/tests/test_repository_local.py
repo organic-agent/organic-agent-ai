@@ -22,7 +22,7 @@ def test_local_store_roundtrip(tmp_path):
     np.testing.assert_allclose(E2, E, atol=1e-6)
     np.testing.assert_allclose(C2, C, atol=1e-6)
 
-    a = [ConceptAssignment(embed_group_id=0, parent_name="야외 자연", detail_name="해변",
+    a = [ConceptAssignment(embed_group_id=0, concept_name="야외 자연", detail_name="해변",
                            confidence=0.9, assigned_by="vlm")]
     store.write_assignments("g", None, a)
     assert store.read_assignments("g") == a

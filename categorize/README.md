@@ -1,6 +1,6 @@
 # categorize — 갤러리 그룹화·이름 Lambda (torch 없음)
 
-갤러리 하나를 **한 번에** 읽어 백분위 · 연사 클러스터 · 임베딩 그룹을 만들고, 그룹에 (큰 분류, 컨셉) 이름을 붙여
+갤러리 하나를 **한 번에** 읽어 백분위 · 연사 클러스터 · 임베딩 그룹을 만들고, 그룹에 (1층 concept, 2층 detail) 이름을 붙여
 `photo_analysis`(pct · cluster · group) 와 `ai_concept_assignments` 에 적재한다. 입력은 전부 DB 에 저장된 것이다 —
 [`embedder/`](../embedder/README.md) 의 DINOv3, [`score/`](../score/README.md) 의 원점수·CLIP·clip_parent. 그래서
 numpy · scipy · Bedrock 만으로 돌고 torch 가 없다(테스트가 고정). 실제 폴더(`concept_folders` · `detail_folders` ·
@@ -99,7 +99,9 @@ naming 이 닿는다. 메모리 2–3GB 면 7,000장(거리행렬 ~200MB)까지 
   `sub_scores{sharpness_pct, rank_reason}`(score 의 키에 더해서)
 - `ai_concept_assignments`: `job_id` · `embed_group_id` · `parent_name` · `concept_name` · `confidence` · `assigned_by` ·
   `proposed_parent` · `clip_parent` · `needs_review`
-- 용어: 이 repo 의 `parent_name`(큰 분류)이 wes `ConceptFolder`, `concept_name`(컨셉)이 wes `DetailFolder` 다.
+- 용어: 코드는 wes 층 이름을 따른다 — `ConceptAssignment.concept_name`(1층) = wes `ConceptFolder`, `detail_name`(2층) = wes
+  `DetailFolder`. 컬럼 이름은 옛것 그대로라 1층은 `parent_name`, 2층은 `concept_name` 컬럼에 저장된다(`repository/analysis.py`,
+  테스트가 고정). Bedrock 프롬프트의 JSON 키(`parent` · `concept`)와 로컬 캐시 키도 옛 이름이다.
 - 손잡이(`config/settings.py`): 연사 0.96, 그룹 거리 0.2, 최근접 τ 0.25, 커버리지 0.85, review confidence 0.8. 연사·그룹 값은
   CLIP/DINOv2 시절 실측이라 DINOv3 기준 재측정 대상 — 결과의 `similarityProfile` 이 근거.
 

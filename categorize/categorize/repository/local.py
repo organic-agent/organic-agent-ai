@@ -14,7 +14,7 @@ import numpy as np
 from categorize.domain.analysis import ConceptAssignment, GalleryRead, PhotoAnalysis
 
 #: 배정 필드 → assignments.jsonl 키. 키는 DB 컬럼 이름(ai_concept_assignments)을 그대로 쓴다.
-_CACHE_KEY = {"detail_name": "concept_name"}
+_CACHE_KEY = {"concept_name": "parent_name", "detail_name": "concept_name"}
 _FIELD = {v: k for k, v in _CACHE_KEY.items()}
 
 

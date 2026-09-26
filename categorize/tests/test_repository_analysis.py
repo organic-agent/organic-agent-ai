@@ -96,7 +96,7 @@ def test_write_assignments_maps_layers_to_old_columns(tmp_path):
     """필드는 wes 층 이름, 컬럼은 옛 이름 — 1층 이름은 parent_name, 2층 이름은 concept_name 컬럼에 들어간다.
     컬럼 이름을 바꿀 때(wes Flyway) 이 테스트가 같이 바뀌어야 한다."""
     conn = JobConn()
-    row = ConceptAssignment(embed_group_id=4, parent_name="야외 자연", detail_name="해변",
+    row = ConceptAssignment(embed_group_id=4, concept_name="야외 자연", detail_name="해변",
                             confidence=0.9, assigned_by="vlm")
     _db_store(tmp_path, conn).write_assignments("7", 3, [row])
 

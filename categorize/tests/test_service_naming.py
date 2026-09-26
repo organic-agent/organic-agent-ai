@@ -31,7 +31,7 @@ def test_naming_nearest_inherits_and_flags_far_groups(tmp_path):
     nearest = [a for a in back.values() if a.assigned_by == "nearest"]
     assert nearest
     for a in nearest:
-        if a.parent_name == "기타":
+        if a.concept_name == "기타":
             assert a.needs_review
         else:
             assert a.detail_name.startswith("세트")
