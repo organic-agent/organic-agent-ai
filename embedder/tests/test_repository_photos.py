@@ -68,7 +68,7 @@ class StoreEmbeddingsTest(unittest.TestCase):
         stored = photos.store_embeddings(
             connection,
             [EmbeddingResult(ref, "VECTOR", "previews/galleries/7/a.jpg", None)],
-            model_id="facebook/dinov3-vitb16-pretrain-lvd1689m",
+            embedding_model="facebook/dinov3-vitb16-pretrain-lvd1689m",
         )
 
         self.assertEqual(1, stored)
@@ -89,7 +89,7 @@ class StoreEmbeddingsTest(unittest.TestCase):
         connection = _ManyConnection(rows=[])
         ref = PhotoRef(1, "galleries/7/a.jpg")
 
-        photos.store_embeddings(connection, [EmbeddingResult(ref, "VECTOR", "previews/galleries/7/a.jpg", None)], model_id="m")
+        photos.store_embeddings(connection, [EmbeddingResult(ref, "VECTOR", "previews/galleries/7/a.jpg", None)], embedding_model="m")
 
         photos_sql, photo_rows = connection.executed[1]
         self.assertIn("SET preview_key = %s,", photos_sql)
@@ -100,14 +100,14 @@ class StoreEmbeddingsTest(unittest.TestCase):
     def test_empty_batch_writes_nothing(self) -> None:
         connection = _ManyConnection(rows=[])
 
-        self.assertEqual(0, photos.store_embeddings(connection, [], model_id="facebook/dinov3-vitb16-pretrain-lvd1689m"))
+        self.assertEqual(0, photos.store_embeddings(connection, [], embedding_model="facebook/dinov3-vitb16-pretrain-lvd1689m"))
         self.assertEqual([], connection.executed)
 
     def test_store_cas_uses_fetched_storage_key_and_active_resource_boundaries(self) -> None:
         connection = _Connection(rows=[], rowcounts=[1, 1])
         ref = PhotoRef(17, "galleries/7/original-before-replacement.jpg")
 
-        stored = photos.store_embeddings(connection, [EmbeddingResult(ref, [0.1, 0.2], None, None)], model_id="test-model")
+        stored = photos.store_embeddings(connection, [EmbeddingResult(ref, [0.1, 0.2], None, None)], embedding_model="test-model")
 
         self.assertEqual(1, stored)
         sql, rows = connection.executed[1]
@@ -120,7 +120,7 @@ class StoreEmbeddingsTest(unittest.TestCase):
         connection = _Connection(rows=[], rowcounts=[1, 0])
         old_ref = PhotoRef(17, "galleries/7/old.jpg")
 
-        stored = photos.store_embeddings(connection, [EmbeddingResult(old_ref, [0.1, 0.2], "previews/old.jpg", None)], model_id="test-model")
+        stored = photos.store_embeddings(connection, [EmbeddingResult(old_ref, [0.1, 0.2], "previews/old.jpg", None)], embedding_model="test-model")
 
         self.assertEqual(0, stored)
 
@@ -155,7 +155,7 @@ class NeverWritesPhotoStatusTest(unittest.TestCase):
 
     def test_store_embeddings_never_touches_status(self) -> None:
         connection = _Connection(rows=[])
-        photos.store_embeddings(connection, [EmbeddingResult(self._ref(), "VECTOR", "previews/galleries/7/a.jpg", None)], model_id="m")
+        photos.store_embeddings(connection, [EmbeddingResult(self._ref(), "VECTOR", "previews/galleries/7/a.jpg", None)], embedding_model="m")
         photos_sql, _ = connection.executed[1]
         self.assertNotIn("status", photos_sql)
         self.assertIn("preview_key = %s", photos_sql)

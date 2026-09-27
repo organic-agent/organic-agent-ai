@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from score.config.settings import MODEL_VERSION, MODULE_ROOT, PARENTS, Knobs, Settings
+from score.config.settings import PIPELINE_VERSION, MODULE_ROOT, CONCEPTS, Knobs, Settings
 from score.controller import handler
 from score.domain.photo import PhotoAnalysis, PhotoRef
 from score.repository.store import LocalStore
@@ -114,9 +114,9 @@ def _world(tmp_path, n=12):
         Image.new("RGB", (32, 32), (200, 180, 160)).save(img_root / pid)
     store = LocalStore(tmp_path / "out", dataset_root=img_root)
     scored = ids[: n // 2]
-    rows = [PhotoAnalysis(photo_id=pid, subjects="couple", technical_pct=77.0, cluster_id=3, embed_group_id=5,
-                          sub_scores={"technical_score": 0.5, "clip_parent": "실내 스튜디오"},
-                          model_version=MODEL_VERSION) for pid in scored]
+    rows = [PhotoAnalysis(photo_id=pid, subjects="couple", technical_pct=77.0, burst_id=3, embed_group_id=5,
+                          sub_scores={"technical_score": 0.5, "clip_concept_name": "실내 스튜디오"},
+                          pipeline_version=PIPELINE_VERSION) for pid in scored]
     store.write_scores("g", rows, (scored, np.stack([_unit(np.ones(32) + i) for i in range(len(scored))])))
     refs = [PhotoRef(photo_id=pid, path=str(img_root / pid)) for pid in ids]
     settings = Settings(out_root=tmp_path / "out", dataset_root=img_root, knobs=Knobs(write_batch=4))
@@ -124,7 +124,7 @@ def _world(tmp_path, n=12):
 
 
 # ── pipeline ──────────────────────────────────────────────────────────────────
-def test_skips_scored_photos_and_stores_clip_parent(tmp_path, fake_runners):
+def test_skips_scored_photos_and_stores_clip_concept_name(tmp_path, fake_runners):
     store, refs, scored, settings = _world(tmp_path)
 
     result = pipeline.run(store, "g", refs, settings)
@@ -134,7 +134,7 @@ def test_skips_scored_photos_and_stores_clip_parent(tmp_path, fake_runners):
     assert result["stopped"] is False and result["remaining"] == 0
     back = {r.photo_id: r for r in store.read_analysis("g")}
     new = back[refs[-1].photo_id]
-    assert new.sub_scores["clip_parent"] in PARENTS and new.model_version == MODEL_VERSION
+    assert new.sub_scores["clip_concept_name"] in CONCEPTS and new.pipeline_version == PIPELINE_VERSION
     assert "technical_score" in new.sub_scores and "sharpness" in new.sub_scores
     ids, C = store.read_clip_embeddings("g")
     assert set(ids) == {r.photo_id for r in refs} and C.shape[0] == len(refs)
@@ -145,7 +145,7 @@ def test_skips_scored_photos_and_stores_clip_parent(tmp_path, fake_runners):
 
 def test_write_scores_keeps_categorize_columns(tmp_path, fake_runners):
     store, refs, scored, settings = _world(tmp_path)
-    before = {r.photo_id: (r.technical_pct, r.cluster_id, r.embed_group_id) for r in store.read_analysis("g")}
+    before = {r.photo_id: (r.technical_pct, r.burst_id, r.embed_group_id) for r in store.read_analysis("g")}
     assert all(v == (77.0, 3, 5) for v in before.values())
 
     pipeline.run(store, "g", refs, settings, force=True)
@@ -153,7 +153,7 @@ def test_write_scores_keeps_categorize_columns(tmp_path, fake_runners):
     after = {r.photo_id: r for r in store.read_analysis("g")}
     for pid, (pct, cid, gid) in before.items():
         # score 의 쓰기는 백분위·연사·그룹(categorize 의 컬럼)을 건드리지 않는다
-        assert (after[pid].technical_pct, after[pid].cluster_id, after[pid].embed_group_id) == (pct, cid, gid)
+        assert (after[pid].technical_pct, after[pid].burst_id, after[pid].embed_group_id) == (pct, cid, gid)
         assert after[pid].subjects in ("bride", "groom", "couple", "group", "unknown")
 
 
@@ -346,11 +346,12 @@ def _literal(path: Path, name: str):
     raise AssertionError(f"{path}: {name} 없음")
 
 
-def test_model_version_and_parents_match_categorize_module():
-    other = MODULE_ROOT.parent / "categorize" / "categorize" / "config.py"
+# [GLOSSARY-1 2026-09-27] categorize 설정은 층 구조(#131) 뒤 config/settings.py 에 있다 — 옛 경로(config.py)를 보던 탓에 깨져 있었다.
+def test_pipeline_version_and_concepts_match_categorize_module():
+    other = MODULE_ROOT.parent / "categorize" / "categorize" / "config" / "settings.py"
     assert MODULE_ROOT.name == "score" and (MODULE_ROOT / "Dockerfile").is_file()   # parents[2] 가 모듈 루트
-    assert _literal(other, "MODEL_VERSION") == MODEL_VERSION
-    assert _literal(other, "PARENTS") == PARENTS
+    assert _literal(other, "PIPELINE_VERSION") == PIPELINE_VERSION
+    assert _literal(other, "CONCEPTS") == CONCEPTS
 
 
 # ── handler ───────────────────────────────────────────────────────────────────

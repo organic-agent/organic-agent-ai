@@ -1,7 +1,7 @@
 """설정 — 환경변수(Settings) + CATEGORIZE 손잡이(Knobs·LlmKnobs) 한 파일.
 
 categorize = 갤러리 단위 그룹화·이름 Lambda. torch 없음. score 가 저장한 원점수·CLIP 과 embedder 의 DINOv3 를
-읽어 백분위·연사·임베딩 그룹을 만들고, Bedrock 으로 그룹 이름을 지어 `ai_concept_assignments` 에 남긴다(#35).
+읽어 백분위·연사·임베딩 그룹을 만들고, Bedrock 으로 그룹 이름을 지어 `concept_assignments` 에 남긴다(#35).
 
 embedder 와 같은 방식: `Settings.from_env()` 하나로 읽고 코드 어디서도 `os.environ` 을 직접 만지지 않는다.
 값의 근거는 wes docs/plans/ai-folder-structure.md · docs/photoselect/review-v3-design.md 실측.
@@ -16,13 +16,14 @@ from pathlib import Path
 # 모듈 루트 = `categorize/`(config/settings.py 에서 두 단계 위). 로컬 산출물(out/)·데이터셋(../../dataset) 기본 경로의 기준점.
 MODULE_ROOT = Path(__file__).resolve().parents[2]
 
-#: `photo_analysis.model_version`. **score 모듈의 같은 상수와 값이 같아야 한다** — 이 값과 같은 행만
+#: `photo_analysis.pipeline_version`. **score 모듈의 같은 상수와 값이 같아야 한다** — 이 값과 같은 행만
 #: "점수 있음"으로 읽는다. 값은 v3 시절 그대로: 바꾸면 전 갤러리가 재점수 대상이 된다.
-MODEL_VERSION = "photoselect-v3-a-0.1"
+# [GLOSSARY-1 2026-09-27] MODEL_VERSION → PIPELINE_VERSION (용어집 D3: 모델 id가 아니라 파이프라인 버전)
+PIPELINE_VERSION = "photoselect-v3-a-0.1"
 
-#: 큰 분류(부모) 고정 목록 — naming 이 Bedrock 스키마 enum 으로 강제한다. score 의 ParentTagger 가 같은 목록으로
-#: 사진마다 clip_parent 를 저장하므로 두 모듈이 같아야 한다. '기타'는 목록에 항상 있다.
-PARENTS: list[str] = ["실내 스튜디오", "하우스·인테리어", "한옥·전통", "야외 정원·건물",
+#: 1층(concept) 고정 목록 — naming 이 Bedrock 스키마 enum 으로 강제한다. score 의 zero-shot 태거가 같은 목록으로
+#: 사진마다 1층 라벨을 저장하므로 두 모듈이 같아야 한다(tests/test_boundaries.py). '기타'는 목록에 항상 있다.
+CONCEPTS: list[str] = ["실내 스튜디오", "하우스·인테리어", "한옥·전통", "야외 정원·건물",
                       "야외 자연", "도심·거리", "기타"]
 
 
@@ -31,7 +32,7 @@ class Knobs:
     """그룹화 + naming 의 손잡이. 값의 근거는 실측 문서."""
 
     # ── 그룹화 ──
-    #: 연사 클러스터 임계(코사인)·순서 창.
+    #: 연사 임계(코사인)·순서 창.
     burst_threshold: float = 0.96
     burst_window: int = 8
     #: 임베딩 그룹(embed_group_id) — concat(DINOv3⊕CLIP) 평균연결 계층 클러스터의 코사인 거리 임계.
@@ -39,7 +40,7 @@ class Knobs:
     group_distance: float = 0.2
     group_min_groups: int = 4
     group_max_share: float = 0.5
-    #: 과분할 가드 — 그룹 수가 n×이 값을 넘으면 임계를 올린다 (concept.concept_groups, 대칭 규칙).
+    #: 과분할 가드 — 그룹 수가 n×이 값을 넘으면 임계를 올린다 (grouping.embed_groups, 대칭 규칙).
     group_frag_share: float = 0.35
 
     # ── naming ──

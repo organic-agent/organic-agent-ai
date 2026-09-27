@@ -1,8 +1,8 @@
-"""학습 — 클러스터 단위 양성·음성 → 두 강도 L2 로지스틱 회귀 (풀이는 `infrastructure/solver.py`).
+"""학습 — 연사 단위 양성·음성 → 두 강도 L2 로지스틱 회귀 (풀이는 `infrastructure/solver.py`).
 
 라벨 규칙 (plan §1):
-  양성   부부가 고른 사진. 한 클러스터에 둘 이상이면 가중치 1/count — 클러스터당 양성 1
-  음성   양성이 없는 클러스터의 대표 1장 (cluster_rank 0, 없으면 첫 행)
+  양성   부부가 고른 사진. 한 연사에 둘 이상이면 가중치 1/count — 연사당 양성 1
+  음성   양성이 없는 연사의 연사 대표 1장 (burst_rank 0, 없으면 첫 행)
   제외   양성의 연사 형제 — 거의 같은 벡터에 반대 라벨을 주면 없는 경계를 그리게 된다
 클래스 가중치는 양성·음성 합이 같게(balanced).
 """
@@ -36,31 +36,31 @@ def make_sample(lg: LabeledGallery) -> Sample:
     pos = lg.positive_idx
     if pos.size == 0:
         raise ValueError(f"갤러리 {gd.gallery_id}: 선택 사진이 재료 안에 없다")
-    cid = gd.cluster_id.copy()
+    cid = gd.burst_id.copy()
     solo = cid < 0
-    cid[solo] = -(np.arange(solo.sum()) + 1)            # 단독은 자기만의 클러스터
-    pos_clusters = set(cid[pos].tolist())
+    cid[solo] = -(np.arange(solo.sum()) + 1)            # 단독은 자기만의 연사
+    pos_bursts = set(cid[pos].tolist())
 
-    # 양성: 클러스터당 합 1
+    # 양성: 연사당 합 1
     pos_w = np.zeros(len(pos))
-    for c in pos_clusters:
+    for c in pos_bursts:
         members = [k for k, i in enumerate(pos) if cid[i] == c]
         for k in members:
             pos_w[k] = 1.0 / len(members)
 
-    # 음성: 양성 클러스터 밖의 대표 1장
+    # 음성: 양성 연사 밖의 대표 1장
     neg: list[int] = []
-    order = np.lexsort((np.arange(gd.n), gd.cluster_rank))   # rank 0 우선, 같으면 행 순
+    order = np.lexsort((np.arange(gd.n), gd.burst_rank))   # rank 0 우선, 같으면 행 순
     seen: set[int] = set()
     for i in order:
         c = int(cid[i])
-        if c in pos_clusters or c in seen:
+        if c in pos_bursts or c in seen:
             continue
         seen.add(c)
         neg.append(int(i))
     neg_a = np.array(neg, dtype=int)
     if neg_a.size == 0:
-        raise ValueError(f"갤러리 {gd.gallery_id}: 음성이 없다 (모든 클러스터에 선택이 있다)")
+        raise ValueError(f"갤러리 {gd.gallery_id}: 음성이 없다 (모든 연사에 선택이 있다)")
 
     idx = np.concatenate([pos, neg_a])
     y = np.concatenate([np.ones(len(pos)), np.zeros(len(neg_a))])
@@ -89,6 +89,6 @@ def train(galleries: list[LabeledGallery], knobs: Knobs,
         w_scalar=w_s, w_emb=w_e, bias=b,
         n_galleries=len(galleries), n_positives=n_pos,
         train_gallery_ids=[lg.data.gallery_id for lg in galleries],
-        embedding_model=first.embedding_model, model_version=first.model_version,
+        embedding_model=first.embedding_model, pipeline_version=first.pipeline_version,
         lam=lam(len(galleries), knobs.n0),
     )

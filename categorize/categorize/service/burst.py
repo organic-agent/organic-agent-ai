@@ -1,11 +1,11 @@
-"""A-6 근접 중복 클러스터 — 연사(burst)를 한 덩어리로 묶는다.
+"""A-6 근접 중복 — 연사(burst)를 한 덩어리로 묶는다.
 
 union-find. 두 사진이 (a) 파일명 순서로 `window` 안에 있고 (b) 임베딩 코사인이
-`threshold` 이상이면 같은 클러스터. 연사는 **연속 촬영**이므로 순서 제약이 있어야
+`threshold` 이상이면 같은 연사. 연사는 **연속 촬영**이므로 순서 제약이 있어야
 "같은 장소에서 다른 순간에 찍은 비슷한 컷"이 잘못 묶이지 않는다.
 
 임계값은 실측으로 정한다 — `similarity_profile()`이 이웃 유사도 분포를 돌려주고
-analyze가 그것을 찍어 준다. 합성 가정(01 lab)은 같은 클러스터 0.9 / 다른 클러스터 0.4였다.
+analyze가 그것을 찍어 준다. 합성 가정(01 lab)은 같은 연사 0.9 / 다른 연사 0.4였다.
 """
 
 from __future__ import annotations
@@ -13,17 +13,17 @@ from __future__ import annotations
 import numpy as np
 
 
-def _find(parent: list[int], i: int) -> int:
-    while parent[i] != i:
-        parent[i] = parent[parent[i]]
-        i = parent[i]
+def _find(leader: list[int], i: int) -> int:
+    while leader[i] != i:
+        leader[i] = leader[leader[i]]
+        i = leader[i]
     return i
 
 
 def cluster_bursts(emb: np.ndarray, threshold: float, window: int) -> np.ndarray:
-    """(N,) cluster_id. 입력 순서 = 파일명 순서여야 한다. emb는 L2 정규화돼 있어야 한다."""
+    """(N,) burst_id. 입력 순서 = 파일명 순서여야 한다. emb는 L2 정규화돼 있어야 한다."""
     n = len(emb)
-    parent = list(range(n))
+    leader = list(range(n))
     for i in range(n):
         hi = min(n, i + window + 1)
         if hi <= i + 1:
@@ -31,17 +31,17 @@ def cluster_bursts(emb: np.ndarray, threshold: float, window: int) -> np.ndarray
         sims = emb[i + 1:hi] @ emb[i]
         for k, s in enumerate(sims):
             if s >= threshold:
-                a, b = _find(parent, i), _find(parent, i + 1 + k)
+                a, b = _find(leader, i), _find(leader, i + 1 + k)
                 if a != b:
-                    parent[b] = a
-    roots = [_find(parent, i) for i in range(n)]
+                    leader[b] = a
+    roots = [_find(leader, i) for i in range(n)]
     # 등장 순서대로 0,1,2,… 로 다시 번호를 매긴다
     remap: dict[int, int] = {}
     return np.array([remap.setdefault(r, len(remap)) for r in roots], dtype=int)
 
 
 def partition_order(cameras: list[str | None], taken_ats: list) -> list[list[int]]:
-    """연사 클러스터링용 순서 — 카메라 바디별 파티션, 파티션 안은 EXIF 촬영 시각 정렬.
+    """연사 묶기용 순서 — 카메라 바디별 파티션, 파티션 안은 EXIF 촬영 시각 정렬.
 
     display_order(업로드/파일명 순)를 촬영 순서로 가정하면 멀티 카메라(메인+세컨드 슈터)에서
     깨진다: 다른 카메라의 동시 촬영 컷이 인접해 교차 병합되거나, 진짜 연사가 창 밖으로

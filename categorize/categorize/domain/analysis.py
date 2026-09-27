@@ -1,7 +1,7 @@
 """분석 레코드와 저장소 인터페이스. 로직이 없다.
 
     PhotoAnalysis       `photo_analysis` 한 행 — repository ↔ service
-    ConceptAssignment   `ai_concept_assignments` 한 행 — service(naming) → repository
+    ConceptAssignment   `concept_assignments` 한 행 — service(naming) → repository
     GalleryRead         갤러리 한 번 읽기(행 + 벡터 두 종류) — repository → service
     Store               service 가 보는 저장소 프로토콜. 구현은 repository/analysis.py(DbStore) · repository/local.py(LocalStore)
 """
@@ -16,30 +16,35 @@ import numpy as np
 
 @dataclass
 class PhotoAnalysis:
-    """`photo_analysis` 한 행. 컬럼 이름을 그대로 필드로 쓴다."""
+    """`photo_analysis` 한 행. 필드 이름 = 컬럼 이름 = 용어집(WES-DOCS docs/glossary.md) 이름이다(wes V23)."""
 
     photo_id: str
     subjects: str = "unknown"
     technical_pct: float = 50.0
     aesthetic_pct: float = 50.0
-    sub_scores: dict = field(default_factory=dict)   # technical_score, aesthetic_score, sharpness, rank_reason, clip_parent …
-    cluster_id: int = -1
-    cluster_rank: int = 0
+    sub_scores: dict = field(default_factory=dict)   # technical_score, aesthetic_score, sharpness, rank_reason, clip_concept_name(score 의 키) …
+    # [GLOSSARY-1 2026-09-27] cluster_id → burst_id, cluster_rank → burst_rank (용어집: 연사), model_version → pipeline_version (D3)
+    burst_id: int = -1
+    burst_rank: int = 0
     embed_group_id: int = -1
-    model_version: str = ""
+    pipeline_version: str = ""
 
 
 @dataclass
 class ConceptAssignment:
-    """`ai_concept_assignments` 한 행 — 임베딩 그룹 → (큰 분류, 컨셉)."""
+    """`concept_assignments` 한 행 — 임베딩 그룹 → (컨셉 이름, 세부 이름). 필드 이름 = 컬럼 이름(wes V23, 용어집).
+
+    1층 = concept(`concept_name`) = wes `ConceptFolder`, 2층 = detail(`detail_name`) = wes `DetailFolder`.
+    """
 
     embed_group_id: int
-    parent_name: str
     concept_name: str
+    detail_name: str
     confidence: float
     assigned_by: str                     # 'vlm' | 'nearest'
-    proposed_parent: str | None = None   # parent_name='기타'일 때 VLM 제안
-    clip_parent: str | None = None       # CLIP zero-shot 다수결 (검증)
+    # [GLOSSARY-2 2026-09-27] proposed_concept → proposed_concept_name, clip_concept → clip_concept_name (wes 필드·컬럼과 같은 이름)
+    proposed_concept_name: str | None = None  # concept_name='기타'일 때 VLM 이 제안한 1층 이름
+    clip_concept_name: str | None = None      # CLIP zero-shot 1층 라벨의 그룹 다수결 (검증)
     needs_review: bool = False
 
 
@@ -47,7 +52,7 @@ class ConceptAssignment:
 class GalleryRead:
     """갤러리 한 번 읽기 — score 가 지난 분석 행과 벡터 두 종류. 파이프라인 한 실행에 한 번만 만든다."""
 
-    rows: list[PhotoAnalysis]                 # model_version 있는 행, 화면 순(display_order, id)
+    rows: list[PhotoAnalysis]                 # pipeline_version 있는 행, 화면 순(display_order, id)
     embeddings: dict[str, np.ndarray]         # DINOv3 — 없으면 빈 dict(로컬 데이터셋 모드)
     clip_embeddings: dict[str, np.ndarray]    # CLIP ViT-L/14
 

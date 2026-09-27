@@ -1,10 +1,10 @@
-"""DB 저장소 — `photo_analysis` 와 `ai_concept_assignments` 중 CATEGORIZE 가 읽고 쓰는 부분.
+"""DB 저장소 — `photo_analysis` 와 `concept_assignments` 중 categorize 가 읽고 쓰는 부분.
 
-읽기: `read_gallery` **한 쿼리** — score 의 원점수·subjects·clip_parent(sub_scores)·clip_embedding 과 embedder 의
+읽기: `read_gallery` **한 쿼리** — score 의 원점수·subjects·CLIP 1층 라벨(sub_scores)·clip_embedding 과 embedder 의
 embedding(DINOv3) 을 한 번에. 그룹화와 naming 이 같은 결과를 나눠 쓰므로 갤러리당 한 번만 읽는다(7천 장이면 벡터 두 종류 44MB).
-쓰기: `write_groups`(technical_pct · aesthetic_pct · sub_scores · cluster_id · cluster_rank · embed_group_id — UPDATE,
-행은 score 가 만들어 두었다)와 `write_assignments`(ai_concept_assignments, job_id 에 매달림).
-subjects · clip_embedding · model_version 은 score 의 것, embedding · embedding_model 은 embedder 의 것 — 건드리지 않는다.
+쓰기: `write_groups`(technical_pct · aesthetic_pct · sub_scores · burst_id · burst_rank · embed_group_id — UPDATE,
+행은 score 가 만들어 두었다)와 `write_assignments`(concept_assignments, job_id 에 매달림).
+subjects · clip_embedding · pipeline_version 은 score 의 것, embedding · embedding_model 은 embedder 의 것 — 건드리지 않는다.
 photo_ratings · photo_selection_items 는 읽지도 않는다(CLAUDE.md).
 
 레코드와 `Store` 프로토콜은 domain/analysis.py, 로컬 파일 구현은 repository/local.py.
@@ -44,9 +44,10 @@ def _jsonb(value) -> str:
 class DbStore:
     """wes 공유 Postgres. id 규약: 읽을 때 str(), 쓸 때 int()."""
 
-    ANALYSIS_COLUMNS = (
+    # [GLOSSARY-2 2026-09-27] wes V23 으로 컬럼 이름이 필드 이름과 같아져 1단계의 필드→컬럼 대응(_COLUMN)을 지웠다.
+    ANALYSIS_FIELDS = (
         "subjects", "technical_pct", "aesthetic_pct", "sub_scores",
-        "cluster_id", "cluster_rank", "embed_group_id", "model_version",
+        "burst_id", "burst_rank", "embed_group_id", "pipeline_version",
     )
 
     def __init__(self, settings, connection=None) -> None:
@@ -100,7 +101,7 @@ class DbStore:
     # ── analysis + vectors ──
     def read_gallery(self, gallery: str) -> GalleryRead:
         """분석 행과 벡터 두 종류를 **한 쿼리**로. embedding_model 이 섞여 있으면 실패한다 — 다른 공간의 코사인은 무의미."""
-        cols = ", ".join(f"a.{c}" for c in self.ANALYSIS_COLUMNS)
+        cols = ", ".join(f"a.{f}" for f in self.ANALYSIS_FIELDS)
         with self.conn.cursor() as cur:
             cur.execute(
                 f"SELECT a.photo_id, {cols}, a.embedding, a.embedding_model, a.clip_embedding "
@@ -114,7 +115,7 @@ class DbStore:
         embeddings: dict[str, np.ndarray] = {}
         clips: dict[str, np.ndarray] = {}
         models: set[str] = set()
-        n_cols = len(self.ANALYSIS_COLUMNS)
+        n_cols = len(self.ANALYSIS_FIELDS)
         for r in raw:
             photo_id = str(r[0])
             embedding, embedding_model, clip = r[1 + n_cols], r[2 + n_cols], r[3 + n_cols]
@@ -123,8 +124,8 @@ class DbStore:
                 models.add(str(embedding_model))
             if clip is not None:
                 clips[photo_id] = np.asarray(clip, dtype=np.float32)
-            d = dict(zip(("photo_id",) + self.ANALYSIS_COLUMNS, r[:1 + n_cols]))
-            if d["model_version"] is None:
+            d = dict(zip(("photo_id",) + self.ANALYSIS_FIELDS, r[:1 + n_cols]))
+            if d["pipeline_version"] is None:
                 continue
             d["photo_id"] = photo_id
             d["sub_scores"] = dict(d["sub_scores"] or {})
@@ -138,7 +139,7 @@ class DbStore:
     def write_groups(self, gallery: str, rows: list[PhotoAnalysis]) -> None:
         """CATEGORIZE 의 컬럼만 UPDATE — 행은 score 가 만들어 두었다."""
         params = [(float(r.technical_pct), float(r.aesthetic_pct), _jsonb(r.sub_scores),
-                   int(r.cluster_id), int(r.cluster_rank), int(r.embed_group_id), int(r.photo_id))
+                   int(r.burst_id), int(r.burst_rank), int(r.embed_group_id), int(r.photo_id))
                   for r in rows]
         if not params:
             return
@@ -147,7 +148,7 @@ class DbStore:
                 """
                 UPDATE photo_analysis
                 SET technical_pct = %s, aesthetic_pct = %s, sub_scores = %s::jsonb,
-                    cluster_id = %s, cluster_rank = %s, embed_group_id = %s,
+                    burst_id = %s, burst_rank = %s, embed_group_id = %s,
                     analyzed_at = now(), updated_at = now(), version = version + 1
                 WHERE photo_id = %s
                 """,
@@ -161,16 +162,16 @@ class DbStore:
                           rows: list[ConceptAssignment]) -> None:
         """naming 의 배정을 잡에 매달아 INSERT. 같은 잡의 재실행은 UPSERT 로 덮는다.
 
-        잡이 없으면(CLI 확인용 실행) 저장하지 않는다 — ai_concept_assignments 는 job_id 에 매달리고, wes 는 최신 잡의
+        잡이 없으면(CLI 확인용 실행) 저장하지 않는다 — concept_assignments 는 job_id 에 매달리고, wes 는 최신 잡의
         배정을 읽는다. 이름은 로그·결과 payload 로만 남는다."""
         if job_id is None:
-            log.warning("gallery %s: 잡이 없어 배정 %d그룹을 저장하지 않는다 (--job-id 가 있어야 ai_concept_assignments 에 남는다)",
+            log.warning("gallery %s: 잡이 없어 배정 %d그룹을 저장하지 않는다 (--job-id 가 있어야 concept_assignments 에 남는다)",
                         gallery, len(rows))
             return
         params = [
             (
-                int(job_id), int(gallery), int(r.embed_group_id), r.parent_name,
-                r.proposed_parent, r.concept_name, float(r.confidence), r.clip_parent,
+                int(job_id), int(gallery), int(r.embed_group_id), r.concept_name,
+                r.proposed_concept_name, r.detail_name, float(r.confidence), r.clip_concept_name,
                 r.assigned_by, bool(r.needs_review),
             )
             for r in rows
@@ -178,19 +179,19 @@ class DbStore:
         with self.conn.cursor() as cur:
             cur.executemany(
                 """
-                INSERT INTO ai_concept_assignments
-                    (job_id, gallery_id, embed_group_id, parent_name, proposed_parent,
-                     concept_name, confidence, clip_parent, assigned_by, needs_review,
+                INSERT INTO concept_assignments
+                    (job_id, gallery_id, embed_group_id, concept_name, proposed_concept_name,
+                     detail_name, confidence, clip_concept_name, assigned_by, needs_review,
                      created_at, updated_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
                 ON CONFLICT (job_id, embed_group_id) DO UPDATE SET
-                    parent_name = EXCLUDED.parent_name, proposed_parent = EXCLUDED.proposed_parent,
-                    concept_name = EXCLUDED.concept_name, confidence = EXCLUDED.confidence,
-                    clip_parent = EXCLUDED.clip_parent, assigned_by = EXCLUDED.assigned_by,
+                    concept_name = EXCLUDED.concept_name, proposed_concept_name = EXCLUDED.proposed_concept_name,
+                    detail_name = EXCLUDED.detail_name, confidence = EXCLUDED.confidence,
+                    clip_concept_name = EXCLUDED.clip_concept_name, assigned_by = EXCLUDED.assigned_by,
                     needs_review = EXCLUDED.needs_review,
-                    updated_at = now(), version = ai_concept_assignments.version + 1
+                    updated_at = now(), version = concept_assignments.version + 1
                 """,
                 params,
             )
         self.conn.commit()
-        log.info("ai_concept_assignments 적재: gallery=%s job=%s %d그룹", gallery, job_id, len(params))
+        log.info("concept_assignments 적재: gallery=%s job=%s %d그룹", gallery, job_id, len(params))

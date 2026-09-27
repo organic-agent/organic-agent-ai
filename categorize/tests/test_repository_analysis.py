@@ -2,13 +2,16 @@
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pytest
 
-from categorize.config.settings import MODEL_VERSION, Settings
+from categorize.config.settings import PIPELINE_VERSION, Settings
+from categorize.domain.analysis import ConceptAssignment
 from categorize.repository.analysis import PREVIEW_DOWNLOAD_WORKERS, DbStore
 from categorize.repository.storage import PreviewStorage
-from tests.db_fakes import RowConn
+from tests.db_fakes import JobConn, RowConn
 
 
 def _db_store(tmp_path, conn, bucket=None):
@@ -17,10 +20,10 @@ def _db_store(tmp_path, conn, bucket=None):
 
 
 def test_db_store_read_gallery_is_one_query(tmp_path):
-    """분석 행 + DINOv3 + CLIP 을 한 SELECT 로. model_version 없는 행은 벡터만 남고 행 목록에서 빠진다."""
+    """분석 행 + DINOv3 + CLIP 을 한 SELECT 로. pipeline_version 없는 행은 벡터만 남고 행 목록에서 빠진다."""
     e, c = np.ones(4, dtype=np.float32), np.zeros(4, dtype=np.float32)
     conn = RowConn(rows=[
-        (11, "couple", 50.0, 50.0, {"technical_score": 0.5}, -1, 0, -1, MODEL_VERSION, e, "dinov3", c),
+        (11, "couple", 50.0, 50.0, {"technical_score": 0.5}, -1, 0, -1, PIPELINE_VERSION, e, "dinov3", c),
         (12, "unknown", 50.0, 50.0, None, -1, 0, -1, None, e, "dinov3", None),          # 임베딩만, 점수 아직
     ])
     data = _db_store(tmp_path, conn).read_gallery("7")
@@ -37,8 +40,8 @@ def test_db_store_read_gallery_is_one_query(tmp_path):
 def test_db_store_read_gallery_rejects_mixed_embedding_models(tmp_path):
     e = np.ones(4, dtype=np.float32)
     conn = RowConn(rows=[
-        (11, "couple", 50.0, 50.0, {}, -1, 0, -1, MODEL_VERSION, e, "dinov3", e),
-        (12, "couple", 50.0, 50.0, {}, -1, 0, -1, MODEL_VERSION, e, "dinov2", e),
+        (11, "couple", 50.0, 50.0, {}, -1, 0, -1, PIPELINE_VERSION, e, "dinov3", e),
+        (12, "couple", 50.0, 50.0, {}, -1, 0, -1, PIPELINE_VERSION, e, "dinov2", e),
     ])
     with pytest.raises(RuntimeError, match="embedding_model"):
         _db_store(tmp_path, conn).read_gallery("7")
@@ -87,3 +90,22 @@ def test_preview_storage_pool_matches_download_workers(monkeypatch):
     pooled = PreviewStorage("bkt", max_concurrency=PREVIEW_DOWNLOAD_WORKERS)
     assert pooled._client._client_config.max_pool_connections == PREVIEW_DOWNLOAD_WORKERS == 16
     assert PreviewStorage("bkt")._client._client_config.max_pool_connections == 10   # 기본값은 boto 기본(10) 아래로 안 내려간다
+
+
+# [GLOSSARY-2 2026-09-27] wes V23 뒤로 필드 이름 = 컬럼 이름이다 — 1층 concept_name, 2층 detail_name.
+def test_write_assignments_writes_layers_to_same_named_columns(tmp_path):
+    """필드 이름과 같은 컬럼에 쓴다 — 1층 이름은 concept_name, 2층 이름은 detail_name(wes V23, 용어집)."""
+    conn = JobConn()
+    row = ConceptAssignment(embed_group_id=4, concept_name="기타", detail_name="해변",
+                            confidence=0.9, assigned_by="vlm", proposed_concept_name="수영장", clip_concept_name="야외 자연")
+    _db_store(tmp_path, conn).write_assignments("7", 3, [row])
+
+    sql, params = conn.executed[0]
+    cols = [c.strip() for c in re.search(r"INSERT INTO concept_assignments \((.*?)\)", sql).group(1).split(",")]
+    written = dict(zip(cols, params[0]))
+    assert written["concept_name"] == "기타"              # 1층
+    assert written["detail_name"] == "해변"               # 2층
+    assert written["proposed_concept_name"] == "수영장"   # 1층 제안
+    assert written["clip_concept_name"] == "야외 자연"    # 1층 검증 라벨
+    assert (written["job_id"], written["gallery_id"], written["embed_group_id"]) == (3, 7, 4)
+    assert conn.commits == 1

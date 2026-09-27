@@ -21,16 +21,18 @@ class PhotoRef:
 
 @dataclass
 class PhotoAnalysis:
-    """`photo_analysis` 한 행. 컬럼 이름을 그대로 필드로 쓴다. SCORE 는 subjects · sub_scores · model_version 만 채운다."""
+    """`photo_analysis` 한 행. 필드 이름 = 컬럼 이름 = 용어집(WES-DOCS docs/glossary.md) 이름이다(wes V23).
+    score 는 subjects · sub_scores · pipeline_version 만 채운다."""
 
     photo_id: str
     subjects: str = "unknown"
     technical_pct: float = 50.0
     aesthetic_pct: float = 50.0
-    sub_scores: dict = field(default_factory=dict)   # technical_score, aesthetic_score, sharpness, clip_parent …
-    cluster_id: int = -1
-    cluster_rank: int = 0
+    sub_scores: dict = field(default_factory=dict)   # technical_score, aesthetic_score, sharpness, clip_concept_name …
+    # [GLOSSARY-1 2026-09-27] cluster_id → burst_id, cluster_rank → burst_rank (용어집: 연사), model_version → pipeline_version (D3)
+    burst_id: int = -1
+    burst_rank: int = 0
     embed_group_id: int = -1
-    model_version: str = ""
+    pipeline_version: str = ""
     #: 마지막으로 점수를 쓴 시각(DB timestamptz | 로컬 ISO 문자열). force 재계산의 "이번 실행 전 점수" 판정(#54).
     analyzed_at: object | None = None

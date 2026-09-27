@@ -1,8 +1,8 @@
-"""평가 — recall@K(strict·cluster) · AUC · 세 점수식(prior / pref / 융합) · leave-one-gallery-out · 게이트.
+"""평가 — recall@K(strict·burst) · AUC · 세 점수식(prior / pref / 융합) · leave-one-gallery-out · 게이트.
 
-K = k_multiplier × 양성 수. "추천 후보 범위"의 정의다(plan §5). 순위는 **연사 클러스터당 최고점 1장으로 dedup 한 뒤**
-매긴다 — wes 추천이 그렇게 하기 때문이다(갤러리 8 실측: 양성 30장의 클러스터가 1,109장이라 dedup 없이는 형제가 상위를 채운다).
-strict 는 양성 그 사진이 클러스터 대표로 올라온 경우, cluster 는 그 클러스터가 올라온 경우.
+K = k_multiplier × 양성 수. "추천 후보 범위"의 정의다(plan §5). 순위는 **연사당 최고점 1장으로 dedup 한 뒤**
+매긴다 — wes 추천이 그렇게 하기 때문이다(갤러리 8 실측: 양성 30장의 연사가 1,109장이라 dedup 없이는 형제가 상위를 채운다).
+strict 는 양성 그 사진이 연사 대표로 올라온 경우, burst 는 그 연사가 올라온 경우.
 """
 
 from __future__ import annotations
@@ -25,15 +25,15 @@ log = logging.getLogger(__name__)
 SCORES = ("prior", "pref", "fused")
 
 
-def dedup_order(scores: np.ndarray, cluster_id: np.ndarray | None) -> np.ndarray:
-    """추천이 실제로 보는 순위 — 연사 클러스터당 최고점 1장만 남기고 점수 내림차순 (wes MmrSelector 의 bestPerCluster 와 같다).
-    cluster_id 가 없으면 전체 순위."""
-    if cluster_id is None:
+def dedup_order(scores: np.ndarray, burst_id: np.ndarray | None) -> np.ndarray:
+    """추천이 실제로 보는 순위 — 연사당 최고점 1장만 남기고 점수 내림차순 (wes MmrSelector 의 bestPerBurst 와 같다).
+    burst_id 가 없으면 전체 순위."""
+    if burst_id is None:
         return np.argsort(-scores, kind="stable")
     best: dict[int, int] = {}
     solo = 0
     for i in np.argsort(-scores, kind="stable"):
-        c = int(cluster_id[i])
+        c = int(burst_id[i])
         if c < 0:
             c = -1 - solo
             solo += 1
@@ -42,23 +42,23 @@ def dedup_order(scores: np.ndarray, cluster_id: np.ndarray | None) -> np.ndarray
     return np.array(list(best.values()), dtype=int)
 
 
-def recalls(scores: np.ndarray, pos: np.ndarray, k: int, cluster_id: np.ndarray | None) -> tuple[float, float]:
-    """(strict, cluster). dedup 순위 상위 K 안에 — strict: 양성 그 사진이 대표로 올라왔는가 / cluster: 양성의 클러스터가 올라왔는가."""
+def recalls(scores: np.ndarray, pos: np.ndarray, k: int, burst_id: np.ndarray | None) -> tuple[float, float]:
+    """(strict, burst). dedup 순위 상위 K 안에 — strict: 양성 그 사진이 연사 대표로 올라왔는가 / burst: 양성의 연사가 올라왔는가."""
     if pos.size == 0:
         return float("nan"), float("nan")
-    top = dedup_order(scores, cluster_id)[:k]
+    top = dedup_order(scores, burst_id)[:k]
     top_set = set(top.tolist())
     strict = sum(1 for p in pos if p in top_set) / pos.size
-    if cluster_id is None:
+    if burst_id is None:
         return float(strict), float(strict)
-    top_clusters = {int(cluster_id[i]) for i in top if cluster_id[i] >= 0}
-    hit = sum(1 for p in pos if p in top_set or (cluster_id[p] >= 0 and int(cluster_id[p]) in top_clusters))
+    top_bursts = {int(burst_id[i]) for i in top if burst_id[i] >= 0}
+    hit = sum(1 for p in pos if p in top_set or (burst_id[p] >= 0 and int(burst_id[p]) in top_bursts))
     return float(strict), float(hit / pos.size)
 
 
-def recall_at_k(scores: np.ndarray, pos: np.ndarray, k: int, cluster_id: np.ndarray | None = None) -> float:
-    """cluster 기준 recall@K (cluster_id 없으면 전체 순위)."""
-    return recalls(scores, pos, k, cluster_id)[1]
+def recall_at_k(scores: np.ndarray, pos: np.ndarray, k: int, burst_id: np.ndarray | None = None) -> float:
+    """연사 기준 recall@K (burst_id 없으면 전체 순위)."""
+    return recalls(scores, pos, k, burst_id)[1]
 
 
 def auc(scores: np.ndarray, pos: np.ndarray, neg: np.ndarray) -> float:
@@ -76,7 +76,7 @@ class GalleryEval:
     n_positives: int
     k: int
     shoot_type: str | None
-    metrics: dict[str, dict[str, float]]   # score name → {recall_strict, recall_cluster, auc}
+    metrics: dict[str, dict[str, float]]   # score name → {recall_strict, recall_burst, auc}
 
     def to_dict(self) -> dict:
         return {"gallery_id": self.gallery_id, "n_photos": self.n_photos, "n_positives": self.n_positives,
@@ -98,8 +98,8 @@ def evaluate_gallery(lg: LabeledGallery, model: PreferenceModel | None, knobs: K
         cand["fused"] = model.fuse(pr, f, lam_override)
     metrics = {}
     for name, sc in cand.items():
-        strict, cluster = recalls(sc, pos, k, gd.cluster_id)
-        metrics[name] = {"recall_strict": strict, "recall_cluster": cluster, "auc": auc(sc, pos, neg)}
+        strict, burst = recalls(sc, pos, k, gd.burst_id)
+        metrics[name] = {"recall_strict": strict, "recall_burst": burst, "auc": auc(sc, pos, neg)}
     return GalleryEval(gd.gallery_id, gd.n, int(pos.size), k, gd.shoot_type, metrics)
 
 
@@ -117,7 +117,7 @@ def logo(galleries: list[LabeledGallery], knobs: Knobs, features: dict[str, Feat
     return out
 
 
-def paired_diff(rows: list[GalleryEval], metric: str = "recall_cluster") -> np.ndarray:
+def paired_diff(rows: list[GalleryEval], metric: str = "recall_burst") -> np.ndarray:
     return np.array([r.metrics["fused"][metric] - r.metrics["prior"][metric] for r in rows])
 
 
@@ -130,7 +130,7 @@ def sign_test(diff: np.ndarray) -> float:
 
 
 def gate(galleries: list[LabeledGallery], knobs: Knobs, features: dict[str, Features] | None = None,
-         metric: str = "recall_cluster") -> dict:
+         metric: str = "recall_burst") -> dict:
     """연결 조건 세 가지(plan §5). 갤러리 수가 모자라면 이유를 적고 통과시키지 않는다."""
     n = len(galleries)
     result: dict = {"metric": metric, "n_galleries": n, "passed": False, "reasons": [], "rows": [], "curve": []}

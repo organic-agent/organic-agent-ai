@@ -61,4 +61,4 @@ def get_embedder(model_id: str, model_revision: str, expected_dim: int) -> DinoE
 
 
 def load_from(settings: Settings) -> DinoEmbedder:
-    return get_embedder(settings.model_id, settings.model_revision, settings.embed_dim)
+    return get_embedder(settings.embedding_model, settings.model_revision, settings.embed_dim)

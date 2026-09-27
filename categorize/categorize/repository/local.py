@@ -13,6 +13,25 @@ import numpy as np
 
 from categorize.domain.analysis import ConceptAssignment, GalleryRead, PhotoAnalysis
 
+# [GLOSSARY-2 2026-09-27] 캐시 파일 키 = 필드 이름 = DB 컬럼 이름(wes V23). 아래 두 표는 그 전에 쓴 out/ 파일을 읽을 때만 쓴다.
+#: 옛 assignments.jsonl 키 → 필드. 옛 파일은 `parent_name` 키가 있는 것으로 가린다 — 옛 `concept_name` 은 2층이었다.
+_OLD_ASSIGNMENT_KEY = {"parent_name": "concept_name", "concept_name": "detail_name",
+                       "proposed_parent": "proposed_concept_name", "clip_parent": "clip_concept_name"}
+#: 옛 analysis.jsonl 키 → 필드. 세부 점수의 CLIP 컨셉 라벨 키도 함께 옮긴다.
+_OLD_ANALYSIS_KEY = {"cluster_id": "burst_id", "cluster_rank": "burst_rank", "model_version": "pipeline_version"}
+
+
+def _analysis_from_cache(d: dict) -> dict:
+    d = {_OLD_ANALYSIS_KEY.get(k, k): v for k, v in d.items()}
+    sub = d.get("sub_scores") or {}
+    if "clip_parent" in sub:
+        d["sub_scores"] = {("clip_concept_name" if k == "clip_parent" else k): v for k, v in sub.items()}
+    return d
+
+
+def _assignment_from_cache(d: dict) -> dict:
+    return {_OLD_ASSIGNMENT_KEY.get(k, k): v for k, v in d.items()} if "parent_name" in d else d
+
 
 class LocalStore:
     """out/v3/<갤러리 slug>/ 아래 파일 — score 의 LocalStore 와 같은 규약. 로컬은 임베더가 없어 CLIP 이 임베딩 역할을 겸한다."""
@@ -37,7 +56,7 @@ class LocalStore:
         if not p.exists():
             return []
         with p.open(encoding="utf-8") as f:
-            return [PhotoAnalysis(**json.loads(line)) for line in f if line.strip()]
+            return [PhotoAnalysis(**_analysis_from_cache(json.loads(line))) for line in f if line.strip()]
 
     def _read_npy(self, gallery: str, name: str) -> tuple[list[str], np.ndarray]:
         d = self._dir(gallery)
@@ -53,7 +72,7 @@ class LocalStore:
         return self._read_npy(gallery, "clip_embeddings")
 
     def read_gallery(self, gallery: str) -> GalleryRead:
-        rows = [r for r in self.read_analysis(gallery) if r.model_version]
+        rows = [r for r in self.read_analysis(gallery) if r.pipeline_version]
         emb_ids, E = self.read_embeddings(gallery)
         clip_ids, C = self.read_clip_embeddings(gallery)
         return GalleryRead(rows=rows,
@@ -71,14 +90,14 @@ class LocalStore:
         np.save(d / f"{name}.npy", emb)
 
     def write_groups(self, gallery: str, rows: list[PhotoAnalysis]) -> None:
-        """CATEGORIZE 의 필드만 덮는다 — subjects · model_version 은 score 의 것이라 그대로."""
+        """CATEGORIZE 의 필드만 덮는다 — subjects · pipeline_version 은 score 의 것이라 그대로."""
         by_id = {r.photo_id: r for r in self.read_analysis(gallery)}
         for r in rows:
             cur = by_id.get(r.photo_id)
             if cur is None:
                 by_id[r.photo_id] = r
                 continue
-            for f in ("technical_pct", "aesthetic_pct", "sub_scores", "cluster_id", "cluster_rank", "embed_group_id"):
+            for f in ("technical_pct", "aesthetic_pct", "sub_scores", "burst_id", "burst_rank", "embed_group_id"):
                 setattr(cur, f, getattr(r, f))
         self._write_rows(gallery, list(by_id.values()))
 
@@ -92,6 +111,7 @@ class LocalStore:
 
     def write_assignments(self, gallery: str, job_id: int | None,
                           rows: list[ConceptAssignment]) -> None:
+        """캐시 키 = 필드 이름 = DB 컬럼 이름. 옛 형식 파일은 [read_assignments]가 옮겨 읽는다."""
         p = self._dir(gallery) / "assignments.jsonl"
         with p.open("w", encoding="utf-8") as f:
             for r in rows:
@@ -107,5 +127,5 @@ class LocalStore:
                 if line.strip():
                     d = json.loads(line)
                     d.pop("job_id", None)
-                    out.append(ConceptAssignment(**d))
+                    out.append(ConceptAssignment(**_assignment_from_cache(d)))
         return out

@@ -21,20 +21,21 @@ class GalleryData:
     aesthetic_pct: np.ndarray      # (n,)
     sharpness_pct: np.ndarray      # (n,) sub_scores.sharpness_pct, 없으면 50
     subjects: list[str]            # bride · groom · couple · group · unknown
-    cluster_id: np.ndarray         # (n,) int — 연사 클러스터. 음수면 단독
-    cluster_rank: np.ndarray       # (n,) int — 0 이 대표
-    embed_group_id: np.ndarray     # (n,) int — 컨셉 그룹
+    # [GLOSSARY-1 2026-09-27] cluster_id → burst_id, cluster_rank → burst_rank, model_version → pipeline_version, "컨셉 그룹" → 임베딩 그룹
+    burst_id: np.ndarray           # (n,) int — 연사. 음수면 단독
+    burst_rank: np.ndarray         # (n,) int — 0 이 연사 대표
+    embed_group_id: np.ndarray     # (n,) int — 임베딩 그룹
     display_order: np.ndarray      # (n,) int
     embedding: np.ndarray          # (n, 768) DINOv3
     clip_embedding: np.ndarray     # (n, 768) CLIP
     embedding_model: str = ""
-    model_version: str = ""
+    pipeline_version: str = ""
     shoot_type: str | None = None
 
     def __post_init__(self) -> None:
         n = len(self.photo_ids)
-        for name in ("file_names", "technical_pct", "aesthetic_pct", "sharpness_pct", "subjects", "cluster_id",
-                     "cluster_rank", "embed_group_id", "display_order", "embedding", "clip_embedding"):
+        for name in ("file_names", "technical_pct", "aesthetic_pct", "sharpness_pct", "subjects", "burst_id",
+                     "burst_rank", "embed_group_id", "display_order", "embedding", "clip_embedding"):
             if len(getattr(self, name)) != n:
                 raise ValueError(f"GalleryData.{name} 길이 {len(getattr(self, name))} ≠ {n}")
 

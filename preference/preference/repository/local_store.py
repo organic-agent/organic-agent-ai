@@ -29,22 +29,25 @@ class LocalStore:
             gallery_id=str(gallery_id),
             photo_ids=list(z["photo_ids"]), file_names=list(z["file_names"]),
             technical_pct=z["technical_pct"], aesthetic_pct=z["aesthetic_pct"], sharpness_pct=z["sharpness_pct"],
-            subjects=list(z["subjects"]), cluster_id=z["cluster_id"], cluster_rank=z["cluster_rank"],
+            # [GLOSSARY-2 2026-09-27] 파일 키 = 필드 이름(burst_id·burst_rank·pipeline_version). 그 전에 쓴 data.npz 는 옛 키로 읽는다.
+            subjects=list(z["subjects"]),
+            burst_id=z["burst_id"] if "burst_id" in z else z["cluster_id"],
+            burst_rank=z["burst_rank"] if "burst_rank" in z else z["cluster_rank"],
             embed_group_id=z["embed_group_id"], display_order=z["display_order"],
             embedding=z["embedding"], clip_embedding=z["clip_embedding"],
-            embedding_model=meta.get("embedding_model", ""), model_version=meta.get("model_version", ""),
+            embedding_model=meta.get("embedding_model", ""), pipeline_version=meta.get("pipeline_version", meta.get("model_version", "")),
             shoot_type=meta.get("shoot_type"),
         )
 
     def write_gallery(self, gd: GalleryData) -> Path:
         p = self._dir(gd.gallery_id) / "data.npz"
-        meta = json.dumps({"embedding_model": gd.embedding_model, "model_version": gd.model_version,
+        meta = json.dumps({"embedding_model": gd.embedding_model, "pipeline_version": gd.pipeline_version,
                            "shoot_type": gd.shoot_type})
         np.savez_compressed(
             p, meta=np.array(meta),
             photo_ids=np.array(gd.photo_ids), file_names=np.array(gd.file_names),
             technical_pct=gd.technical_pct, aesthetic_pct=gd.aesthetic_pct, sharpness_pct=gd.sharpness_pct,
-            subjects=np.array(gd.subjects), cluster_id=gd.cluster_id, cluster_rank=gd.cluster_rank,
+            subjects=np.array(gd.subjects), burst_id=gd.burst_id, burst_rank=gd.burst_rank,
             embed_group_id=gd.embed_group_id, display_order=gd.display_order,
             embedding=gd.embedding.astype(np.float32), clip_embedding=gd.clip_embedding.astype(np.float32),
         )

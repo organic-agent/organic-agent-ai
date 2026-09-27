@@ -67,7 +67,7 @@ def fetch_by_ids(connection: psycopg.Connection, photo_ids: list[int]) -> list[P
 def store_embeddings(
     connection: psycopg.Connection,
     results: Iterable[EmbeddingResult],
-    model_id: str,
+    embedding_model: str,
 ) -> int:
     """벡터 · 파생본 위치 · 촬영 정보를 배치로 적재한다. 커밋은 호출자가 한다.
 
@@ -79,7 +79,7 @@ def store_embeddings(
     """
     results = list(results)
     analysis_rows: Sequence[tuple] = [
-        (result.ref.photo_id, result.vector, model_id)
+        (result.ref.photo_id, result.vector, embedding_model)
         for result in results
     ]
     rows: Sequence[tuple] = [

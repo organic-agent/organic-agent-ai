@@ -22,12 +22,12 @@ log = logging.getLogger(__name__)
 _GALLERY_SQL = """
 SELECT p.id, p.original_file_name, p.display_order,
        a.technical_pct, a.aesthetic_pct, a.sub_scores, a.subjects,
-       a.cluster_id, a.cluster_rank, a.embed_group_id,
-       a.embedding, a.clip_embedding, a.embedding_model, a.model_version
+       a.burst_id, a.burst_rank, a.embed_group_id,
+       a.embedding, a.clip_embedding, a.embedding_model, a.pipeline_version
 FROM photos p
 JOIN photo_analysis a ON a.photo_id = p.id
 WHERE p.gallery_id = %s AND p.deleted_at IS NULL
-  AND a.model_version IS NOT NULL AND a.embedding IS NOT NULL AND a.clip_embedding IS NOT NULL
+  AND a.pipeline_version IS NOT NULL AND a.embedding IS NOT NULL AND a.clip_embedding IS NOT NULL
 ORDER BY p.display_order, p.id
 """
 
@@ -69,7 +69,7 @@ class DbStore:
         versions = {(r[12], r[13]) for r in rows}
         if len(versions) > 1:
             log.warning("갤러리 %s 에 모델 버전이 섞여 있다: %s — 다수를 쓴다", gallery_id, versions)
-        emb_model, model_version = max(versions, key=lambda v: sum(1 for r in rows if (r[12], r[13]) == v))
+        emb_model, pipeline_version = max(versions, key=lambda v: sum(1 for r in rows if (r[12], r[13]) == v))
         return GalleryData(
             gallery_id=str(gallery_id),
             photo_ids=[str(r[0]) for r in rows],
@@ -78,13 +78,14 @@ class DbStore:
             aesthetic_pct=np.array([r[4] for r in rows], dtype=float),
             sharpness_pct=np.array([float(s.get("sharpness_pct", 50.0) or 50.0) for s in sub], dtype=float),
             subjects=[r[6] or "unknown" for r in rows],
-            cluster_id=np.array([r[7] if r[7] is not None else -1 for r in rows], dtype=int),
-            cluster_rank=np.array([r[8] if r[8] is not None else 0 for r in rows], dtype=int),
+            # [GLOSSARY-1 2026-09-27] cluster_id·cluster_rank·model_version → burst_id·burst_rank·pipeline_version (용어집, 컬럼은 wes V23)
+            burst_id=np.array([r[7] if r[7] is not None else -1 for r in rows], dtype=int),
+            burst_rank=np.array([r[8] if r[8] is not None else 0 for r in rows], dtype=int),
             embed_group_id=np.array([r[9] if r[9] is not None else -1 for r in rows], dtype=int),
             display_order=np.array([r[2] for r in rows], dtype=int),
             embedding=np.stack([np.asarray(r[10], dtype=np.float32) for r in rows]),
             clip_embedding=np.stack([np.asarray(r[11], dtype=np.float32) for r in rows]),
-            embedding_model=emb_model or "", model_version=model_version or "", shoot_type=shoot_type,
+            embedding_model=emb_model or "", pipeline_version=pipeline_version or "", shoot_type=shoot_type,
         )
 
     def read_selected(self, gallery_id: str) -> list[str]:
@@ -105,7 +106,7 @@ class DbStore:
                   AND EXISTS (SELECT 1 FROM photo_selections s JOIN photo_selection_items i ON i.selection_id = s.id
                               WHERE s.gallery_id = g.id AND s.deleted_at IS NULL)
                   AND EXISTS (SELECT 1 FROM photos p JOIN photo_analysis a ON a.photo_id = p.id
-                              WHERE p.gallery_id = g.id AND p.deleted_at IS NULL AND a.model_version IS NOT NULL)
+                              WHERE p.gallery_id = g.id AND p.deleted_at IS NULL AND a.pipeline_version IS NOT NULL)
                 ORDER BY g.updated_at, g.id
             """)
             return [str(r[0]) for r in cur.fetchall()]
@@ -121,10 +122,10 @@ class DbStore:
                 cur.execute("UPDATE preference_models SET active = false WHERE active")
             cur.execute(
                 """INSERT INTO preference_models
-                   (embedding_model, model_version, feature_spec, w_scalar, w_emb, bias, lambda,
+                   (embedding_model, pipeline_version, feature_spec, w_scalar, w_emb, bias, lambda,
                     n_galleries, n_positives, train_gallery_ids, holdout, active)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s) RETURNING id""",
-                (row["embedding_model"], row["model_version"], row["feature_spec"], list(row["w_scalar"]),
+                (row["embedding_model"], row["pipeline_version"], row["feature_spec"], list(row["w_scalar"]),
                  np.asarray(row["w_emb"], dtype=np.float32), row["bias"], row["lambda"], row["n_galleries"],
                  row["n_positives"], [int(g) for g in row["train_gallery_ids"]],
                  json.dumps(row["holdout"], ensure_ascii=False), bool(row["active"])),

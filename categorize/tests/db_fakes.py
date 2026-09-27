@@ -16,6 +16,9 @@ class _Cursor:
     def execute(self, sql, params=None):
         self.conn.executed.append((" ".join(sql.split()), params))
 
+    def executemany(self, sql, params_seq):
+        self.conn.executed.append((" ".join(sql.split()), list(params_seq)))
+
     def fetchall(self):
         return self.conn.rows
 

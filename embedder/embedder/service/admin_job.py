@@ -52,7 +52,7 @@ def run(event: AdminPhotoEvent, settings: Settings) -> dict:
             if event.job_type == "DERIVATIVE":
                 admin_jobs.complete_admin_derivative(final_connection, event, preview_key, photo_metadata)
             else:
-                admin_jobs.complete_admin_embedding(final_connection, event, vector, settings.model_id)
+                admin_jobs.complete_admin_embedding(final_connection, event, vector, settings.embedding_model)
             final_connection.commit()
         return AdminJobResult(event, "SUCCEEDED", result).to_dict()
     except admin_jobs.AdminJobClaimLost as error:

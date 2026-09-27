@@ -26,20 +26,20 @@ GOLDEN_JSON = Path(__file__).resolve().parent.parent / "golden" / "dataset1-gold
 # ── 합성 갤러리 ─────────────────────────────────────────────────────────────
 def synth(gallery_id: str, n: int = 600, n_pos: int = 20, seed: int = 0, taste: np.ndarray | None = None,
           burst: int = 3) -> LabeledGallery:
-    """n 장, burst 장씩 연사 클러스터. 숨은 취향 방향 taste 에 가까운 사진을 고른다 — prior 와는 무관하게."""
+    """n 장, burst 장씩 연사. 숨은 취향 방향 taste 에 가까운 사진을 고른다 — prior 와는 무관하게."""
     rng = np.random.default_rng(seed)
     dino = rng.normal(size=(n, 768)); clip = rng.normal(size=(n, 768))
-    # 연사: 같은 클러스터는 거의 같은 벡터
-    cluster = np.arange(n) // burst
-    for c in np.unique(cluster):
-        m = cluster == c
+    # 연사: 같은 연사는 거의 같은 벡터
+    burst_ids = np.arange(n) // burst
+    for c in np.unique(burst_ids):
+        m = burst_ids == c
         dino[m] = dino[m][0] + 0.02 * rng.normal(size=(m.sum(), 768))
         clip[m] = clip[m][0] + 0.02 * rng.normal(size=(m.sum(), 768))
     rank = np.arange(n) % burst
     taste = taste if taste is not None else np.concatenate([rng.normal(size=768), np.zeros(768)])
     emb = np.concatenate([dino / np.linalg.norm(dino, axis=1, keepdims=True), clip / np.linalg.norm(clip, axis=1, keepdims=True)], axis=1)
     affinity = emb @ taste
-    # 클러스터당 하나(대표)만 후보로 두고 취향 상위 n_pos 를 선택
+    # 연사당 하나(연사 대표)만 후보로 두고 취향 상위 n_pos 를 선택
     reps = np.where(rank == 0)[0]
     chosen = reps[np.argsort(-affinity[reps])[:n_pos]]
     gd = GalleryData(
@@ -48,9 +48,9 @@ def synth(gallery_id: str, n: int = 600, n_pos: int = 20, seed: int = 0, taste: 
         technical_pct=rng.uniform(0, 100, n), aesthetic_pct=rng.uniform(0, 100, n),
         sharpness_pct=rng.uniform(0, 100, n),
         subjects=list(rng.choice(["bride", "groom", "couple", "group", "unknown"], n)),
-        cluster_id=cluster, cluster_rank=rank, embed_group_id=rng.integers(0, 12, n),
+        burst_id=burst_ids, burst_rank=rank, embed_group_id=rng.integers(0, 12, n),
         display_order=np.arange(n), embedding=dino.astype(np.float32), clip_embedding=clip.astype(np.float32),
-        embedding_model="dinov3-test", model_version="test-0.1", shoot_type="REHEARSAL",
+        embedding_model="dinov3-test", pipeline_version="test-0.1", shoot_type="REHEARSAL",
     )
     return LabeledGallery(data=gd, selected_ids=[gd.photo_ids[i] for i in chosen])
 
@@ -70,11 +70,11 @@ def test_sample_excludes_siblings_and_uses_cluster_reps():
     lg = synth("g", burst=3)
     s = make_sample(lg)
     pos = lg.positive_idx
-    cid = lg.data.cluster_id
-    pos_clusters = set(cid[pos].tolist())
+    cid = lg.data.burst_id
+    pos_bursts = set(cid[pos].tolist())
     neg = s.idx[s.y == 0]
-    assert not (set(cid[neg].tolist()) & pos_clusters)             # 양성 클러스터의 형제는 음성에 없다
-    assert len(neg) == len(set(cid[neg].tolist()))                 # 클러스터당 음성 1장
+    assert not (set(cid[neg].tolist()) & pos_bursts)             # 양성 연사의 형제는 음성에 없다
+    assert len(neg) == len(set(cid[neg].tolist()))                 # 연사당 음성 1장
     assert abs(s.w[s.y == 1].sum() - 0.5) < 1e-9 and abs(s.w[s.y == 0].sum() - 0.5) < 1e-9
 
 
@@ -83,7 +83,7 @@ def test_train_learns_taste_beyond_prior():
     model = train([lg], KNOBS)
     ev = evaluate_gallery(lg, model, KNOBS, lam_override=1.0)
     assert ev.metrics["pref"]["auc"] > 0.95                        # in-sample 은 외운다
-    assert ev.metrics["pref"]["recall_cluster"] == 1.0                # 클러스터 기준 — 형제 중 어느 장인지는 못 가른다
+    assert ev.metrics["pref"]["recall_burst"] == 1.0                # 연사 기준 — 형제 중 어느 장인지는 못 가른다
     assert ev.metrics["prior"]["auc"] < 0.7                         # prior 는 취향과 무관
     assert model.lam == pytest.approx(lam(1, 5.0)) == pytest.approx(1 / 6)
 
@@ -96,8 +96,8 @@ def test_logo_generalizes_when_taste_is_shared():
     assert len(rows) == 4
     for r in rows:
         assert r.metrics["pref"]["auc"] > 0.6                       # 다른 갤러리에서도 방향을 찾는다 (양성 20 × 3 갤러리)
-        assert r.metrics["fused"]["recall_cluster"] >= r.metrics["fused"]["recall_strict"]
-    assert np.mean([r.metrics["fused"]["recall_cluster"] for r in rows]) > np.mean([r.metrics["prior"]["recall_cluster"] for r in rows])
+        assert r.metrics["fused"]["recall_burst"] >= r.metrics["fused"]["recall_strict"]
+    assert np.mean([r.metrics["fused"]["recall_burst"] for r in rows]) > np.mean([r.metrics["prior"]["recall_burst"] for r in rows])
 
 
 def test_logo_needs_two_galleries_and_gate_reports_it():
@@ -124,7 +124,7 @@ def test_gate_passes_on_shared_taste_and_fails_on_random():
 def test_metrics_helpers():
     scores = np.array([0.1, 0.9, 0.5, 0.7])
     assert recall_at_k(scores, np.array([1, 0]), 2) == 0.5
-    assert recall_at_k(scores, np.array([0]), 1, cluster_id=np.array([5, 5, 6, 7])) == 1.0   # 형제(1번)가 대표로 올라갔다
+    assert recall_at_k(scores, np.array([0]), 1, burst_id=np.array([5, 5, 6, 7])) == 1.0   # 형제(1번)가 대표로 올라갔다
     assert recalls(scores, np.array([0]), 1, np.array([5, 5, 6, 7])) == (0.0, 1.0)
     assert recalls(scores, np.array([1, 3]), 2, np.array([5, 5, 6, 7])) == (1.0, 1.0)         # dedup 뒤 상위 2 = 1번·3번
     assert auc(scores, np.array([1]), np.array([0, 2])) == 1.0
@@ -169,7 +169,7 @@ def test_sanity_job(tmp_path: Path):
     st.write_gallery(lg.data)
     result = job.run_sanity(st, Settings(out_root=tmp_path, knobs=KNOBS), "g", lg.selected_ids)
     assert result["passed"] is True and result["n_positives_matched"] == 20
-    assert result["n_excluded_siblings"] == 40          # 20 클러스터 × 형제 2장
+    assert result["n_excluded_siblings"] == 40          # 20 연사 × 형제 2장
     assert result["k"] == 60 and "prior" in result["metrics_lambda_1"]
 
 

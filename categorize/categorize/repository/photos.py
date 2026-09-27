@@ -33,7 +33,7 @@ def list_galleries(dataset_root: Path) -> list[tuple[str, int]]:
 
 def load_local(dataset_root: Path, gallery: str, limit: int | None = None,
                jpg_only: bool = True) -> list[PhotoRef]:
-    """갤러리 하나의 사진 목록. 파일명 순 — 연사 클러스터링이 이 순서를 쓴다."""
+    """갤러리 하나의 사진 목록. 파일명 순 — 연사 묶기가 이 순서를 쓴다."""
     base = dataset_root / gallery
     if not base.is_dir():
         raise SystemExit(f"갤러리 폴더가 없다: {base}\n  --list 로 이름을 확인할 것")
@@ -57,8 +57,8 @@ def load_local(dataset_root: Path, gallery: str, limit: int | None = None,
 
 def load_db(conn, storage, gallery_id: int, work_dir: Path, limit: int | None = None,
             download: bool = True) -> list[PhotoRef]:
-    """DB 모드의 사진 목록. 기본 순서는 wes 화면 순서(display_order, id)이고, 연사 클러스터링은
-    taken_at·camera로 파티션·재정렬한다(cluster.partition_order — 멀티 카메라 대응).
+    """DB 모드의 사진 목록. 기본 순서는 wes 화면 순서(display_order, id)이고, 연사 묶기는
+    taken_at·camera로 파티션·재정렬한다(burst.partition_order — 멀티 카메라 대응).
 
     미리보기(preview_key)가 있는 사진만 고른다 — 임베더가 지난 사진이다(#93). 옛 계약에서는 `status='EMBEDDED'` 를 봤지만
     wes V15(2026-09-08)가 그 값을 없앴다(status 는 "S3 에 있나"만 답한다) — 조건을 그대로 두면 대상이 0장이 된다.
