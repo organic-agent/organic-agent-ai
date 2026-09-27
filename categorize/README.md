@@ -1,6 +1,6 @@
 # categorize — 갤러리 그룹화·이름 Lambda (torch 없음)
 
-갤러리 하나를 **한 번에** 읽어 백분위 · 연사 클러스터 · 임베딩 그룹을 만들고, 그룹에 (1층 concept, 2층 detail) 이름을 붙여
+갤러리 하나를 **한 번에** 읽어 백분위 · 연사 · 임베딩 그룹을 만들고, 그룹에 (1층 concept, 2층 detail) 이름을 붙여
 `photo_analysis`(pct · cluster · group) 와 `ai_concept_assignments` 에 적재한다. 입력은 전부 DB 에 저장된 것이다 —
 [`embedder/`](../embedder/README.md) 의 DINOv3, [`score/`](../score/README.md) 의 원점수·CLIP·CLIP 1층 라벨. 그래서
 numpy · scipy · Bedrock 만으로 돌고 torch 가 없다(테스트가 고정). 실제 폴더(`concept_folders` · `detail_folders` ·
@@ -16,7 +16,7 @@ wes ──EVENT {galleryId, jobId}──▶ [categorize] ──▶ ai_concept_as
 ```
 갤러리 한 번 (E = DINOv3, C = CLIP, 원점수 — 전부 DB)
   백분위          technical/aesthetic_score · sharpness → *_pct (NaN → 50)
-  연사            E, 카메라 파티션 ∧ taken_at 순 창 ≤ 8 ∧ cos ≥ 0.96 → cluster_id · cluster_rank(대표 0, rank_reason)
+  연사            E, 카메라 파티션 ∧ taken_at 순 창 ≤ 8 ∧ cos ≥ 0.96 → burst_id · burst_rank(연사 대표 0, rank_reason; 컬럼 cluster_*)
   임베딩 그룹     X = normalize([normalize(E) ⊕ normalize(C)]) → 평균연결 계층 클러스터, 거리 0.2 적응
                     과병합(그룹<4 또는 최대>50%)이면 0.05씩 하강 · 과분할(그룹>n×0.35)이면 0.05씩 상승
 → store.write_groups  (pct · cluster · group · sub_scores 만 — subjects · clip_embedding · model_version 은 score 의 것)
@@ -54,7 +54,7 @@ categorize/
 │   ├── service/             job.py(잡: 대상 조회 → pipeline → 실패면 error. 상태 전이는 wes #95)
 │   │                        pipeline.py(백분위 · 연사 · 임베딩 그룹 → write_groups → naming)
 │   │                        naming.py(Bedrock 이름 · 소그룹 최근접 · CLIP 1층 라벨 다수결 · 배경 검증 → write_assignments)
-│   │                        cluster.py(연사 union-find — 카메라 파티션 ∧ 순서 창 ∧ 코사인) · grouping.py(평균연결 계층 클러스터, 적응 임계)
+│   │                        burst.py(연사 union-find — 카메라 파티션 ∧ 순서 창 ∧ 코사인) · grouping.py(평균연결 계층 클러스터, 적응 임계)
 │   ├── domain/              photo.py(PhotoRef) · analysis.py(PhotoAnalysis · ConceptAssignment · GalleryRead · Store 프로토콜)
 │   │                        run.py(Grouped · CategorizeResult) — 로직 없음
 │   ├── repository/          connection.py(접속) · analysis.py(DbStore — read_gallery 한 쿼리 · write_groups · write_assignments ·
@@ -103,6 +103,8 @@ naming 이 닿는다. 메모리 2–3GB 면 7,000장(거리행렬 ~200MB)까지 
   `DetailFolder`. 컬럼 이름은 옛것 그대로라 1층은 `parent_name`, 2층은 `concept_name` 컬럼에 저장된다(`repository/analysis.py`,
   테스트가 고정). `proposed_concept`·`clip_concept` 필드도 같은 식으로 옛 컬럼에 간다. 옛 이름은 경계에만 남는다 —
   SQL 컬럼, Bedrock 프롬프트의 JSON 키, 로컬 캐시 키, score 가 쓰는 `sub_scores` 키(`CLIP_CONCEPT_KEY`)와 score 의 목록 변수 이름.
+- 용어집(WES-DOCS `docs/glossary.md`)이 이름의 정본이다. 연사 `burst_id`·`burst_rank`(컬럼 `cluster_id`·`cluster_rank`), 임베딩 그룹
+  `embed_group_id`, 파이프라인 버전 `pipeline_version`·`PIPELINE_VERSION`(컬럼 `model_version`). 컬럼 이름은 wes 용어 2단계에서 맞춘다.
 - 손잡이(`config/settings.py`): 연사 0.96, 그룹 거리 0.2, 최근접 τ 0.25, 커버리지 0.85, review confidence 0.8. 연사·그룹 값은
   CLIP/DINOv2 시절 실측이라 DINOv3 기준 재측정 대상 — 결과의 `similarityProfile` 이 근거.
 

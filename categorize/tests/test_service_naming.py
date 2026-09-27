@@ -16,7 +16,7 @@ def test_naming_all_groups_named_by_vlm(tmp_path):
     result = naming.run(store, "g", settings, FakeLlm(), job_id=None)
     back = store.read_assignments("g")
     n_groups = len({r.embed_group_id for r in rows})
-    assert len(back) == n_groups == result["groups"]
+    assert len(back) == n_groups == result["embedGroups"]
     assert all(a.assigned_by == "vlm" for a in back)
     assert all(not a.needs_review for a in back)
     assert result["vlmGroups"] == n_groups and result["nearestGroups"] == 0
@@ -39,8 +39,8 @@ def test_naming_nearest_inherits_and_flags_far_groups(tmp_path):
 
 def test_naming_low_confidence_and_clip_mismatch_need_review(tmp_path):
     store, rows, *_, settings = world(tmp_path, clip_concept="야외 자연")
-    gids = sorted({r.embed_group_id for r in rows})
-    naming.run(store, "g", settings, FakeLlm(low_conf_gid=gids[0]), job_id=None)
+    embed_group_ids = sorted({r.embed_group_id for r in rows})
+    naming.run(store, "g", settings, FakeLlm(low_conf_embed_group_id=embed_group_ids[0]), job_id=None)
     back = store.read_assignments("g")
     assert all(a.needs_review for a in back)
     assert all(a.clip_concept == "야외 자연" for a in back)
@@ -113,8 +113,8 @@ def test_naming_coverage_target_limits_vlm_groups(tmp_path):
     store, rows, *_, settings = world(tmp_path, n_groups=4, per_group=8, clip_concept=None)
     settings = with_knobs(settings, naming_coverage=0.5, nearest_tau=1.0, group_distance=2.0)
     result = naming.run(store, "g", settings, FakeLlm(), job_id=None)
-    assert result["vlmGroups"] < result["groups"]
-    assert result["nearestGroups"] == result["groups"] - result["vlmGroups"]
+    assert result["vlmGroups"] < result["embedGroups"]
+    assert result["nearestGroups"] == result["embedGroups"] - result["vlmGroups"]
     assert 0.5 <= result["coverage"] < 1.0
 
 
@@ -124,8 +124,8 @@ def test_isolated_group_is_named_even_outside_the_coverage_target(tmp_path):
     store, rows, *_, settings = world(tmp_path, n_groups=4, per_group=8, clip_concept=None)
     settings = with_knobs(settings, naming_coverage=0.5, nearest_tau=1.0, group_distance=0.2)
     result = naming.run(store, "g", settings, FakeLlm(), job_id=None)
-    assert result["vlmGroups"] == result["groups"]
-    assert result["isolatedGroups"] == result["groups"] - 2      # 커버리지로 2개, 나머지는 고립 보강
+    assert result["vlmGroups"] == result["embedGroups"]
+    assert result["isolatedGroups"] == result["embedGroups"] - 2      # 커버리지로 2개, 나머지는 고립 보강
     assert result["nearestGroups"] == 0
 
 
@@ -137,7 +137,7 @@ def test_isolation_is_keyed_to_group_distance_not_nearest_tau(tmp_path):
     settings = with_knobs(settings, naming_coverage=0.5, nearest_tau=0.0, group_distance=2.0)
     result = naming.run(store, "g", settings, FakeLlm(), job_id=None)
     assert result["isolatedGroups"] == 0
-    assert result["vlmGroups"] < result["groups"]
+    assert result["vlmGroups"] < result["embedGroups"]
 
 
 def test_borrowed_name_with_a_different_background_needs_review(tmp_path):
@@ -158,8 +158,8 @@ def test_background_outlier_inside_a_named_group_needs_review(tmp_path):
                                       bg=lambda g, j: 200.0 if j % 2 == 0 else 5.0)
     settings = with_knobs(settings, group_distance=2.0)
     result = naming.run(store, "g", settings, FakeLlm(), job_id=None)
-    assert result["vlmGroups"] == result["groups"]
-    assert result["bgMismatchGroups"] == result["groups"]
+    assert result["vlmGroups"] == result["embedGroups"]
+    assert result["bgMismatchGroups"] == result["embedGroups"]
     assert all(a.needs_review for a in store.read_assignments("g"))
 
 
@@ -176,8 +176,8 @@ def test_naming_spread_adds_second_rep(tmp_path):
     store, rows, *_, settings = world(tmp_path)
     settings = with_knobs(settings, naming_spread_extra=0.0)
     result = naming.run(store, "g", settings, FakeLlm(), job_id=None)
-    assert result["extraReps"] == result["groups"]
-    assert result["vlmGroups"] == result["groups"]
+    assert result["extraReps"] == result["embedGroups"]
+    assert result["vlmGroups"] == result["embedGroups"]
 
 
 def test_naming_requires_llm(tmp_path):

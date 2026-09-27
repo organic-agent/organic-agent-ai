@@ -1,6 +1,6 @@
 """임베딩 그룹 — 같은 배경·구도로 찍은 사진 묶음. 이름은 없다, 경계만 있다.
 
-VLM scene 태그의 자리를 대신한다. 연사 클러스터(`service/cluster.py`, 코사인 ≥ 0.96·순서 창)보다
+VLM scene 태그의 자리를 대신한다. 연사(`service/burst.py`, 코사인 ≥ 0.96·순서 창)보다
 훨씬 느슨하게, 순서 제약 없이 임베딩만으로 묶는다. 2026-08-29 갤러리 1 실측(DINOv2, 822장):
 평균연결 계층 클러스터 코사인 거리 0.2에서 70그룹 — 케이크 세트 50·해변 41·소파 39·정원 37·
 덩굴 아치 36장으로 촬영 세트와 일치했다. 0.3부터 다른 세트가 섞인다.
@@ -71,5 +71,5 @@ def group_profile(labels: np.ndarray) -> dict[str, float]:
         return {}
     sizes = np.bincount(labels)
     sizes = sizes[sizes > 0]
-    return {"groups": float(len(sizes)), "maxSize": float(sizes.max()),
+    return {"embedGroups": float(len(sizes)), "maxSize": float(sizes.max()),
             "maxShare": float(sizes.max() / len(labels)), "singletons": float((sizes == 1).sum())}

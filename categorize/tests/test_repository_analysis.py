@@ -7,7 +7,7 @@ import re
 import numpy as np
 import pytest
 
-from categorize.config.settings import MODEL_VERSION, Settings
+from categorize.config.settings import PIPELINE_VERSION, Settings
 from categorize.domain.analysis import ConceptAssignment
 from categorize.repository.analysis import PREVIEW_DOWNLOAD_WORKERS, DbStore
 from categorize.repository.storage import PreviewStorage
@@ -23,7 +23,7 @@ def test_db_store_read_gallery_is_one_query(tmp_path):
     """분석 행 + DINOv3 + CLIP 을 한 SELECT 로. model_version 없는 행은 벡터만 남고 행 목록에서 빠진다."""
     e, c = np.ones(4, dtype=np.float32), np.zeros(4, dtype=np.float32)
     conn = RowConn(rows=[
-        (11, "couple", 50.0, 50.0, {"technical_score": 0.5}, -1, 0, -1, MODEL_VERSION, e, "dinov3", c),
+        (11, "couple", 50.0, 50.0, {"technical_score": 0.5}, -1, 0, -1, PIPELINE_VERSION, e, "dinov3", c),
         (12, "unknown", 50.0, 50.0, None, -1, 0, -1, None, e, "dinov3", None),          # 임베딩만, 점수 아직
     ])
     data = _db_store(tmp_path, conn).read_gallery("7")
@@ -40,8 +40,8 @@ def test_db_store_read_gallery_is_one_query(tmp_path):
 def test_db_store_read_gallery_rejects_mixed_embedding_models(tmp_path):
     e = np.ones(4, dtype=np.float32)
     conn = RowConn(rows=[
-        (11, "couple", 50.0, 50.0, {}, -1, 0, -1, MODEL_VERSION, e, "dinov3", e),
-        (12, "couple", 50.0, 50.0, {}, -1, 0, -1, MODEL_VERSION, e, "dinov2", e),
+        (11, "couple", 50.0, 50.0, {}, -1, 0, -1, PIPELINE_VERSION, e, "dinov3", e),
+        (12, "couple", 50.0, 50.0, {}, -1, 0, -1, PIPELINE_VERSION, e, "dinov2", e),
     ])
     with pytest.raises(RuntimeError, match="embedding_model"):
         _db_store(tmp_path, conn).read_gallery("7")

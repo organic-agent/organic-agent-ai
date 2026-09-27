@@ -5,7 +5,7 @@ from __future__ import annotations
 import numpy as np
 from PIL import Image
 
-from categorize.config.settings import MODEL_VERSION, Knobs, Settings
+from categorize.config.settings import PIPELINE_VERSION, Knobs, Settings
 from categorize.domain.analysis import PhotoAnalysis
 from categorize.repository.local import LocalStore
 from categorize.service import grouping
@@ -37,17 +37,17 @@ def world(tmp_path, n_groups=3, per_group=10, seed=0, clip_concept="실내 스�
                             "aesthetic_score": rng.uniform(5, 6.5),
                             "sharpness": rng.uniform(50, 500),
                             CLIP_CONCEPT_KEY: clip_concept},
-                model_version=MODEL_VERSION))
+                pipeline_version=PIPELINE_VERSION))
             if bg is not None:
                 rows[-1].sub_scores["bg_luma"] = float(bg(g, j))
     E, C = np.stack(E), np.stack(C)
     for r, t in zip(rows, percentile([r.sub_scores["technical_score"] for r in rows])):
         r.technical_pct = t
     X = concat_space(E, C)
-    gids, _ = grouping.embed_groups(X, 0.4, min_groups=2, max_share=0.6)
-    for i, (r, g) in enumerate(zip(rows, gids)):
+    embed_group_ids, _ = grouping.embed_groups(X, 0.4, min_groups=2, max_share=0.6)
+    for i, (r, g) in enumerate(zip(rows, embed_group_ids)):
         r.embed_group_id = int(g)
-        r.cluster_id = i          # 연사 없음 — 전부 단독 클러스터
+        r.burst_id = i          # 연사 없음 — 전부 단독 연사
     assign_ranks(rows)
 
     # 대표 사진용 실제 JPEG (naming 이 jpeg_bytes 를 부른다)
@@ -71,23 +71,23 @@ def with_knobs(settings, **kw):
 class FakeLlm:
     """청크 vision 호출은 그룹마다 이름을, 통합 호출은 concept 표기를 바꿔 돌려준다."""
 
-    def __init__(self, concept="실내 스튜디오", low_conf_gid=None):
+    def __init__(self, concept="실내 스튜디오", low_conf_embed_group_id=None):
         self.calls: list[tuple[str, bool]] = []
         self.concept = concept
-        self.low_conf_gid = low_conf_gid
+        self.low_conf_embed_group_id = low_conf_embed_group_id
 
     def complete_json(self, system, user, schema, max_tokens):
         has_image = not isinstance(user, str) and any(k == "image" for k, _ in user)
         kind = "vision" if has_image else "merge"
         self.calls.append((kind, has_image))
         if kind == "vision":
-            gids = [int(t.split("]")[0].split()[1]) for k, t in user
+            embed_group_ids = [int(t.split("]")[0].split()[1]) for k, t in user
                     if k == "text" and t.startswith("[그룹")]
             return {"groups": [
                 {"group_id": g, "parent": self.concept, "proposed_parent": None,
                  "concept": f"세트{g}",
-                 "confidence": 0.3 if g == self.low_conf_gid else 0.95}
-                for g in gids]}
+                 "confidence": 0.3 if g == self.low_conf_embed_group_id else 0.95}
+                for g in embed_group_ids]}
         out = []
         for ln in user.splitlines():
             gid = int(ln.split(":")[0].split()[1])

@@ -18,6 +18,10 @@ _CACHE_KEY = {"concept_name": "parent_name", "detail_name": "concept_name",
               "proposed_concept": "proposed_parent", "clip_concept": "clip_parent"}
 _FIELD = {v: k for k, v in _CACHE_KEY.items()}
 
+# [GLOSSARY-1 2026-09-27] 분석 필드 → analysis.jsonl 키. 배정과 같은 이유로 키는 photo_analysis 컬럼 이름 그대로 둔다(기존 out/ 파일 호환).
+_ANALYSIS_CACHE_KEY = {"burst_id": "cluster_id", "burst_rank": "cluster_rank", "pipeline_version": "model_version"}
+_ANALYSIS_FIELD = {v: k for k, v in _ANALYSIS_CACHE_KEY.items()}
+
 
 class LocalStore:
     """out/v3/<갤러리 slug>/ 아래 파일 — score 의 LocalStore 와 같은 규약. 로컬은 임베더가 없어 CLIP 이 임베딩 역할을 겸한다."""
@@ -42,7 +46,8 @@ class LocalStore:
         if not p.exists():
             return []
         with p.open(encoding="utf-8") as f:
-            return [PhotoAnalysis(**json.loads(line)) for line in f if line.strip()]
+            return [PhotoAnalysis(**{_ANALYSIS_FIELD.get(k, k): v for k, v in json.loads(line).items()})
+                    for line in f if line.strip()]
 
     def _read_npy(self, gallery: str, name: str) -> tuple[list[str], np.ndarray]:
         d = self._dir(gallery)
@@ -58,7 +63,7 @@ class LocalStore:
         return self._read_npy(gallery, "clip_embeddings")
 
     def read_gallery(self, gallery: str) -> GalleryRead:
-        rows = [r for r in self.read_analysis(gallery) if r.model_version]
+        rows = [r for r in self.read_analysis(gallery) if r.pipeline_version]
         emb_ids, E = self.read_embeddings(gallery)
         clip_ids, C = self.read_clip_embeddings(gallery)
         return GalleryRead(rows=rows,
@@ -68,7 +73,8 @@ class LocalStore:
     def _write_rows(self, gallery: str, rows: list[PhotoAnalysis]) -> None:
         with (self._dir(gallery) / "analysis.jsonl").open("w", encoding="utf-8") as f:
             for r in rows:
-                f.write(json.dumps(asdict(r), ensure_ascii=False) + "\n")
+                f.write(json.dumps({_ANALYSIS_CACHE_KEY.get(k, k): v for k, v in asdict(r).items()},
+                                   ensure_ascii=False) + "\n")
 
     def _write_npy(self, gallery: str, name: str, ids: list[str], emb: np.ndarray) -> None:
         d = self._dir(gallery)
@@ -76,14 +82,14 @@ class LocalStore:
         np.save(d / f"{name}.npy", emb)
 
     def write_groups(self, gallery: str, rows: list[PhotoAnalysis]) -> None:
-        """CATEGORIZE 의 필드만 덮는다 — subjects · model_version 은 score 의 것이라 그대로."""
+        """CATEGORIZE 의 필드만 덮는다 — subjects · pipeline_version 은 score 의 것이라 그대로."""
         by_id = {r.photo_id: r for r in self.read_analysis(gallery)}
         for r in rows:
             cur = by_id.get(r.photo_id)
             if cur is None:
                 by_id[r.photo_id] = r
                 continue
-            for f in ("technical_pct", "aesthetic_pct", "sub_scores", "cluster_id", "cluster_rank", "embed_group_id"):
+            for f in ("technical_pct", "aesthetic_pct", "sub_scores", "burst_id", "burst_rank", "embed_group_id"):
                 setattr(cur, f, getattr(r, f))
         self._write_rows(gallery, list(by_id.values()))
 

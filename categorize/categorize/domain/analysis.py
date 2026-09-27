@@ -16,17 +16,19 @@ import numpy as np
 
 @dataclass
 class PhotoAnalysis:
-    """`photo_analysis` 한 행. 컬럼 이름을 그대로 필드로 쓴다."""
+    """`photo_analysis` 한 행. 필드 이름은 용어집(WES-DOCS glossary)을 따르고, 이름이 다른 컬럼은 repository 가 매핑한다
+    (`burst_id`→`cluster_id`, `burst_rank`→`cluster_rank`, `pipeline_version`→`model_version`). 컬럼 이름은 wes 용어 2단계에서 맞춘다."""
 
     photo_id: str
     subjects: str = "unknown"
     technical_pct: float = 50.0
     aesthetic_pct: float = 50.0
     sub_scores: dict = field(default_factory=dict)   # technical_score, aesthetic_score, sharpness, rank_reason, clip_parent(score 의 키) …
-    cluster_id: int = -1
-    cluster_rank: int = 0
+    # [GLOSSARY-1 2026-09-27] cluster_id → burst_id, cluster_rank → burst_rank (용어집: 연사), model_version → pipeline_version (D3)
+    burst_id: int = -1
+    burst_rank: int = 0
     embed_group_id: int = -1
-    model_version: str = ""
+    pipeline_version: str = ""
 
 
 @dataclass
@@ -52,7 +54,7 @@ class ConceptAssignment:
 class GalleryRead:
     """갤러리 한 번 읽기 — score 가 지난 분석 행과 벡터 두 종류. 파이프라인 한 실행에 한 번만 만든다."""
 
-    rows: list[PhotoAnalysis]                 # model_version 있는 행, 화면 순(display_order, id)
+    rows: list[PhotoAnalysis]                 # pipeline_version 있는 행, 화면 순(display_order, id)
     embeddings: dict[str, np.ndarray]         # DINOv3 — 없으면 빈 dict(로컬 데이터셋 모드)
     clip_embeddings: dict[str, np.ndarray]    # CLIP ViT-L/14
 

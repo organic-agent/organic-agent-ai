@@ -6,7 +6,7 @@ import json
 
 import numpy as np
 
-from categorize.config.settings import MODEL_VERSION
+from categorize.config.settings import PIPELINE_VERSION
 from categorize.domain.analysis import ConceptAssignment, PhotoAnalysis
 from tests.helpers import world
 
@@ -35,9 +35,9 @@ def test_local_store_roundtrip(tmp_path):
 def test_write_groups_keeps_score_columns(tmp_path):
     store, rows, *_ = world(tmp_path)
     grouped = [PhotoAnalysis(photo_id=r.photo_id, subjects="unknown", technical_pct=1.0,
-                             cluster_id=99, embed_group_id=7, model_version="") for r in rows]
+                             burst_id=99, embed_group_id=7, pipeline_version="") for r in rows]
     store.write_groups("g", grouped)
     after = {r.photo_id: r for r in store.read_analysis("g")}
     # subjects · model_version 은 score 의 것 — 건드리지 않는다
-    assert all(after[r.photo_id].subjects == "couple" and after[r.photo_id].model_version == MODEL_VERSION for r in rows)
-    assert all(after[r.photo_id].embed_group_id == 7 and after[r.photo_id].cluster_id == 99 for r in rows)
+    assert all(after[r.photo_id].subjects == "couple" and after[r.photo_id].pipeline_version == PIPELINE_VERSION for r in rows)
+    assert all(after[r.photo_id].embed_group_id == 7 and after[r.photo_id].burst_id == 99 for r in rows)

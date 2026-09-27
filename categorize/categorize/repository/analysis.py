@@ -44,10 +44,13 @@ def _jsonb(value) -> str:
 class DbStore:
     """wes 공유 Postgres. id 규약: 읽을 때 str(), 쓸 때 int()."""
 
-    ANALYSIS_COLUMNS = (
+    # [GLOSSARY-1 2026-09-27] 필드 이름(용어집)과 컬럼 이름(옛 이름)을 나눈다 — 이름이 다른 것만 _COLUMN 에 둔다.
+    ANALYSIS_FIELDS = (
         "subjects", "technical_pct", "aesthetic_pct", "sub_scores",
-        "cluster_id", "cluster_rank", "embed_group_id", "model_version",
+        "burst_id", "burst_rank", "embed_group_id", "pipeline_version",
     )
+    #: 필드 → `photo_analysis` 컬럼. 컬럼 이름 변경(wes 용어 2단계) 전까지의 대응.
+    _COLUMN = {"burst_id": "cluster_id", "burst_rank": "cluster_rank", "pipeline_version": "model_version"}
 
     def __init__(self, settings, connection=None) -> None:
         from categorize.repository import connection as connection_mod
@@ -100,7 +103,7 @@ class DbStore:
     # ── analysis + vectors ──
     def read_gallery(self, gallery: str) -> GalleryRead:
         """분석 행과 벡터 두 종류를 **한 쿼리**로. embedding_model 이 섞여 있으면 실패한다 — 다른 공간의 코사인은 무의미."""
-        cols = ", ".join(f"a.{c}" for c in self.ANALYSIS_COLUMNS)
+        cols = ", ".join(f"a.{self._COLUMN.get(f, f)}" for f in self.ANALYSIS_FIELDS)
         with self.conn.cursor() as cur:
             cur.execute(
                 f"SELECT a.photo_id, {cols}, a.embedding, a.embedding_model, a.clip_embedding "
@@ -114,7 +117,7 @@ class DbStore:
         embeddings: dict[str, np.ndarray] = {}
         clips: dict[str, np.ndarray] = {}
         models: set[str] = set()
-        n_cols = len(self.ANALYSIS_COLUMNS)
+        n_cols = len(self.ANALYSIS_FIELDS)
         for r in raw:
             photo_id = str(r[0])
             embedding, embedding_model, clip = r[1 + n_cols], r[2 + n_cols], r[3 + n_cols]
@@ -123,8 +126,8 @@ class DbStore:
                 models.add(str(embedding_model))
             if clip is not None:
                 clips[photo_id] = np.asarray(clip, dtype=np.float32)
-            d = dict(zip(("photo_id",) + self.ANALYSIS_COLUMNS, r[:1 + n_cols]))
-            if d["model_version"] is None:
+            d = dict(zip(("photo_id",) + self.ANALYSIS_FIELDS, r[:1 + n_cols]))
+            if d["pipeline_version"] is None:
                 continue
             d["photo_id"] = photo_id
             d["sub_scores"] = dict(d["sub_scores"] or {})
@@ -138,7 +141,7 @@ class DbStore:
     def write_groups(self, gallery: str, rows: list[PhotoAnalysis]) -> None:
         """CATEGORIZE 의 컬럼만 UPDATE — 행은 score 가 만들어 두었다."""
         params = [(float(r.technical_pct), float(r.aesthetic_pct), _jsonb(r.sub_scores),
-                   int(r.cluster_id), int(r.cluster_rank), int(r.embed_group_id), int(r.photo_id))
+                   int(r.burst_id), int(r.burst_rank), int(r.embed_group_id), int(r.photo_id))
                   for r in rows]
         if not params:
             return

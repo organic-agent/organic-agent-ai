@@ -125,48 +125,48 @@ def _schema(concepts: list[str], with_confidence: bool = True) -> dict:
 
 
 @dataclass
-class _Group:
-    gid: int
+class _EmbedGroup:
+    embed_group_id: int
     members: list[int]              # ordered-row 인덱스
     centroid: np.ndarray            # concat 공간, 정규화됨
-    rep_row: int                    # 대표 사진의 ordered-row 인덱스 (중심 최근접)
-    far_row: int                    # 중심에서 가장 먼 멤버 — spread 클 때 두 번째 대표
+    sample_row: int                    # 대표 사진의 ordered-row 인덱스 (중심 최근접)
+    far_sample_row: int                    # 중심에서 가장 먼 멤버 — spread 클 때 두 번째 대표
     spread: float                   # 그룹 내 평균 중심 거리(1-cos). 이질성의 척도
 
 
-def _build_groups(gids: np.ndarray, X: np.ndarray) -> list[_Group]:
+def _build_embed_groups(embed_group_ids: np.ndarray, X: np.ndarray) -> list[_EmbedGroup]:
     """크기 내림차순. 대표 = concat 공간에서 그룹 중심에 가장 가까운 사진."""
     by: dict[int, list[int]] = {}
-    for i, g in enumerate(gids):
+    for i, g in enumerate(embed_group_ids):
         if int(g) >= 0:
             by.setdefault(int(g), []).append(i)
     out = []
-    for gid, members in by.items():
+    for embed_group_id, members in by.items():
         c = X[members].mean(axis=0)
         c = c / max(float(np.linalg.norm(c)), 1e-8)
         sims = X[members] @ c
-        rep = members[int(np.argmax(sims))]
+        sample = members[int(np.argmax(sims))]
         far = members[int(np.argmin(sims))]
-        out.append(_Group(gid=gid, members=members, centroid=c, rep_row=rep,
-                          far_row=far, spread=float(np.mean(1.0 - sims))))
-    out.sort(key=lambda g: (-len(g.members), g.gid))
+        out.append(_EmbedGroup(embed_group_id=embed_group_id, members=members, centroid=c, sample_row=sample,
+                          far_sample_row=far, spread=float(np.mean(1.0 - sims))))
+    out.sort(key=lambda g: (-len(g.members), g.embed_group_id))
     return out
 
 
-def _vlm_name(llm: LlmClient, chunks: list[list[tuple[_Group, list[bytes]]]], concepts: list[str],
+def _vlm_name(llm: LlmClient, chunks: list[list[tuple[_EmbedGroup, list[bytes]]]], concepts: list[str],
               k) -> tuple[dict[int, dict], int]:
-    """청크 vision 호출들 → {gid: {parent, proposed_parent, concept, confidence}}, 호출 수."""
+    """청크 vision 호출들 → {embed_group_id: {parent, proposed_parent, concept, confidence}}, 호출 수."""
     schema = _schema(concepts)
 
-    def one(chunk: list[tuple[_Group, list[bytes]]]) -> dict[int, dict]:
+    def one(chunk: list[tuple[_EmbedGroup, list[bytes]]]) -> dict[int, dict]:
         parts: list = [("text", f"큰 분류 목록: {', '.join(concepts)}\n그룹 {len(chunk)}개의 대표 사진이다.")]
         for g, imgs in chunk:
             suffix = " — 대표 2장" if len(imgs) > 1 else ""
-            parts.append(("text", f"[그룹 {g.gid}] {len(g.members)}장{suffix}"))
+            parts.append(("text", f"[그룹 {g.embed_group_id}] {len(g.members)}장{suffix}"))
             for img in imgs:
                 parts.append(("image", img))
         out = llm.complete_json(SYSTEM, parts, schema, k.naming_max_tokens)
-        wanted = {g.gid for g, _ in chunk}
+        wanted = {g.embed_group_id for g, _ in chunk}
         got = {int(item["group_id"]): item for item in out.get("groups", []) if int(item["group_id"]) in wanted}
         missing = wanted - set(got)
         if missing:
@@ -177,15 +177,15 @@ def _vlm_name(llm: LlmClient, chunks: list[list[tuple[_Group, list[bytes]]]], co
     # 예외는 지금과 같이 전파한다(map 이 첫 예외를 올린다) — 통합 호출과 달리 청크 결과는 산출물 자체라 삼키지 않는다.
     with ThreadPoolExecutor(max_workers=max(1, min(k.naming_parallel, len(chunks)))) as pool:
         results = list(pool.map(one, chunks))
-    named = {gid: item for got in results for gid, item in got.items()}
+    named = {embed_group_id: item for got in results for embed_group_id, item in got.items()}
     return named, len(chunks)
 
 
 def _merge_names(llm: LlmClient, named: dict[int, dict], sizes: dict[int, int], concepts: list[str],
                  k) -> dict[int, dict]:
     """통합 텍스트 호출 1회 — 청크 사이 concept 표기 통일. 실패하면 원본 유지."""
-    lines = [f"그룹 {gid}: parent={d['parent']}, concept={d['concept']}, {sizes[gid]}장"
-             for gid, d in sorted(named.items())]
+    lines = [f"그룹 {embed_group_id}: parent={d['parent']}, concept={d['concept']}, {sizes[embed_group_id]}장"
+             for embed_group_id, d in sorted(named.items())]
     try:
         out = llm.complete_json(MERGE_SYSTEM, "\n".join(lines), _schema(concepts, with_confidence=False),
                                 k.naming_max_tokens)
@@ -193,9 +193,9 @@ def _merge_names(llm: LlmClient, named: dict[int, dict], sizes: dict[int, int], 
         log.warning("이름 통합 호출 실패 (%s) — 청크 결과 유지", exc)
         return named
     for item in out.get("groups", []):
-        gid = int(item["group_id"])
-        if gid in named and str(item["parent"]) == named[gid]["parent"]:
-            named[gid]["concept"] = str(item["concept"])
+        embed_group_id = int(item["group_id"])
+        if embed_group_id in named and str(item["parent"]) == named[embed_group_id]["parent"]:
+            named[embed_group_id]["concept"] = str(item["concept"])
     return named
 
 
@@ -212,9 +212,9 @@ def _load(store: Store, gallery: str) -> Grouped:
     return Grouped(rows=rows, X=concat_space(E, C))
 
 
-def _rep_images(store: Store, gallery: str, rows, reps: dict[int, list[int]], long_edge: int) -> dict[int, list[bytes]]:
+def _sample_images(store: Store, gallery: str, rows, samples: dict[int, list[int]], long_edge: int) -> dict[int, list[bytes]]:
     """대표 사진 → LLM 에 보낼 JPEG. 경로는 한 번에 받고(배치 SELECT + 병렬 다운로드), 축소도 스레드로 겹친다."""
-    wanted = sorted({rows[i].photo_id for rr in reps.values() for i in rr})
+    wanted = sorted({rows[i].photo_id for rr in samples.values() for i in rr})
     paths = store.preview_paths(gallery, wanted)
 
     def shrink(pid: str) -> tuple[str, bytes]:
@@ -222,8 +222,8 @@ def _rep_images(store: Store, gallery: str, rows, reps: dict[int, list[int]], lo
 
     with ThreadPoolExecutor(max_workers=min(8, max(1, len(paths)))) as pool:
         encoded = dict(pool.map(shrink, list(paths)))
-    return {gid: [encoded[rows[i].photo_id] for i in rr if rows[i].photo_id in encoded]
-            for gid, rr in reps.items()}
+    return {embed_group_id: [encoded[rows[i].photo_id] for i in rr if rows[i].photo_id in encoded]
+            for embed_group_id, rr in samples.items()}
 
 
 def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
@@ -237,15 +237,15 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
     if grouped is None:
         grouped = _load(store, gallery)
     rows, X = grouped.rows, grouped.X
-    gids = np.array([r.embed_group_id for r in rows], dtype=int)
+    embed_group_ids = np.array([r.embed_group_id for r in rows], dtype=int)
 
-    groups = _build_groups(gids, X)
+    embed_groups = _build_embed_groups(embed_group_ids, X)
 
     # ② VLM 대상 선정 — 크기 내림차순으로 사진 커버리지 목표까지, 그룹 수 상한 안에서.
-    total_photos = sum(len(g.members) for g in groups)
-    top: list[_Group] = []
+    total_photos = sum(len(g.members) for g in embed_groups)
+    top: list[_EmbedGroup] = []
     covered = 0
-    for g in groups:
+    for g in embed_groups:
         if len(top) >= k.naming_max_groups:
             break
         if top and covered >= k.naming_coverage * total_photos:
@@ -254,11 +254,11 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
         covered += len(g.members)
 
     # 고립 그룹 보강(#118) — 커버리지 밖이라도 이름을 빌려올 이웃이 없으면 직접 보여 준다.
-    # 판정 거리는 nearest_tau 가 아니라 group_distance 다: 클러스터가 "다른 그룹"이라고 가른 거리보다 먼
+    # 판정 거리는 nearest_tau 가 아니라 group_distance 다: 계층 군집이 "다른 그룹"이라고 가른 거리보다 먼
     # 그룹이 이름만 빌려 가는 것이 오배정의 경로였다(운영 갤러리 25: 검은 배경 그룹이 0.239 로 τ=0.25 를
     # 통과해 '화이트 벽 배경'을 가져갔다). 먼 것부터 넣는다 — 하나 넣으면 그 주변의 고립도가 함께 풀린다.
-    chosen = {g.gid for g in top}
-    rest = [g for g in groups if g.gid not in chosen]
+    chosen = {g.embed_group_id for g in top}
+    rest = [g for g in embed_groups if g.embed_group_id not in chosen]
     isolated = 0
     while rest and len(top) < k.naming_max_groups:
         C = np.stack([g.centroid for g in top])
@@ -273,27 +273,27 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
         log.info("[naming] 고립 그룹 %d개를 대상에 추가 — 최근접 이름이 %.2f 보다 멀다", isolated, k.group_distance)
 
     # 대표 이미지 — spread 큰(이질적) 그룹은 중심 최근접 + 최원점 2장 (review-v3-design.md (2))
-    reps: dict[int, list[int]] = {}
+    samples: dict[int, list[int]] = {}
     for g in top:
-        rep_rows = [g.rep_row]
-        if g.spread > k.naming_spread_extra and g.far_row != g.rep_row:
-            rep_rows.append(g.far_row)
-        reps[g.gid] = rep_rows
-    images = _rep_images(store, gallery, rows, reps, k.naming_image_long_edge)
-    with_img: list[tuple[_Group, list[bytes]]] = []
-    extra_reps = 0
+        sample_rows = [g.sample_row]
+        if g.spread > k.naming_spread_extra and g.far_sample_row != g.sample_row:
+            sample_rows.append(g.far_sample_row)
+        samples[g.embed_group_id] = sample_rows
+    images = _sample_images(store, gallery, rows, samples, k.naming_image_long_edge)
+    with_img: list[tuple[_EmbedGroup, list[bytes]]] = []
+    extra_samples = 0
     for g in top:
-        imgs = images.get(g.gid, [])
+        imgs = images.get(g.embed_group_id, [])
         if not imgs:
-            log.warning("그룹 %d 대표 사진(%s) 이미지 없음 — nearest 배정으로", g.gid, rows[g.rep_row].photo_id)
+            log.warning("그룹 %d 대표 사진(%s) 이미지 없음 — nearest 배정으로", g.embed_group_id, rows[g.sample_row].photo_id)
             continue
         if len(imgs) > 1:
-            extra_reps += 1
+            extra_samples += 1
         with_img.append((g, imgs))
 
     # 청크는 그룹 단위를 깨지 않으면서 이미지 수(naming_chunk)로 자른다 — 비용 상한의 단위가 이미지라서.
-    chunks: list[list[tuple[_Group, list[bytes]]]] = []
-    cur: list[tuple[_Group, list[bytes]]] = []
+    chunks: list[list[tuple[_EmbedGroup, list[bytes]]]] = []
+    cur: list[tuple[_EmbedGroup, list[bytes]]] = []
     cur_imgs = 0
     for item in with_img:
         if cur and cur_imgs + len(item[1]) > k.naming_chunk:
@@ -305,10 +305,10 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
         chunks.append(cur)
     named, calls = _vlm_name(llm, chunks, concepts, k)
     if len(chunks) > 1 and named:
-        named = _merge_names(llm, named, {g.gid: len(g.members) for g in groups}, concepts, k)
+        named = _merge_names(llm, named, {g.embed_group_id: len(g.members) for g in embed_groups}, concepts, k)
         calls += 1
 
-    named_groups = [g for g in groups if g.gid in named]
+    named_groups = [g for g in embed_groups if g.embed_group_id in named]
     if not named_groups:
         raise RuntimeError(f"갤러리 {gallery}: VLM 이 어떤 그룹에도 이름을 붙이지 못했다")
 
@@ -316,23 +316,23 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
     named_centroids = np.stack([g.centroid for g in named_groups])
     assignments: list[ConceptAssignment] = []
     counts = {"vlm": 0, "nearest": 0, "review": 0, "bg": 0}
-    for g in groups:
+    for g in embed_groups:
         # ④ 저장된 사진별 CLIP 1층 라벨의 그룹 다수결 — SCORE 가 계산해 둔 것
         clip_concept = majority([rows[i].sub_scores.get(CLIP_CONCEPT_KEY) for i in g.members])
-        if g.gid in named:
-            d = named[g.gid]
+        if g.embed_group_id in named:
+            d = named[g.embed_group_id]
             concept, detail = str(d["parent"]), str(d["concept"])
             conf = min(1.0, max(0.0, float(d["confidence"])))
             # 이름은 대표 사진을 보고 지었다 — 대표와 배경이 다른 멤버는 그 이름이 안 맞을 수 있다.
-            bg_off = _bg_outliers(rows, g.members, rows[g.rep_row].sub_scores.get("bg_luma"))
+            bg_off = _bg_outliers(rows, g.members, rows[g.sample_row].sub_scores.get("bg_luma"))
             if bg_off:
                 counts["bg"] += 1
                 log.info("[naming] 그룹 %d: 대표와 배경이 %.0f 넘게 다른 사진 %d장 — 확인 필요",
-                         g.gid, BG_GAP, bg_off)
+                         g.embed_group_id, BG_GAP, bg_off)
             review = conf < k.review_confidence or bg_off > 0 or (
                 concept != ETC and clip_concept is not None and clip_concept != concept)
             assignments.append(ConceptAssignment(
-                embed_group_id=g.gid, concept_name=concept, detail_name=detail,
+                embed_group_id=g.embed_group_id, concept_name=concept, detail_name=detail,
                 confidence=conf, assigned_by="vlm",
                 proposed_concept=(str(d["proposed_parent"]) if concept == ETC and d.get("proposed_parent") else None),
                 clip_concept=clip_concept, needs_review=review))
@@ -344,7 +344,7 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
             if dist > k.nearest_tau:
                 concept, detail, review = ETC, ETC, True
             else:
-                src = named[named_groups[j].gid]
+                src = named[named_groups[j].embed_group_id]
                 concept, detail = str(src["parent"]), str(src["concept"])
                 review = concept != ETC and clip_concept is not None and clip_concept != concept
                 # 이름을 빌려온 그룹과 배경 밝기가 다르면, 가까워도 같은 세트가 아니다 —
@@ -355,9 +355,9 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
                     counts["bg"] += 1
                     review = True
                     log.info("[naming] 그룹 %d(배경 %.0f): 그룹 %d '%s'(배경 %.0f) 의 이름을 빌렸지만 배경이 다르다 — 확인 필요",
-                             g.gid, own_bg, named_groups[j].gid, detail, src_bg)
+                             g.embed_group_id, own_bg, named_groups[j].embed_group_id, detail, src_bg)
             assignments.append(ConceptAssignment(
-                embed_group_id=g.gid, concept_name=concept, detail_name=detail,
+                embed_group_id=g.embed_group_id, concept_name=concept, detail_name=detail,
                 # confidence 는 vlm 의 자기 확신이 아니라 1 - 중심 거리다 — 다른 축의 값이 한 컬럼에 온다.
                 confidence=round(max(0.0, 1.0 - dist), 3), assigned_by="nearest",
                 clip_concept=clip_concept, needs_review=review))
@@ -372,11 +372,11 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
         per_concept[a.concept_name] = per_concept.get(a.concept_name, 0) + 1
     return {
         "gallery": gallery, "pipeline": "v3", "mode": "naming",
-        "photos": len(rows), "groups": len(groups),
+        "photos": len(rows), "embedGroups": len(embed_groups),
         "vlmGroups": counts["vlm"], "nearestGroups": counts["nearest"],
         "isolatedGroups": isolated, "bgMismatchGroups": counts["bg"],
         "needsReview": counts["review"], "concepts": per_concept,
         "coverage": round(covered / total_photos, 3) if total_photos else 0.0,
-        "extraReps": extra_reps,
+        "extraReps": extra_samples,
         "llmCalls": calls, "elapsedSeconds": round(time.monotonic() - started, 1),
     }

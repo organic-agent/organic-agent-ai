@@ -6,7 +6,7 @@
     score 의 원점수·subjects·CLIP 1층 라벨 (sub_scores)
 
     백분위          technical_score · aesthetic_score · sharpness → *_pct (갤러리 안 순위)
-    연사 클러스터    E, 카메라 파티션 ∧ 순서 창 ∧ cos ≥ threshold      → cluster_id · cluster_rank
+    연사            E, 카메라 파티션 ∧ 순서 창 ∧ cos ≥ threshold      → burst_id · burst_rank
     임베딩 그룹      X = concat(E ⊕ C), 평균연결 계층 클러스터, 적응 임계 → embed_group_id
     → store.write_groups (pct · cluster · group · sub_scores 만 — subjects·clip_embedding 은 SCORE 의 것)
     → naming.run (Bedrock 이름 · 소그룹 최근접 · 저장된 CLIP 1층 라벨 다수결 검증) → ai_concept_assignments
@@ -25,11 +25,11 @@ import time
 
 import numpy as np
 
-from categorize.config.settings import MODEL_VERSION, Settings
+from categorize.config.settings import PIPELINE_VERSION, Settings
 from categorize.domain.analysis import PhotoAnalysis, Store
 from categorize.domain.photo import PhotoRef
 from categorize.domain.run import CategorizeResult, Grouped
-from categorize.service import cluster, grouping
+from categorize.service import burst, grouping
 
 log = logging.getLogger(__name__)
 
@@ -71,14 +71,14 @@ def _rep_reason(best: PhotoAnalysis, others: list[PhotoAnalysis]) -> str:
 
 
 def assign_ranks(rows: list[PhotoAnalysis]) -> None:
-    """연사 클러스터 안 대표(cluster_rank 0)와 사유. V45에는 컬럼이 없어 sub_scores.rank_reason 으로."""
-    by_cluster: dict[int, list[PhotoAnalysis]] = {}
+    """연사 대표(burst_rank 0)와 사유. V45에는 컬럼이 없어 sub_scores.rank_reason 으로."""
+    by_burst: dict[int, list[PhotoAnalysis]] = {}
     for r in rows:
-        by_cluster.setdefault(r.cluster_id, []).append(r)
-    for members in by_cluster.values():
+        by_burst.setdefault(r.burst_id, []).append(r)
+    for members in by_burst.values():
         members.sort(key=_rep_key)
         for rank, m in enumerate(members):
-            m.cluster_rank = rank
+            m.burst_rank = rank
             if rank == 0:
                 m.sub_scores["rank_reason"] = _rep_reason(m, members[1:])
 
@@ -93,7 +93,7 @@ def group(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings) 
     # 운영 7,189장에서 START→그룹 적재가 45.8s 인데 로그가 없어 읽기/계산을 못 나눴다(#111) — 단계별 소요를 남긴다.
     log.info("[categorize] 갤러리 %s 읽기: %d행 · dinov3 %d · clip %d · %.1fs",
              gallery, len(data.rows), len(data.embeddings), len(data.clip_embeddings), time.monotonic() - started)
-    scored = {r.photo_id: r for r in data.rows if r.model_version == MODEL_VERSION}
+    scored = {r.photo_id: r for r in data.rows if r.pipeline_version == PIPELINE_VERSION}
     clips = data.clip_embeddings
     embs = data.embeddings
     if not embs:
@@ -120,27 +120,27 @@ def group(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings) 
         r.sub_scores["sharpness_pct"] = v
 
     t0 = time.monotonic()
-    parts = cluster.partition_order([r.camera for r in ordered_refs], [r.taken_at for r in ordered_refs])
-    cids = cluster.cluster_bursts_partitioned(E, parts, k.burst_threshold, k.burst_window)
+    parts = burst.partition_order([r.camera for r in ordered_refs], [r.taken_at for r in ordered_refs])
+    burst_ids = burst.cluster_bursts_partitioned(E, parts, k.burst_threshold, k.burst_window)
     t1 = time.monotonic()
     X = concat_space(E, C)
-    gids, used_d = grouping.embed_groups(X, k.group_distance, k.group_min_groups,
+    embed_group_ids, used_d = grouping.embed_groups(X, k.group_distance, k.group_min_groups,
                                           k.group_max_share, k.group_frag_share)
-    for r, c, g in zip(ordered, cids, gids):
-        r.cluster_id, r.embed_group_id = int(c), int(g)
+    for r, c, g in zip(ordered, burst_ids, embed_group_ids):
+        r.burst_id, r.embed_group_id = int(c), int(g)
     assign_ranks(ordered)
     t2 = time.monotonic()
     log.info("[categorize] 갤러리 %s 그룹화: %d장 · 연사 %d (%.1fs) · 그룹 %d (%.1fs) · 읽기 뒤 누적 %.1fs",
-             gallery, len(ordered), int(cids.max()) + 1 if len(cids) else 0, t1 - t0,
-             int(gids.max()) + 1 if len(gids) else 0, t2 - t1, t2 - started)
+             gallery, len(ordered), int(burst_ids.max()) + 1 if len(burst_ids) else 0, t1 - t0,
+             int(embed_group_ids.max()) + 1 if len(embed_group_ids) else 0, t2 - t1, t2 - started)
 
     store.write_groups(gallery, ordered)
 
     result.photos = len(ordered)
-    result.clusters = int(cids.max()) + 1 if len(cids) else 0
-    result.groups = grouping.group_profile(gids)
+    result.bursts = int(burst_ids.max()) + 1 if len(burst_ids) else 0
+    result.embed_groups = grouping.group_profile(embed_group_ids)
     result.group_distance = used_d
-    result.similarity_profile = cluster.similarity_profile(E, k.burst_window) if len(E) > 1 else {}
+    result.similarity_profile = burst.similarity_profile(E, k.burst_window) if len(E) > 1 else {}
     result.elapsed_seconds = time.monotonic() - started
     return Grouped(rows=ordered, X=X), result
 

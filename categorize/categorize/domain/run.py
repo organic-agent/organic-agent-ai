@@ -17,7 +17,7 @@ from categorize.domain.analysis import PhotoAnalysis
 class Grouped:
     """그룹화가 끝난 갤러리 — naming 의 입력. [rows] 와 [X] 는 같은 순서(화면 순)다."""
 
-    rows: list[PhotoAnalysis]   # 점수·벡터가 다 있는 사진, cluster_id·embed_group_id 채워짐
+    rows: list[PhotoAnalysis]   # 점수·벡터가 다 있는 사진, burst_id·embed_group_id 채워짐
     X: np.ndarray               # concat(DINOv3 ⊕ CLIP) 정규화 공간, rows 와 행이 맞는다
 
 
@@ -27,8 +27,9 @@ class CategorizeResult:
     pipeline: str = "v3"
     mode: str = "categorize"
     photos: int = 0
-    clusters: int = 0
-    groups: dict = field(default_factory=dict)
+    # [GLOSSARY-1 2026-09-27] clusters → bursts, groups → embed_groups (결과 키도 "bursts"·"embedGroups")
+    bursts: int = 0
+    embed_groups: dict = field(default_factory=dict)
     group_distance: float = 0.0
     similarity_profile: dict = field(default_factory=dict)
     embeddings_source: str = "dinov3"
@@ -38,8 +39,8 @@ class CategorizeResult:
     def to_dict(self) -> dict:
         return {
             "gallery": self.gallery, "pipeline": self.pipeline, "mode": self.mode,
-            "photos": self.photos, "clusters": self.clusters,
-            "groups": {k: round(v, 3) for k, v in self.groups.items()},
+            "photos": self.photos, "bursts": self.bursts,
+            "embedGroups": {k: round(v, 3) for k, v in self.embed_groups.items()},
             "groupDistance": self.group_distance,
             "similarityProfile": {k: round(v, 3) for k, v in self.similarity_profile.items()},
             "embeddingsSource": self.embeddings_source,

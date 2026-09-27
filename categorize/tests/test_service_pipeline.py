@@ -23,10 +23,10 @@ def test_concat_space_is_mean_of_cosines():
 
 
 def test_assign_ranks_puts_reason_in_sub_scores():
-    rows = [PhotoAnalysis(photo_id="a", technical_pct=90, sub_scores={"sharpness": 100.0}, cluster_id=0),
-            PhotoAnalysis(photo_id="b", technical_pct=10, sub_scores={"sharpness": 10.0}, cluster_id=0)]
+    rows = [PhotoAnalysis(photo_id="a", technical_pct=90, sub_scores={"sharpness": 100.0}, burst_id=0),
+            PhotoAnalysis(photo_id="b", technical_pct=10, sub_scores={"sharpness": 10.0}, burst_id=0)]
     assign_ranks(rows)
-    best = next(r for r in rows if r.cluster_rank == 0)
+    best = next(r for r in rows if r.burst_rank == 0)
     assert best.photo_id == "a"
     assert best.sub_scores["rank_reason"] == "technical"
 
@@ -45,12 +45,12 @@ def test_pipeline_groups_then_names(tmp_path, caplog):
     assert len(stage_logs) == 2
     assert stage_logs[0].startswith(f"[categorize] 갤러리 g 읽기: {len(rows)}행 · dinov3 {len(rows)} · clip {len(rows)} · ")
     assert stage_logs[1].startswith(f"[categorize] 갤러리 g 그룹화: {len(rows)}장 · 연사 {len(rows)} (")
-    assert f"· 그룹 {int(result['groups']['groups'])} (" in stage_logs[1] and "읽기 뒤 누적" in stage_logs[1]
+    assert f"· 그룹 {int(result['embedGroups']['embedGroups'])} (" in stage_logs[1] and "읽기 뒤 누적" in stage_logs[1]
 
     assert result["mode"] == "categorize" and result["photos"] == len(rows)
     assert result["embeddingsSource"] == "dinov3"
-    assert result["clusters"] == len(rows)
-    assert result["naming"]["vlmGroups"] == result["groups"]["groups"]
+    assert result["bursts"] == len(rows)
+    assert result["naming"]["vlmGroups"] == result["embedGroups"]["embedGroups"]
     back = store.read_analysis("g")
     assert all(r.embed_group_id >= 0 and "sharpness_pct" in r.sub_scores for r in back)
     assert all(a.assigned_by == "vlm" for a in store.read_assignments("g"))
@@ -78,4 +78,4 @@ def test_pipeline_reads_gallery_once_and_hands_grouped_to_naming(tmp_path):
     result = pipeline.run(counting, "g", refs, settings, FakeLlm(), job_id=None)
 
     assert counting.reads == 1
-    assert result["naming"]["vlmGroups"] == result["groups"]["groups"]
+    assert result["naming"]["vlmGroups"] == result["embedGroups"]["embedGroups"]
