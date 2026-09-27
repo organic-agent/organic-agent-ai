@@ -3,7 +3,7 @@
     ARNIQA(spaq)                → technical_score
     CLIP ViT-L/14 + LAION MLP   → aesthetic_score
         CLIP 벡터는 저장한다 (photo_analysis.clip_embedding) — categorize 가 재계산 없이 읽는다
-        같은 벡터에 텍스트 프롬프트를 대어 subjects(피사체)·clip_parent(부모 검증 라벨)도 여기서
+        같은 벡터에 텍스트 프롬프트를 대어 subjects(피사체)·clip_parent(컨셉 검증 라벨, 키 이름은 용어 2단계에서)도 여기서
     고전 지표                    → sharpness · highlight_clip · shadow_clip · mean_luma (sub_scores)
     → store.write_scores  (subjects · sub_scores · clip_embedding · model_version 만)
 
@@ -11,7 +11,7 @@
 묶는다(#51 · #68). 배치가 실패하면 그 묶음만 한 장씩으로 물러난다 — 한 장 실패가 묶음·잡을 죽이지 않는다.
 GPU(#68)에서는 디코드·classical 을 `decode_workers` 스레드가 두 묶음 앞서 준비한다 — 그러지 않으면 GPU 가 4 vCPU 의 JPEG
 디코드를 기다리며 논다. Lambda(CPU) 는 0 이라 예전처럼 한 스레드에서 순서대로.
-사진마다 독립이라 재개가 쉽다: 같은 MODEL_VERSION 이고 CLIP 벡터가 저장된 사진은 건너뛴다.
+사진마다 독립이라 재개가 쉽다: 같은 PIPELINE_VERSION 이고 CLIP 벡터가 저장된 사진은 건너뛴다.
 `write_batch` 장마다 commit 하고, `remaining_seconds` 가 있으면(Lambda) 배치 경계에서 데드라인을 보고 멈춘다 —
 결과의 `stopped`·`remaining` 으로 드러나고, 재호출은 handler 의 몫이다(embedder #24 와 같은 규칙).
 임베더(DINOv3) 벡터 유무는 보지 않는다 — 그건 categorize 의 입력 조건이다.
@@ -27,7 +27,7 @@ from typing import Callable
 
 import numpy as np
 
-from score.config.settings import MODEL_VERSION, Settings
+from score.config.settings import PIPELINE_VERSION, Settings
 from score.domain.photo import PhotoAnalysis, PhotoRef
 from score.domain.run import ScoreResult
 from score.infrastructure.images import load_image
@@ -69,8 +69,8 @@ def _load_runners():
         torch.set_num_threads(int(threads))
     from score.infrastructure.runners import ArniqaRunner, LaionRunner
     from score.service import classical
-    from score.service.subjects import ParentTagger, SubjectsTagger
-    return classical, ArniqaRunner, LaionRunner, ParentTagger, SubjectsTagger
+    from score.service.subjects import ConceptTagger, SubjectsTagger
+    return classical, ArniqaRunner, LaionRunner, ConceptTagger, SubjectsTagger
 
 
 def _as_dt(value) -> datetime | None:
@@ -90,13 +90,13 @@ class Scorer:
     def __init__(self, settings: Settings) -> None:
         k = settings.knobs
         t0 = time.monotonic()
-        classical, ArniqaRunner, LaionRunner, ParentTagger, SubjectsTagger = _load_runners()
+        classical, ArniqaRunner, LaionRunner, ConceptTagger, SubjectsTagger = _load_runners()
         self.classical = classical
         self.laion = LaionRunner(device=k.device, fp16=k.fp16)
         self.arniqa = ArniqaRunner(long_edge=k.arniqa_long_edge, device=k.device, fp16=k.fp16)
         self.device = getattr(self.laion, "device", None)
         self.tagger = SubjectsTagger(self.laion) if k.subjects_zero_shot else None
-        self.parent_tagger = ParentTagger(self.laion)
+        self.concept_tagger = ConceptTagger(self.laion)
         self.load_seconds = time.monotonic() - t0
         log.info("[score] 러너 로드 %.1fs · %s · clip_batch=%d arniqa_batch=%d fp16=%s decode_workers=%d",
                  self.load_seconds, _compute_env(self.device), k.clip_batch, k.arniqa_batch, k.fp16, k.decode_workers)
@@ -123,7 +123,7 @@ class Scorer:
               stage: dict[str, float], remaining_seconds: Callable[[], float] | None = None) -> None:
         """`todo` 를 계산해 store 에 쓴다. result·stage 를 채운다(호출자가 만든 것)."""
         k = settings.knobs
-        classical, laion, arniqa, tagger, parent_tagger = self.classical, self.laion, self.arniqa, self.tagger, self.parent_tagger
+        classical, laion, arniqa, tagger, concept_tagger = self.classical, self.laion, self.arniqa, self.tagger, self.concept_tagger
         result.subjects_used = tagger is not None
         stage["load"] = self.load_seconds
         #: 장별 누적 시간 — 어디서 시간이 가는지 로그로 본다(#51). decode·clip·arniqa 는 묶음 단위라 묶음 시간을 장수로 나눈다.
@@ -229,10 +229,10 @@ class Scorer:
                         if tagger is not None:
                             subjects, margin = tagger.tag(clip_emb)
                             sub["subjects_margin"] = margin
-                        sub["clip_parent"] = parent_tagger.tag(clip_emb)
+                        sub["clip_parent"] = concept_tagger.tag(clip_emb)
                         t_stage["tag"] += time.monotonic() - t
                         rows.append(PhotoAnalysis(photo_id=ref.photo_id, subjects=subjects,
-                                                  sub_scores=sub, model_version=MODEL_VERSION))
+                                                  sub_scores=sub, pipeline_version=PIPELINE_VERSION))
                         clips[ref.photo_id] = clip_emb
                         result.processed += 1
                         t_photo += time.monotonic() - t0 + t_shared
@@ -281,7 +281,7 @@ def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, fo
     stage: dict[str, float] = {}
 
     def fresh(r: PhotoAnalysis) -> bool:
-        if r.model_version != MODEL_VERSION:
+        if r.pipeline_version != PIPELINE_VERSION:
             return False
         if since is None:
             return True

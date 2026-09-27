@@ -16,10 +16,10 @@ def test_module_never_imports_torch():
     subprocess.run([sys.executable, "-c", code], check=True, cwd=MODULE_ROOT)
 
 
-#: score 설정 파일에서 1층 목록·파이프라인 버전의 변수 이름 — score 가 정한 이름이다.
-# [GLOSSARY-1 2026-09-27] score 쪽 이름 변경(PARENTS → CONCEPTS, MODEL_VERSION → PIPELINE_VERSION)은 score 커밋에서 맞춘다.
-SCORE_CONCEPTS_NAME = "PARENTS"
-SCORE_PIPELINE_VERSION_NAME = "MODEL_VERSION"
+#: score 설정 파일에서 1층 목록·파이프라인 버전의 변수 이름. 용어집 이후 categorize 와 같은 이름이다.
+# [GLOSSARY-1 2026-09-27] score 도 PARENTS → CONCEPTS, MODEL_VERSION → PIPELINE_VERSION 으로 맞췄다.
+SCORE_CONCEPTS_NAME = "CONCEPTS"
+SCORE_PIPELINE_VERSION_NAME = "PIPELINE_VERSION"
 
 
 def _literal(path: Path, name: str):

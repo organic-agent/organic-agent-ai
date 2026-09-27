@@ -8,15 +8,15 @@
                     확신 라벨 36/36 정답. margin(1위-2위 코사인 차) < 0.01 이면 `unknown` —
                     이 구간의 argmax 는 커플을 신부/신랑 단독으로 오인하는 경우(신랑이 등만 보이는 컷 등)가
                     84장 중 9장이었다. wes 가 세부폴더 칩(BRIDE/GROOM/COUPLE/GROUP)의 다수결에 쓴다.
-    ParentTagger    부모(큰 분류) 고정 목록 — 검증 전용. 822장 실측 일치 79%라 판정에는 못 쓰고,
-                    naming 이 그룹 다수결을 VLM 부모와 비교해 needs_review 를 켠다. '기타'는 후보에 없다.
+    ConceptTagger   컨셉(1층) 고정 목록 — 검증 전용. 822장 실측 일치 79%라 판정에는 못 쓰고,
+                    naming 이 그룹 다수결을 VLM 컨셉과 비교해 needs_review 를 켠다. '기타'는 후보에 없다.
 """
 
 from __future__ import annotations
 
 import numpy as np
 
-from score.config.settings import PARENT_PROMPTS, PARENTS
+from score.config.settings import CONCEPT_PROMPTS, CONCEPTS
 
 SUBJECTS = ("bride", "groom", "couple", "group")
 
@@ -63,12 +63,12 @@ class SubjectsTagger(_ZeroShot):
         return labels[0], margin
 
 
-class ParentTagger(_ZeroShot):
+class ConceptTagger(_ZeroShot):
     def __init__(self, laion_runner) -> None:
-        super().__init__(laion_runner, {p: PARENT_PROMPTS[p] for p in PARENTS if p in PARENT_PROMPTS})
+        super().__init__(laion_runner, {p: CONCEPT_PROMPTS[p] for p in CONCEPTS if p in CONCEPT_PROMPTS})
 
     def tag(self, image_emb: np.ndarray) -> str | None:
-        """사진 한 장의 부모 argmax. 후보가 없으면 None."""
+        """사진 한 장의 컨셉 argmax. 후보가 없으면 None."""
         if not len(self._T):
             return None
         labels, _ = self.ranked(image_emb)

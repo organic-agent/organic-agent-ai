@@ -14,5 +14,5 @@ embedder·score 와 같은 층 구조(#131): controller → service → reposito
 
 입력은 전부 DB 에 저장된 것이다 — embedder 의 embedding, score 의 sub_scores·subjects·clip_embedding·model_version(필드 pipeline_version).
 실제 폴더(concept_folders/detail_folders)는 wes 가 ai_concept_assignments 를 읽어 만든다(POST /concept-folders/ai).
-score 와 공유하는 계약: PIPELINE_VERSION · CONCEPTS(score 쪽 이름은 PARENTS) · photo_analysis 컬럼 경계 (config/settings.py 머리말).
+score 와 공유하는 계약: PIPELINE_VERSION · CONCEPTS(score 도 같은 이름) · photo_analysis 컬럼 경계 (config/settings.py 머리말).
 """

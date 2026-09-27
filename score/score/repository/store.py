@@ -4,7 +4,7 @@
 categorize 의 컬럼, embedding·embedding_model 은 embedder 의 컬럼이라 **건드리지 않는다**(UPSERT 의 SET 절이
 그 경계다). photo_ratings · photo_selection_items 는 읽지도 않는다(CLAUDE.md).
 
-읽기는 재개 판정용이다 — 같은 MODEL_VERSION 이고 CLIP 벡터가 저장된 사진은 건너뛴다.
+읽기는 재개 판정용이다 — 같은 PIPELINE_VERSION 이고 CLIP 벡터가 저장된 사진은 건너뛴다.
 """
 
 from __future__ import annotations
@@ -33,6 +33,12 @@ class Store(Protocol):
 
 
 # ── 로컬 구현 ────────────────────────────────────────────────────────────────
+#: 분석 필드 → analysis.jsonl 키. 키는 photo_analysis 컬럼 이름 그대로 — categorize 의 LocalStore 와 같은 파일 규약.
+# [GLOSSARY-1 2026-09-27] 필드 이름만 용어집으로 바꾸고 파일 키는 유지한다(기존 out/ 파일 호환).
+_ANALYSIS_CACHE_KEY = {"burst_id": "cluster_id", "burst_rank": "cluster_rank", "pipeline_version": "model_version"}
+_ANALYSIS_FIELD = {v: k for k, v in _ANALYSIS_CACHE_KEY.items()}
+
+
 class LocalStore:
     """out/v3/<갤러리 slug>/ 아래 파일. categorize 의 LocalStore 와 같은 파일 규약이라 두 CLI 를 이어 돌릴 수 있다."""
 
@@ -56,7 +62,8 @@ class LocalStore:
         if not p.exists():
             return []
         with p.open(encoding="utf-8") as f:
-            return [PhotoAnalysis(**json.loads(line)) for line in f if line.strip()]
+            return [PhotoAnalysis(**{_ANALYSIS_FIELD.get(k, k): v for k, v in json.loads(line).items()})
+                    for line in f if line.strip()]
 
     def read_clip_embeddings(self, gallery: str) -> tuple[list[str], np.ndarray]:
         d = self._dir(gallery)
@@ -67,7 +74,7 @@ class LocalStore:
 
     def write_scores(self, gallery: str, rows: list[PhotoAnalysis],
                      clip_embeddings: tuple[list[str], np.ndarray]) -> None:
-        """SCORE 의 필드만 덮는다 — 기존 행의 백분위·클러스터·그룹은 그대로, 없던 사진은 새 행."""
+        """score 의 필드만 덮는다 — 기존 행의 백분위·연사·임베딩 그룹은 그대로, 없던 사진은 새 행."""
         by_id = {r.photo_id: r for r in self.read_analysis(gallery)}
         stamp = datetime.now(timezone.utc).isoformat()
         for r in rows:
@@ -76,11 +83,12 @@ class LocalStore:
             if cur is None:
                 by_id[r.photo_id] = r
                 continue
-            for f in ("subjects", "sub_scores", "model_version", "analyzed_at"):
+            for f in ("subjects", "sub_scores", "pipeline_version", "analyzed_at"):
                 setattr(cur, f, getattr(r, f))
         with (self._dir(gallery) / "analysis.jsonl").open("w", encoding="utf-8") as f:
             for r in by_id.values():
-                f.write(json.dumps(asdict(r), ensure_ascii=False) + "\n")
+                f.write(json.dumps({_ANALYSIS_CACHE_KEY.get(k, k): v for k, v in asdict(r).items()},
+                                   ensure_ascii=False) + "\n")
 
         ids, emb = clip_embeddings
         if len(ids):
@@ -114,7 +122,7 @@ class DbStore:
         self.conn = conn or connection.connect(settings)
 
     def read_analysis(self, gallery: str) -> list[PhotoAnalysis]:
-        """재개 판정에 필요한 것만 — photo_id · model_version · analyzed_at."""
+        """재개 판정에 필요한 것만 — photo_id · pipeline_version(컬럼 model_version) · analyzed_at."""
         with self.conn.cursor() as cur:
             cur.execute(
                 "SELECT a.photo_id, a.model_version, a.analyzed_at FROM photo_analysis a JOIN photos p ON p.id = a.photo_id "
@@ -122,7 +130,7 @@ class DbStore:
                 (int(gallery),),
             )
             rows = cur.fetchall()
-        return [PhotoAnalysis(photo_id=str(r[0]), model_version=str(r[1]), analyzed_at=r[2]) for r in rows]
+        return [PhotoAnalysis(photo_id=str(r[0]), pipeline_version=str(r[1]), analyzed_at=r[2]) for r in rows]
 
     def read_clip_embeddings(self, gallery: str) -> tuple[list[str], np.ndarray]:
         """재개 판정용 — 어느 사진에 CLIP 벡터가 있는가. 벡터 값은 categorize 가 읽는다."""
@@ -199,7 +207,7 @@ class DbStore:
         """SCORE 의 컬럼만 UPSERT — subjects · sub_scores · clip_embedding · model_version.
         백분위·클러스터·그룹은 categorize 의 것, embedding·embedding_model 은 embedder 의 것 — 건드리지 않는다."""
         clip_map = dict(zip(*clip_embeddings)) if clip_embeddings[0] else {}
-        params = [(int(r.photo_id), r.subjects, _jsonb(r.sub_scores), clip_map.get(r.photo_id), r.model_version)
+        params = [(int(r.photo_id), r.subjects, _jsonb(r.sub_scores), clip_map.get(r.photo_id), r.pipeline_version)
                   for r in rows]
         if not params:
             return

@@ -19,17 +19,18 @@ MODULE_ROOT = Path(__file__).resolve().parents[2]
 #: `photo_analysis.model_version`. **categorize 모듈의 같은 상수와 값이 같아야 한다** — categorize 는
 #: 이 값과 같은 행만 "점수 있음"으로 읽는다. 값은 v3 시절 그대로 둔다: 이미 적재된 행과 재개(스킵) 판정이
 #: 이 문자열로 묶여 있어, 바꾸면 전 갤러리가 재점수 대상이 된다.
-MODEL_VERSION = "photoselect-v3-a-0.1"
+# [GLOSSARY-1 2026-09-27] MODEL_VERSION → PIPELINE_VERSION (용어집 D3), PARENTS → CONCEPTS, PARENT_PROMPTS → CONCEPT_PROMPTS (용어집: 1층 = concept)
+PIPELINE_VERSION = "photoselect-v3-a-0.1"
 
-#: 큰 분류(부모) 고정 목록. categorize 의 naming 이 같은 목록을 Bedrock 스키마 enum 으로 쓴다 — 두 모듈이 같아야 한다.
+#: 컨셉(1층) 고정 목록. categorize 의 naming 이 같은 목록을 Bedrock 스키마 enum 으로 쓴다 — 두 모듈이 같아야 한다.
 #: 서비스 대상은 결혼식 전 앨범·청첩장용 **스튜디오 컨셉 촬영**뿐이다 — 본식·피로연은 다루지 않으므로
 #: 촬영 종류 분기 없이 목록 하나다. '기타'는 목록에 항상 있다.
-PARENTS: list[str] = ["실내 스튜디오", "하우스·인테리어", "한옥·전통", "야외 정원·건물",
+CONCEPTS: list[str] = ["실내 스튜디오", "하우스·인테리어", "한옥·전통", "야외 정원·건물",
                       "야외 자연", "도심·거리", "기타"]
 
-#: 부모 검증(CLIP zero-shot)용 영어 프롬프트. '기타'는 없다 — zero-shot 후보에서 뺀다.
-#: 검증 전용이다(판정 아님, 822장 실측 일치 79%): categorize 의 naming 이 VLM 부모와 다르면 needs_review 근거.
-PARENT_PROMPTS: dict[str, list[str]] = {
+#: 컨셉 검증(CLIP zero-shot)용 영어 프롬프트. '기타'는 없다 — zero-shot 후보에서 뺀다.
+#: 검증 전용이다(판정 아님, 822장 실측 일치 79%): categorize 의 naming 이 VLM 컨셉과 다르면 needs_review 근거.
+CONCEPT_PROMPTS: dict[str, list[str]] = {
     "실내 스튜디오": ["an indoor photography studio with a seamless backdrop and studio lighting",
                     "a studio portrait against a plain paper background"],
     "하우스·인테리어": ["an indoor set with furniture, a sofa and house interior decoration",
