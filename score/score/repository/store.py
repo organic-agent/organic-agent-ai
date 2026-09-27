@@ -1,6 +1,6 @@
 """저장소 — `photo_analysis` 중 SCORE 가 읽고 쓰는 부분.
 
-쓰기는 `write_scores` 하나다: subjects · sub_scores · clip_embedding · model_version. 백분위·연사·그룹은
+쓰기는 `write_scores` 하나다: subjects · sub_scores · clip_embedding · pipeline_version. 백분위·연사·그룹은
 categorize 의 컬럼, embedding·embedding_model 은 embedder 의 컬럼이라 **건드리지 않는다**(UPSERT 의 SET 절이
 그 경계다). photo_ratings · photo_selection_items 는 읽지도 않는다(CLAUDE.md).
 
@@ -35,8 +35,17 @@ class Store(Protocol):
 # ── 로컬 구현 ────────────────────────────────────────────────────────────────
 #: 분석 필드 → analysis.jsonl 키. 키는 photo_analysis 컬럼 이름 그대로 — categorize 의 LocalStore 와 같은 파일 규약.
 # [GLOSSARY-1 2026-09-27] 필드 이름만 용어집으로 바꾸고 파일 키는 유지한다(기존 out/ 파일 호환).
-_ANALYSIS_CACHE_KEY = {"burst_id": "cluster_id", "burst_rank": "cluster_rank", "pipeline_version": "model_version"}
-_ANALYSIS_FIELD = {v: k for k, v in _ANALYSIS_CACHE_KEY.items()}
+# [GLOSSARY-2 2026-09-27] 캐시 파일 키 = 필드 이름 = DB 컬럼 이름(wes V23). 이 표는 그 전에 쓴 out/ 파일을 읽을 때만 쓴다
+#: (categorize 의 LocalStore 와 같은 규칙 — 세부 점수의 clip_parent 키도 옮긴다).
+_OLD_ANALYSIS_KEY = {"cluster_id": "burst_id", "cluster_rank": "burst_rank", "model_version": "pipeline_version"}
+
+
+def _analysis_from_cache(d: dict) -> dict:
+    d = {_OLD_ANALYSIS_KEY.get(k, k): v for k, v in d.items()}
+    sub = d.get("sub_scores") or {}
+    if "clip_parent" in sub:
+        d["sub_scores"] = {("clip_concept_name" if k == "clip_parent" else k): v for k, v in sub.items()}
+    return d
 
 
 class LocalStore:
@@ -62,8 +71,7 @@ class LocalStore:
         if not p.exists():
             return []
         with p.open(encoding="utf-8") as f:
-            return [PhotoAnalysis(**{_ANALYSIS_FIELD.get(k, k): v for k, v in json.loads(line).items()})
-                    for line in f if line.strip()]
+            return [PhotoAnalysis(**_analysis_from_cache(json.loads(line))) for line in f if line.strip()]
 
     def read_clip_embeddings(self, gallery: str) -> tuple[list[str], np.ndarray]:
         d = self._dir(gallery)
@@ -87,8 +95,7 @@ class LocalStore:
                 setattr(cur, f, getattr(r, f))
         with (self._dir(gallery) / "analysis.jsonl").open("w", encoding="utf-8") as f:
             for r in by_id.values():
-                f.write(json.dumps({_ANALYSIS_CACHE_KEY.get(k, k): v for k, v in asdict(r).items()},
-                                   ensure_ascii=False) + "\n")
+                f.write(json.dumps(asdict(r), ensure_ascii=False) + "\n")
 
         ids, emb = clip_embeddings
         if len(ids):
@@ -122,11 +129,11 @@ class DbStore:
         self.conn = conn or connection.connect(settings)
 
     def read_analysis(self, gallery: str) -> list[PhotoAnalysis]:
-        """재개 판정에 필요한 것만 — photo_id · pipeline_version(컬럼 model_version) · analyzed_at."""
+        """재개 판정에 필요한 것만 — photo_id · pipeline_version · analyzed_at."""
         with self.conn.cursor() as cur:
             cur.execute(
-                "SELECT a.photo_id, a.model_version, a.analyzed_at FROM photo_analysis a JOIN photos p ON p.id = a.photo_id "
-                "WHERE p.gallery_id = %s AND p.deleted_at IS NULL AND a.model_version IS NOT NULL",
+                "SELECT a.photo_id, a.pipeline_version, a.analyzed_at FROM photo_analysis a JOIN photos p ON p.id = a.photo_id "
+                "WHERE p.gallery_id = %s AND p.deleted_at IS NULL AND a.pipeline_version IS NOT NULL",
                 (int(gallery),),
             )
             rows = cur.fetchall()
@@ -204,7 +211,7 @@ class DbStore:
 
     def write_scores(self, gallery: str, rows: list[PhotoAnalysis],
                      clip_embeddings: tuple[list[str], np.ndarray]) -> None:
-        """SCORE 의 컬럼만 UPSERT — subjects · sub_scores · clip_embedding · model_version.
+        """score 의 컬럼만 UPSERT — subjects · sub_scores · clip_embedding · pipeline_version.
         백분위·클러스터·그룹은 categorize 의 것, embedding·embedding_model 은 embedder 의 것 — 건드리지 않는다."""
         clip_map = dict(zip(*clip_embeddings)) if clip_embeddings[0] else {}
         params = [(int(r.photo_id), r.subjects, _jsonb(r.sub_scores), clip_map.get(r.photo_id), r.pipeline_version)
@@ -215,12 +222,12 @@ class DbStore:
             cur.executemany(
                 """
                 INSERT INTO photo_analysis
-                    (photo_id, subjects, sub_scores, clip_embedding, model_version,
+                    (photo_id, subjects, sub_scores, clip_embedding, pipeline_version,
                      analyzed_at, created_at, updated_at)
                 VALUES (%s, %s, %s::jsonb, %s, %s, now(), now(), now())
                 ON CONFLICT (photo_id) DO UPDATE SET
                     subjects = EXCLUDED.subjects, sub_scores = EXCLUDED.sub_scores,
-                    clip_embedding = EXCLUDED.clip_embedding, model_version = EXCLUDED.model_version,
+                    clip_embedding = EXCLUDED.clip_embedding, pipeline_version = EXCLUDED.pipeline_version,
                     analyzed_at = now(), updated_at = now(), version = photo_analysis.version + 1
                 """,
                 params,

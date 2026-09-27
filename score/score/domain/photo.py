@@ -21,15 +21,14 @@ class PhotoRef:
 
 @dataclass
 class PhotoAnalysis:
-    """`photo_analysis` 한 행. 필드 이름은 용어집(WES-DOCS glossary)을 따르고, 이름이 다른 컬럼은 저장소가 매핑한다
-    (`burst_id`→`cluster_id`, `burst_rank`→`cluster_rank`, `pipeline_version`→`model_version`). score 는 subjects · sub_scores ·
-    pipeline_version 만 채운다."""
+    """`photo_analysis` 한 행. 필드 이름 = 컬럼 이름 = 용어집(WES-DOCS docs/glossary.md) 이름이다(wes V23).
+    score 는 subjects · sub_scores · pipeline_version 만 채운다."""
 
     photo_id: str
     subjects: str = "unknown"
     technical_pct: float = 50.0
     aesthetic_pct: float = 50.0
-    sub_scores: dict = field(default_factory=dict)   # technical_score, aesthetic_score, sharpness, clip_parent …
+    sub_scores: dict = field(default_factory=dict)   # technical_score, aesthetic_score, sharpness, clip_concept_name …
     # [GLOSSARY-1 2026-09-27] cluster_id → burst_id, cluster_rank → burst_rank (용어집: 연사), model_version → pipeline_version (D3)
     burst_id: int = -1
     burst_rank: int = 0

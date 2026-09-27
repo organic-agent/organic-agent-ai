@@ -115,7 +115,7 @@ def _world(tmp_path, n=12):
     store = LocalStore(tmp_path / "out", dataset_root=img_root)
     scored = ids[: n // 2]
     rows = [PhotoAnalysis(photo_id=pid, subjects="couple", technical_pct=77.0, burst_id=3, embed_group_id=5,
-                          sub_scores={"technical_score": 0.5, "clip_parent": "실내 스튜디오"},
+                          sub_scores={"technical_score": 0.5, "clip_concept_name": "실내 스튜디오"},
                           pipeline_version=PIPELINE_VERSION) for pid in scored]
     store.write_scores("g", rows, (scored, np.stack([_unit(np.ones(32) + i) for i in range(len(scored))])))
     refs = [PhotoRef(photo_id=pid, path=str(img_root / pid)) for pid in ids]
@@ -124,7 +124,7 @@ def _world(tmp_path, n=12):
 
 
 # ── pipeline ──────────────────────────────────────────────────────────────────
-def test_skips_scored_photos_and_stores_clip_parent(tmp_path, fake_runners):
+def test_skips_scored_photos_and_stores_clip_concept_name(tmp_path, fake_runners):
     store, refs, scored, settings = _world(tmp_path)
 
     result = pipeline.run(store, "g", refs, settings)
@@ -134,7 +134,7 @@ def test_skips_scored_photos_and_stores_clip_parent(tmp_path, fake_runners):
     assert result["stopped"] is False and result["remaining"] == 0
     back = {r.photo_id: r for r in store.read_analysis("g")}
     new = back[refs[-1].photo_id]
-    assert new.sub_scores["clip_parent"] in CONCEPTS and new.pipeline_version == PIPELINE_VERSION
+    assert new.sub_scores["clip_concept_name"] in CONCEPTS and new.pipeline_version == PIPELINE_VERSION
     assert "technical_score" in new.sub_scores and "sharpness" in new.sub_scores
     ids, C = store.read_clip_embeddings("g")
     assert set(ids) == {r.photo_id for r in refs} and C.shape[0] == len(refs)

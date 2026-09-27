@@ -107,7 +107,7 @@ def compare(a: Path, b: Path, gallery: str, tol: float) -> bool:
         same = diff <= tol
         ok &= same
         print(f"  {key:16s} n={len(pairs):3d} max|Δ|={diff:.3e} {'OK' if same else 'DIFF'}")
-    for key in ("subjects", "clip_parent"):
+    for key in ("subjects", "clip_concept_name"):
         va = [ra[i].get(key) if key == "subjects" else ra[i]["sub_scores"].get(key) for i in ids]
         vb = [rb[i].get(key) if key == "subjects" else rb[i]["sub_scores"].get(key) for i in ids]
         mism = sum(1 for x, y in zip(va, vb) if x != y)
@@ -120,8 +120,8 @@ def compare(a: Path, b: Path, gallery: str, tol: float) -> bool:
         same = diff <= tol
         ok &= same
         print(f"  {'clip_embedding':16s} n={len(cids):3d} max|Δ|={diff:.3e} min cos={cos:.6f} {'OK' if same else 'DIFF'}")
-    mv = {ra[i]["model_version"] for i in ids} | {rb[i]["model_version"] for i in ids}
-    print(f"  model_version    {sorted(mv)}")
+    mv = {ra[i]["pipeline_version"] for i in ids} | {rb[i]["pipeline_version"] for i in ids}
+    print(f"  pipeline_version {sorted(mv)}")
     print(f"[compare] {'비트 동일' if ok and tol == 0 else ('통과' if ok else '차이 있음')} (tol={tol:g})")
     return ok
 

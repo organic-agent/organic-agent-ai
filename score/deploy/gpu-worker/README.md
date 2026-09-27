@@ -81,5 +81,5 @@
 | GPU 워커 집기 `embedding ∧ ¬clip_embedding ∧ error IS NULL` + `FOR UPDATE OF photo_analysis SKIP LOCKED` | #76·#86. wes 부분 인덱스 `idx_photo_analysis_unscored` 와 같은 조건 |
 | 사진 단위 실패 표시 `photo_analysis.error` — `PREVIEW_MISSING` · `SCORE_FAILED` | #86 (score). embedder 의 결정적 실패(디코드 불가) → `error`, 일시 실패 → `dispatched_at=NULL` 은 **아직**(정리 이슈에서, wes 스위퍼 10분 재배정이 그동안 덮는다) |
 | 로그 `key=value` 한 줄 | score 워커·폴백 #86. embedder `embedder gallery=G photos=N ok=K failed=F seconds=S` 는 아직 |
-| `ai_analysis_jobs` — V16 뒤 Lambda 는 `error` 만 쓴다 | **아직**: score `jobs.record*`(갤러리 경로)·categorize `jobs.py` 가 status·result 를 쓴다. V16 배포 전에 정리 이슈 필요(NEXT.md §1-D) |
+| `analysis_jobs`(옛 `ai_analysis_jobs`) — V16 뒤 Lambda 는 `error` 만 쓴다 | **아직**: score `jobs.record*`(갤러리 경로)·categorize `jobs.py` 가 status·result 를 쓴다. V16 배포 전에 정리 이슈 필요(NEXT.md §1-D) |
 | embedder 갤러리 경로(fan-out·자기 재호출) | V15 뒤에도 코드에 남아 있다(옛 오케스트레이터 호환). wes PR-B 배포 뒤 삭제 → 그때 인프라 `ReinvokeSelf` 제거 가능(결정 K) |

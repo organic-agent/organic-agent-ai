@@ -18,10 +18,10 @@
   LaionRunner.embed         → CLIP 768d (저장: photo_analysis.clip_embedding — categorize 가 재계산 없이 읽는다)
      ├─ score_from_embedding → aesthetic_score (LAION MLP)
      ├─ SubjectsTagger.tag   → subjects (bride|groom|couple|group|unknown, margin < 0.01 → unknown)
-     └─ ConceptTagger.tag    → sub_scores.clip_parent (컨셉 고정 목록 argmax — categorize naming 의 검증용)
+     └─ ConceptTagger.tag    → sub_scores.clip_concept_name (컨셉 고정 목록 argmax — categorize naming 의 검증용)
   ArniqaRunner.score        → technical_score (spaq 회귀기)
   classical.measure         → sharpness · highlight_clip · shadow_clip · mean_luma
-→ store.write_scores  (subjects · sub_scores · clip_embedding · model_version 만)
+→ store.write_scores  (subjects · sub_scores · clip_embedding · pipeline_version 만)
 ```
 
 CLIP 벡터 하나를 뽑아 미학·피사체·컨셉 라벨 세 가지에 쓴다(텍스트 프롬프트는 추가 비용 0). 백분위·연사·그룹은
@@ -36,7 +36,7 @@ categorize 의 컬럼이라 UPSERT 의 SET 절에 없다 — 이 경계가 곧 �
 | 속도 손잡이 | 한 장은 한 번만 디코드해 세 러너에 넘긴다. CLIP 은 `CLIP_BATCH`(8)장씩 한 forward, ARNIQA 입력 긴 변은 `ARNIQA_LONG_EDGE`(1024 — 1600 대비 연산 1/2.4, 순위 상관 0.93) (#51) |
 | 데드라인 | 15분 앞에서 배치 경계에서 멈추고(`STOP_MARGIN_SECONDS`) commit 한다. 남은 사진은 wes 스윕이 다시 보낸다 |
 | 실패 | 사진 단위 결정적 실패는 `photo_analysis.error` — 미리보기 없음(S3 404) `PREVIEW_MISSING`, 점수 실패 `SCORE_FAILED`(#85). wes 가 기대 장수에서 뺀다 |
-| 잡·체인·샤딩 | **없다**(#98). wes 가 `ai_analysis_jobs` 를 소유하고 categorize 를 직접 부른다. 갤러리 advisory lock·자기 재호출·조정자도 함께 사라졌다 |
+| 잡·체인·샤딩 | **없다**(#98). wes 가 `analysis_jobs` 를 소유하고 categorize 를 직접 부른다. 갤러리 advisory lock·자기 재호출·조정자도 함께 사라졌다 |
 | 접속 | `DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD/DB_SSLMODE`, `S3_BUCKET`(미리보기), Lambda 는 `/tmp` 만 쓴다(`SCORE_WORK`) |
 
 ## 구조
@@ -146,5 +146,5 @@ ARNIQA hub)는 빌드 시 `/opt` 아래에 굽는다 — NAT 없는 서브넷이
 ## wes 가 읽는 계약
 
 `photo_analysis.subjects` · `sub_scores{technical_score, aesthetic_score, sharpness, highlight_clip, shadow_clip, subjects_margin,
-clip_parent}` · `clip_embedding` · `model_version`. 키 이름을 바꾸면 wes·categorize 와 함께 바꾼다.
+clip_concept_name}` · `clip_embedding` · `pipeline_version`. 키 이름을 바꾸면 wes·categorize 와 함께 바꾼다.
 설계 근거·역사는 `docs/photoselect/`(review-v3-design.md, pipeline-history.md).

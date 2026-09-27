@@ -16,7 +16,7 @@ from pathlib import Path
 # 데이터셋(../../dataset) 기본 경로의 기준점.
 MODULE_ROOT = Path(__file__).resolve().parents[2]
 
-#: `photo_analysis.model_version`. **categorize 모듈의 같은 상수와 값이 같아야 한다** — categorize 는
+#: `photo_analysis.pipeline_version`. **categorize 모듈의 같은 상수와 값이 같아야 한다** — categorize 는
 #: 이 값과 같은 행만 "점수 있음"으로 읽는다. 값은 v3 시절 그대로 둔다: 이미 적재된 행과 재개(스킵) 판정이
 #: 이 문자열로 묶여 있어, 바꾸면 전 갤러리가 재점수 대상이 된다.
 # [GLOSSARY-1 2026-09-27] MODEL_VERSION → PIPELINE_VERSION (용어집 D3), PARENTS → CONCEPTS, PARENT_PROMPTS → CONCEPT_PROMPTS (용어집: 1층 = concept)

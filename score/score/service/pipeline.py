@@ -3,9 +3,9 @@
     ARNIQA(spaq)                → technical_score
     CLIP ViT-L/14 + LAION MLP   → aesthetic_score
         CLIP 벡터는 저장한다 (photo_analysis.clip_embedding) — categorize 가 재계산 없이 읽는다
-        같은 벡터에 텍스트 프롬프트를 대어 subjects(피사체)·clip_parent(컨셉 검증 라벨, 키 이름은 용어 2단계에서)도 여기서
+        같은 벡터에 텍스트 프롬프트를 대어 subjects(피사체)·clip_concept_name(컨셉 검증 라벨)도 여기서
     고전 지표                    → sharpness · highlight_clip · shadow_clip · mean_luma (sub_scores)
-    → store.write_scores  (subjects · sub_scores · clip_embedding · model_version 만)
+    → store.write_scores  (subjects · sub_scores · clip_embedding · pipeline_version 만)
 
 한 장은 한 번만 디코드해서(1024px PIL) 세 러너에 넘기고, CLIP 은 `clip_batch` 장씩, ARNIQA 는 `arniqa_batch` 장씩 한 forward 로
 묶는다(#51 · #68). 배치가 실패하면 그 묶음만 한 장씩으로 물러난다 — 한 장 실패가 묶음·잡을 죽이지 않는다.
@@ -229,7 +229,8 @@ class Scorer:
                         if tagger is not None:
                             subjects, margin = tagger.tag(clip_emb)
                             sub["subjects_margin"] = margin
-                        sub["clip_parent"] = concept_tagger.tag(clip_emb)
+                        # [GLOSSARY-2 2026-09-27] 세부 점수 키 clip_parent → clip_concept_name (wes V23 이 기존 행도 옮긴다)
+                        sub["clip_concept_name"] = concept_tagger.tag(clip_emb)
                         t_stage["tag"] += time.monotonic() - t
                         rows.append(PhotoAnalysis(photo_id=ref.photo_id, subjects=subjects,
                                                   sub_scores=sub, pipeline_version=PIPELINE_VERSION))
