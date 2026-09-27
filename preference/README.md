@@ -13,15 +13,15 @@
 
 | | |
 |---|---|
-| 입력 x | `technical_pct` · `aesthetic_pct` · `sharpness_pct` · subjects one-hot 4 · 컨셉 그룹 비율 · 타임라인 위치 · 연사 길이 2 (11) + L2 정규화 DINOv3 ⊕ CLIP 에서 갤러리 평균을 뺀 것 (1536) |
-| 양성 | 부부의 최종 선택. 같은 연사 클러스터에 둘 이상이면 1/count |
-| 음성 | 양성이 없는 연사 클러스터의 대표 1장 |
+| 입력 x | `technical_pct` · `aesthetic_pct` · `sharpness_pct` · subjects one-hot 4 · 임베딩 그룹 비율 · 타임라인 위치 · 연사 길이 2 (11) + L2 정규화 DINOv3 ⊕ CLIP 에서 갤러리 평균을 뺀 것 (1536) |
+| 양성 | 부부의 최종 선택. 같은 연사에 둘 이상이면 1/count |
+| 음성 | 양성이 없는 연사의 연사 대표 1장 |
 | 라벨 없음 | 양성의 연사 형제 — 거의 같은 벡터라 음성으로 넣으면 학습이 망가진다 |
 | 모델 | 로지스틱 회귀, 블록 분산으로 보정한 L2 두 강도 (scipy L-BFGS). torch 없음 |
 
 ## 평가와 게이트
 
-recall@K (K = 3 × 양성 수) 를 **연사 클러스터당 1장으로 dedup 한 순위**에서 잰다 — wes `MmrSelector` 와 같다.
+recall@K (K = 3 × 양성 수) 를 **연사당 1장으로 dedup 한 순위**에서 잰다 — wes `MmrSelector` 와 같다.
 `prior 단독` · `pref 단독` · `융합` 세 점수식을 갤러리 홀드아웃으로 비교하고, 부호 검정 p<0.05 · 악화 비율 ≤ 30% ·
 최근 3회 안정성을 모두 만족할 때만 active. 라벨 갤러리가 2개 미만이면 "측정 불가"를 기록한다.
 

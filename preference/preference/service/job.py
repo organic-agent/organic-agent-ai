@@ -43,7 +43,7 @@ def run_train(store: Store, settings: Settings, gallery_ids: list[str] | None = 
     galleries = _load(store, ids)
     if not galleries:
         return {"status": "skipped", "reason": "라벨 갤러리 없음", "gallery_ids": ids}
-    versions = {(lg.data.embedding_model, lg.data.model_version) for lg in galleries}
+    versions = {(lg.data.embedding_model, lg.data.pipeline_version) for lg in galleries}
     if len(versions) > 1:
         raise SystemExit(f"갤러리들의 모델 버전이 섞여 있다 — 한 행에 담을 수 없다: {versions}")
 
@@ -82,16 +82,16 @@ def run_sanity(store: Store, settings: Settings, gallery_id: str, selected_ids: 
     full = evaluate_gallery(lg, model, knobs, f, lam_override=1.0)      # 학습된 가중치로 재정렬 (요구사항 (1))
     damped = evaluate_gallery(lg, model, knobs, f)                      # λ(n=1) 그대로 — 연결됐을 때의 실제 점수
     pos = lg.positive_idx
-    cid = lg.data.cluster_id
-    pos_clusters = {int(c) for c in cid[pos] if c >= 0}
-    in_pos_clusters = int(sum(1 for c in cid if c >= 0 and int(c) in pos_clusters))
+    cid = lg.data.burst_id
+    pos_bursts = {int(c) for c in cid[pos] if c >= 0}
+    in_pos_bursts = int(sum(1 for c in cid if c >= 0 and int(c) in pos_bursts))
     return {
         "gallery_id": gallery_id, "n_photos": lg.data.n,
         "n_selected_given": len(selected_ids), "n_positives_matched": int(pos.size),
-        "n_negatives": int((s.y == 0).sum()), "n_excluded_siblings": in_pos_clusters - int(sum(1 for i in pos if cid[i] >= 0)),
+        "n_negatives": int((s.y == 0).sum()), "n_excluded_siblings": in_pos_bursts - int(sum(1 for i in pos if cid[i] >= 0)),
         "k": full.k, "lambda_n1": model.lam, "fit_seconds": round(fit_s, 2),
         "metrics_lambda_1": full.metrics, "metrics_lambda_n": damped.metrics,
-        "passed": full.metrics["pref"]["recall_cluster"] >= 0.999,   # 클러스터 기준 — 형제 중 어느 장인지는 이 특징으로 못 가른다
+        "passed": full.metrics["pref"]["recall_burst"] >= 0.999,   # 연사 기준 — 형제 중 어느 장인지는 이 특징으로 못 가른다
         "w_scalar": {name: round(float(v), 4) for name, v in zip(SCALAR_NAMES, model.w_scalar)},
-        "embedding_model": lg.data.embedding_model, "model_version": lg.data.model_version,
+        "embedding_model": lg.data.embedding_model, "pipeline_version": lg.data.pipeline_version,
     }

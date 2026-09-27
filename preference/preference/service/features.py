@@ -16,12 +16,12 @@ def _l2(v: np.ndarray) -> np.ndarray:
     return v / np.maximum(np.linalg.norm(v, axis=1, keepdims=True), 1e-12)
 
 
-def cluster_sizes(cluster_id: np.ndarray) -> np.ndarray:
-    """행마다 자기 클러스터 크기. 음수 id 는 단독(크기 1)."""
-    size = np.ones(len(cluster_id), dtype=float)
-    valid = cluster_id >= 0
+def burst_sizes(burst_id: np.ndarray) -> np.ndarray:
+    """행마다 자기 연사 크기. 음수 id 는 단독(크기 1)."""
+    size = np.ones(len(burst_id), dtype=float)
+    valid = burst_id >= 0
     if valid.any():
-        ids, inv, counts = np.unique(cluster_id[valid], return_inverse=True, return_counts=True)
+        ids, inv, counts = np.unique(burst_id[valid], return_inverse=True, return_counts=True)
         size[valid] = counts[inv]
     return size
 
@@ -37,7 +37,7 @@ def build(gd: GalleryData) -> Features:
     if valid.any():
         _, inv, counts = np.unique(gd.embed_group_id[valid], return_inverse=True, return_counts=True)
         gsize[valid] = counts[inv]
-    csize = cluster_sizes(gd.cluster_id)
+    csize = burst_sizes(gd.burst_id)
     order = np.argsort(np.argsort(gd.display_order, kind="stable"), kind="stable")
     scalar = np.column_stack([
         gd.technical_pct / 100.0,

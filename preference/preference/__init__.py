@@ -5,7 +5,7 @@ torch 없음)이 갤러리 CLOSED 때 하고, 추론은 wes 가 사진마다 내
 
     score = z(prior) + λ(n) · z(w·x + b)          prior = 0.5·tech_pct + 0.5·aes_pct (지금 그대로)
 
-입력은 전부 DB 에 있는 것이다 — embedder 의 embedding(DINOv3), score 의 clip_embedding·pct·subjects·cluster.
+입력은 전부 DB 에 있는 것이다 — embedder 의 embedding(DINOv3), score 의 clip_embedding·pct·subjects·연사·임베딩 그룹.
 photo_ratings 는 읽지 않는다(CLAUDE.md). photo_selection_items 는 읽기만 한다.
 
 패키지는 embedder 와 같은 층으로 나뉜다 — controller → service → repository, 모두가 domain 을 본다.

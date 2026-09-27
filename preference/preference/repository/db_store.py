@@ -69,7 +69,7 @@ class DbStore:
         versions = {(r[12], r[13]) for r in rows}
         if len(versions) > 1:
             log.warning("갤러리 %s 에 모델 버전이 섞여 있다: %s — 다수를 쓴다", gallery_id, versions)
-        emb_model, model_version = max(versions, key=lambda v: sum(1 for r in rows if (r[12], r[13]) == v))
+        emb_model, pipeline_version = max(versions, key=lambda v: sum(1 for r in rows if (r[12], r[13]) == v))
         return GalleryData(
             gallery_id=str(gallery_id),
             photo_ids=[str(r[0]) for r in rows],
@@ -78,13 +78,14 @@ class DbStore:
             aesthetic_pct=np.array([r[4] for r in rows], dtype=float),
             sharpness_pct=np.array([float(s.get("sharpness_pct", 50.0) or 50.0) for s in sub], dtype=float),
             subjects=[r[6] or "unknown" for r in rows],
-            cluster_id=np.array([r[7] if r[7] is not None else -1 for r in rows], dtype=int),
-            cluster_rank=np.array([r[8] if r[8] is not None else 0 for r in rows], dtype=int),
+            # [GLOSSARY-1 2026-09-27] 컬럼 cluster_id·cluster_rank·model_version → 필드 burst_id·burst_rank·pipeline_version (용어집)
+            burst_id=np.array([r[7] if r[7] is not None else -1 for r in rows], dtype=int),
+            burst_rank=np.array([r[8] if r[8] is not None else 0 for r in rows], dtype=int),
             embed_group_id=np.array([r[9] if r[9] is not None else -1 for r in rows], dtype=int),
             display_order=np.array([r[2] for r in rows], dtype=int),
             embedding=np.stack([np.asarray(r[10], dtype=np.float32) for r in rows]),
             clip_embedding=np.stack([np.asarray(r[11], dtype=np.float32) for r in rows]),
-            embedding_model=emb_model or "", model_version=model_version or "", shoot_type=shoot_type,
+            embedding_model=emb_model or "", pipeline_version=pipeline_version or "", shoot_type=shoot_type,
         )
 
     def read_selected(self, gallery_id: str) -> list[str]:
