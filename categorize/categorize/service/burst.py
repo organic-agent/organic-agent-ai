@@ -21,7 +21,7 @@ def _find(leader: list[int], i: int) -> int:
 
 
 def cluster_bursts(emb: np.ndarray, threshold: float, window: int) -> np.ndarray:
-    """(N,) cluster_id. 입력 순서 = 파일명 순서여야 한다. emb는 L2 정규화돼 있어야 한다."""
+    """(N,) burst_id. 입력 순서 = 파일명 순서여야 한다. emb는 L2 정규화돼 있어야 한다."""
     n = len(emb)
     leader = list(range(n))
     for i in range(n):

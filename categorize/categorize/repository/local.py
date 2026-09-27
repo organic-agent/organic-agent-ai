@@ -13,14 +13,24 @@ import numpy as np
 
 from categorize.domain.analysis import ConceptAssignment, GalleryRead, PhotoAnalysis
 
-#: 배정 필드 → assignments.jsonl 키. 키는 DB 컬럼 이름(ai_concept_assignments)을 그대로 쓴다.
-_CACHE_KEY = {"concept_name": "parent_name", "detail_name": "concept_name",
-              "proposed_concept": "proposed_parent", "clip_concept": "clip_parent"}
-_FIELD = {v: k for k, v in _CACHE_KEY.items()}
+# [GLOSSARY-2 2026-09-27] 캐시 파일 키 = 필드 이름 = DB 컬럼 이름(wes V23). 아래 두 표는 그 전에 쓴 out/ 파일을 읽을 때만 쓴다.
+#: 옛 assignments.jsonl 키 → 필드. 옛 파일은 `parent_name` 키가 있는 것으로 가린다 — 옛 `concept_name` 은 2층이었다.
+_OLD_ASSIGNMENT_KEY = {"parent_name": "concept_name", "concept_name": "detail_name",
+                       "proposed_parent": "proposed_concept_name", "clip_parent": "clip_concept_name"}
+#: 옛 analysis.jsonl 키 → 필드. 세부 점수의 CLIP 컨셉 라벨 키도 함께 옮긴다.
+_OLD_ANALYSIS_KEY = {"cluster_id": "burst_id", "cluster_rank": "burst_rank", "model_version": "pipeline_version"}
 
-# [GLOSSARY-1 2026-09-27] 분석 필드 → analysis.jsonl 키. 배정과 같은 이유로 키는 photo_analysis 컬럼 이름 그대로 둔다(기존 out/ 파일 호환).
-_ANALYSIS_CACHE_KEY = {"burst_id": "cluster_id", "burst_rank": "cluster_rank", "pipeline_version": "model_version"}
-_ANALYSIS_FIELD = {v: k for k, v in _ANALYSIS_CACHE_KEY.items()}
+
+def _analysis_from_cache(d: dict) -> dict:
+    d = {_OLD_ANALYSIS_KEY.get(k, k): v for k, v in d.items()}
+    sub = d.get("sub_scores") or {}
+    if "clip_parent" in sub:
+        d["sub_scores"] = {("clip_concept_name" if k == "clip_parent" else k): v for k, v in sub.items()}
+    return d
+
+
+def _assignment_from_cache(d: dict) -> dict:
+    return {_OLD_ASSIGNMENT_KEY.get(k, k): v for k, v in d.items()} if "parent_name" in d else d
 
 
 class LocalStore:
@@ -46,8 +56,7 @@ class LocalStore:
         if not p.exists():
             return []
         with p.open(encoding="utf-8") as f:
-            return [PhotoAnalysis(**{_ANALYSIS_FIELD.get(k, k): v for k, v in json.loads(line).items()})
-                    for line in f if line.strip()]
+            return [PhotoAnalysis(**_analysis_from_cache(json.loads(line))) for line in f if line.strip()]
 
     def _read_npy(self, gallery: str, name: str) -> tuple[list[str], np.ndarray]:
         d = self._dir(gallery)
@@ -73,8 +82,7 @@ class LocalStore:
     def _write_rows(self, gallery: str, rows: list[PhotoAnalysis]) -> None:
         with (self._dir(gallery) / "analysis.jsonl").open("w", encoding="utf-8") as f:
             for r in rows:
-                f.write(json.dumps({_ANALYSIS_CACHE_KEY.get(k, k): v for k, v in asdict(r).items()},
-                                   ensure_ascii=False) + "\n")
+                f.write(json.dumps(asdict(r), ensure_ascii=False) + "\n")
 
     def _write_npy(self, gallery: str, name: str, ids: list[str], emb: np.ndarray) -> None:
         d = self._dir(gallery)
@@ -103,12 +111,11 @@ class LocalStore:
 
     def write_assignments(self, gallery: str, job_id: int | None,
                           rows: list[ConceptAssignment]) -> None:
-        """캐시 키는 DB 컬럼 이름 그대로 — 필드 이름이 바뀌어도 기존 out/ 의 파일을 그대로 읽는다."""
+        """캐시 키 = 필드 이름 = DB 컬럼 이름. 옛 형식 파일은 [read_assignments]가 옮겨 읽는다."""
         p = self._dir(gallery) / "assignments.jsonl"
         with p.open("w", encoding="utf-8") as f:
             for r in rows:
-                d = {_CACHE_KEY.get(k, k): v for k, v in asdict(r).items()}
-                f.write(json.dumps({"job_id": job_id, **d}, ensure_ascii=False) + "\n")
+                f.write(json.dumps({"job_id": job_id, **asdict(r)}, ensure_ascii=False) + "\n")
 
     def read_assignments(self, gallery: str) -> list[ConceptAssignment]:
         p = self._dir(gallery) / "assignments.jsonl"
@@ -120,5 +127,5 @@ class LocalStore:
                 if line.strip():
                     d = json.loads(line)
                     d.pop("job_id", None)
-                    out.append(ConceptAssignment(**{_FIELD.get(k, k): v for k, v in d.items()}))
+                    out.append(ConceptAssignment(**_assignment_from_cache(d)))
         return out

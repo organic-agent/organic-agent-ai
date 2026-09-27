@@ -20,7 +20,7 @@ def _db_store(tmp_path, conn, bucket=None):
 
 
 def test_db_store_read_gallery_is_one_query(tmp_path):
-    """분석 행 + DINOv3 + CLIP 을 한 SELECT 로. model_version 없는 행은 벡터만 남고 행 목록에서 빠진다."""
+    """분석 행 + DINOv3 + CLIP 을 한 SELECT 로. pipeline_version 없는 행은 벡터만 남고 행 목록에서 빠진다."""
     e, c = np.ones(4, dtype=np.float32), np.zeros(4, dtype=np.float32)
     conn = RowConn(rows=[
         (11, "couple", 50.0, 50.0, {"technical_score": 0.5}, -1, 0, -1, PIPELINE_VERSION, e, "dinov3", c),
@@ -92,21 +92,20 @@ def test_preview_storage_pool_matches_download_workers(monkeypatch):
     assert PreviewStorage("bkt")._client._client_config.max_pool_connections == 10   # 기본값은 boto 기본(10) 아래로 안 내려간다
 
 
-def test_write_assignments_maps_layers_to_old_columns(tmp_path):
-    """필드는 wes 층 이름, 컬럼은 옛 이름 — 1층 이름은 parent_name, 2층 이름은 concept_name 컬럼에 들어간다
-    (proposed_concept → proposed_parent, clip_concept → clip_parent).
-    컬럼 이름을 바꿀 때(wes Flyway) 이 테스트가 같이 바뀌어야 한다."""
+# [GLOSSARY-2 2026-09-27] wes V23 뒤로 필드 이름 = 컬럼 이름이다 — 1층 concept_name, 2층 detail_name.
+def test_write_assignments_writes_layers_to_same_named_columns(tmp_path):
+    """필드 이름과 같은 컬럼에 쓴다 — 1층 이름은 concept_name, 2층 이름은 detail_name(wes V23, 용어집)."""
     conn = JobConn()
     row = ConceptAssignment(embed_group_id=4, concept_name="기타", detail_name="해변",
-                            confidence=0.9, assigned_by="vlm", proposed_concept="수영장", clip_concept="야외 자연")
+                            confidence=0.9, assigned_by="vlm", proposed_concept_name="수영장", clip_concept_name="야외 자연")
     _db_store(tmp_path, conn).write_assignments("7", 3, [row])
 
     sql, params = conn.executed[0]
-    cols = [c.strip() for c in re.search(r"INSERT INTO ai_concept_assignments \((.*?)\)", sql).group(1).split(",")]
+    cols = [c.strip() for c in re.search(r"INSERT INTO concept_assignments \((.*?)\)", sql).group(1).split(",")]
     written = dict(zip(cols, params[0]))
-    assert written["parent_name"] == "기타"          # 1층
-    assert written["concept_name"] == "해변"         # 2층
-    assert written["proposed_parent"] == "수영장"    # 1층 제안
-    assert written["clip_parent"] == "야외 자연"     # 1층 검증 라벨
+    assert written["concept_name"] == "기타"              # 1층
+    assert written["detail_name"] == "해변"               # 2층
+    assert written["proposed_concept_name"] == "수영장"   # 1층 제안
+    assert written["clip_concept_name"] == "야외 자연"    # 1층 검증 라벨
     assert (written["job_id"], written["gallery_id"], written["embed_group_id"]) == (3, 7, 4)
     assert conn.commits == 1

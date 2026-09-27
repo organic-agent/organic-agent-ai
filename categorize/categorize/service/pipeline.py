@@ -9,7 +9,7 @@
     연사            E, 카메라 파티션 ∧ 순서 창 ∧ cos ≥ threshold      → burst_id · burst_rank
     임베딩 그룹      X = concat(E ⊕ C), 평균연결 계층 클러스터, 적응 임계 → embed_group_id
     → store.write_groups (pct · cluster · group · sub_scores 만 — subjects·clip_embedding 은 SCORE 의 것)
-    → naming.run (Bedrock 이름 · 소그룹 최근접 · 저장된 CLIP 1층 라벨 다수결 검증) → ai_concept_assignments
+    → naming.run (Bedrock 이름 · 소그룹 최근접 · 저장된 CLIP 1층 라벨 다수결 검증) → concept_assignments
 
 갤러리는 **한 번만 읽는다** — `store.read_gallery` 한 쿼리로 행·벡터를 받고, 그룹화가 만든 행과 concat 공간([Grouped])을
 naming 에 그대로 넘긴다. 예전엔 naming 이 셋을 다시 읽고 X 를 다시 만들었다(7천 장이면 벡터 44MB 를 두 번).

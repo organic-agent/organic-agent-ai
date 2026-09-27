@@ -1,4 +1,4 @@
-"""v3 naming — 임베딩 그룹에 (1층 concept, 2층 detail) 이름을 붙여 `ai_concept_assignments`에 남긴다.
+"""v3 naming — 임베딩 그룹에 (1층 concept, 2층 detail) 이름을 붙여 `concept_assignments`에 남긴다.
 
 ai-folder-structure.md의 ②~④ 구현. 층마다 잘하는 도구:
 
@@ -43,7 +43,8 @@ log = logging.getLogger(__name__)
 ETC = "기타"
 
 #: score 가 사진마다 sub_scores 에 남기는 CLIP zero-shot 1층 라벨의 키. score 가 정한 이름이라 옛 이름 그대로다.
-CLIP_CONCEPT_KEY = "clip_parent"
+# [GLOSSARY-2 2026-09-27] sub_scores 키 clip_parent → clip_concept_name (wes V23 이 기존 행도 옮긴다)
+CLIP_CONCEPT_KEY = "clip_concept_name"
 
 #: 배경 밝기(0~255)가 이만큼 어긋나면 "다른 배경"으로 본다 — 검증 전용이고 배정은 바꾸지 않는다.
 #: 운영 갤러리 25 실측: 검은 스튜디오 5 · 화이트 벽 199 · 흰 배경 243 (차이 190+), 같은 세트 안의
@@ -334,8 +335,8 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
             assignments.append(ConceptAssignment(
                 embed_group_id=g.embed_group_id, concept_name=concept, detail_name=detail,
                 confidence=conf, assigned_by="vlm",
-                proposed_concept=(str(d["proposed_parent"]) if concept == ETC and d.get("proposed_parent") else None),
-                clip_concept=clip_concept, needs_review=review))
+                proposed_concept_name=(str(d["proposed_parent"]) if concept == ETC and d.get("proposed_parent") else None),
+                clip_concept_name=clip_concept, needs_review=review))
             counts["vlm"] += 1
         else:
             sims = named_centroids @ g.centroid
@@ -360,7 +361,7 @@ def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
                 embed_group_id=g.embed_group_id, concept_name=concept, detail_name=detail,
                 # confidence 는 vlm 의 자기 확신이 아니라 1 - 중심 거리다 — 다른 축의 값이 한 컬럼에 온다.
                 confidence=round(max(0.0, 1.0 - dist), 3), assigned_by="nearest",
-                clip_concept=clip_concept, needs_review=review))
+                clip_concept_name=clip_concept, needs_review=review))
             counts["nearest"] += 1
         if assignments[-1].needs_review:
             counts["review"] += 1

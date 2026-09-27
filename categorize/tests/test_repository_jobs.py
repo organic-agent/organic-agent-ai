@@ -1,4 +1,4 @@
-"""잡 실패 표시 — `ai_analysis_jobs.error` 한 컬럼(#95, wes V16)."""
+"""잡 실패 표시 — `analysis_jobs.error` 한 컬럼(#95, wes V16)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ def test_jobs_only_writes_error_column():
     jobs.fail(conn, 3, "RuntimeError: boom")
 
     sql, params = conn.executed[0]
-    assert sql == "UPDATE ai_analysis_jobs SET error = %s, updated_at = now() WHERE id = %s"
+    assert sql == "UPDATE analysis_jobs SET error = %s, updated_at = now() WHERE id = %s"
     assert params == ("RuntimeError: boom", 3)
     assert conn.rollbacks == 1 and conn.commits == 1
     for banned in ("status", "started_at", "finished_at", "result", "version"):

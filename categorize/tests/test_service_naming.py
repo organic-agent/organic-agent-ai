@@ -43,7 +43,7 @@ def test_naming_low_confidence_and_clip_mismatch_need_review(tmp_path):
     naming.run(store, "g", settings, FakeLlm(low_conf_embed_group_id=embed_group_ids[0]), job_id=None)
     back = store.read_assignments("g")
     assert all(a.needs_review for a in back)
-    assert all(a.clip_concept == "야외 자연" for a in back)
+    assert all(a.clip_concept_name == "야외 자연" for a in back)
 
 
 def test_naming_merge_call_unifies_names_across_chunks(tmp_path):

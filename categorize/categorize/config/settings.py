@@ -1,7 +1,7 @@
 """설정 — 환경변수(Settings) + CATEGORIZE 손잡이(Knobs·LlmKnobs) 한 파일.
 
 categorize = 갤러리 단위 그룹화·이름 Lambda. torch 없음. score 가 저장한 원점수·CLIP 과 embedder 의 DINOv3 를
-읽어 백분위·연사·임베딩 그룹을 만들고, Bedrock 으로 그룹 이름을 지어 `ai_concept_assignments` 에 남긴다(#35).
+읽어 백분위·연사·임베딩 그룹을 만들고, Bedrock 으로 그룹 이름을 지어 `concept_assignments` 에 남긴다(#35).
 
 embedder 와 같은 방식: `Settings.from_env()` 하나로 읽고 코드 어디서도 `os.environ` 을 직접 만지지 않는다.
 값의 근거는 wes docs/plans/ai-folder-structure.md · docs/photoselect/review-v3-design.md 실측.
@@ -16,7 +16,7 @@ from pathlib import Path
 # 모듈 루트 = `categorize/`(config/settings.py 에서 두 단계 위). 로컬 산출물(out/)·데이터셋(../../dataset) 기본 경로의 기준점.
 MODULE_ROOT = Path(__file__).resolve().parents[2]
 
-#: `photo_analysis.model_version`. **score 모듈의 같은 상수와 값이 같아야 한다** — 이 값과 같은 행만
+#: `photo_analysis.pipeline_version`. **score 모듈의 같은 상수와 값이 같아야 한다** — 이 값과 같은 행만
 #: "점수 있음"으로 읽는다. 값은 v3 시절 그대로: 바꾸면 전 갤러리가 재점수 대상이 된다.
 # [GLOSSARY-1 2026-09-27] MODEL_VERSION → PIPELINE_VERSION (용어집 D3: 모델 id가 아니라 파이프라인 버전)
 PIPELINE_VERSION = "photoselect-v3-a-0.1"

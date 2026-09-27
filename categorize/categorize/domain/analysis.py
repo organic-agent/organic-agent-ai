@@ -1,7 +1,7 @@
 """분석 레코드와 저장소 인터페이스. 로직이 없다.
 
     PhotoAnalysis       `photo_analysis` 한 행 — repository ↔ service
-    ConceptAssignment   `ai_concept_assignments` 한 행 — service(naming) → repository
+    ConceptAssignment   `concept_assignments` 한 행 — service(naming) → repository
     GalleryRead         갤러리 한 번 읽기(행 + 벡터 두 종류) — repository → service
     Store               service 가 보는 저장소 프로토콜. 구현은 repository/analysis.py(DbStore) · repository/local.py(LocalStore)
 """
@@ -16,14 +16,13 @@ import numpy as np
 
 @dataclass
 class PhotoAnalysis:
-    """`photo_analysis` 한 행. 필드 이름은 용어집(WES-DOCS glossary)을 따르고, 이름이 다른 컬럼은 repository 가 매핑한다
-    (`burst_id`→`cluster_id`, `burst_rank`→`cluster_rank`, `pipeline_version`→`model_version`). 컬럼 이름은 wes 용어 2단계에서 맞춘다."""
+    """`photo_analysis` 한 행. 필드 이름 = 컬럼 이름 = 용어집(WES-DOCS docs/glossary.md) 이름이다(wes V23)."""
 
     photo_id: str
     subjects: str = "unknown"
     technical_pct: float = 50.0
     aesthetic_pct: float = 50.0
-    sub_scores: dict = field(default_factory=dict)   # technical_score, aesthetic_score, sharpness, rank_reason, clip_parent(score 의 키) …
+    sub_scores: dict = field(default_factory=dict)   # technical_score, aesthetic_score, sharpness, rank_reason, clip_concept_name(score 의 키) …
     # [GLOSSARY-1 2026-09-27] cluster_id → burst_id, cluster_rank → burst_rank (용어집: 연사), model_version → pipeline_version (D3)
     burst_id: int = -1
     burst_rank: int = 0
@@ -33,11 +32,9 @@ class PhotoAnalysis:
 
 @dataclass
 class ConceptAssignment:
-    """`ai_concept_assignments` 한 행 — 임베딩 그룹 → (큰 분류, 세부 이름).
+    """`concept_assignments` 한 행 — 임베딩 그룹 → (컨셉 이름, 세부 이름). 필드 이름 = 컬럼 이름(wes V23, 용어집).
 
-    필드는 wes 의 폴더 층 이름을 따른다(1층 = concept, 2층 = detail). 컬럼 이름과 다른 필드는 repository/analysis.py 가
-    옮긴다: concept_name → parent_name, detail_name → concept_name, proposed_concept → proposed_parent,
-    clip_concept → clip_parent 컬럼.
+    1층 = concept(`concept_name`) = wes `ConceptFolder`, 2층 = detail(`detail_name`) = wes `DetailFolder`.
     """
 
     embed_group_id: int
@@ -45,8 +42,9 @@ class ConceptAssignment:
     detail_name: str
     confidence: float
     assigned_by: str                     # 'vlm' | 'nearest'
-    proposed_concept: str | None = None  # concept_name='기타'일 때 VLM 이 제안한 1층 이름
-    clip_concept: str | None = None      # CLIP zero-shot 1층 라벨의 그룹 다수결 (검증)
+    # [GLOSSARY-2 2026-09-27] proposed_concept → proposed_concept_name, clip_concept → clip_concept_name (wes 필드·컬럼과 같은 이름)
+    proposed_concept_name: str | None = None  # concept_name='기타'일 때 VLM 이 제안한 1층 이름
+    clip_concept_name: str | None = None      # CLIP zero-shot 1층 라벨의 그룹 다수결 (검증)
     needs_review: bool = False
 
 
