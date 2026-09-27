@@ -45,7 +45,7 @@ class PreferenceModel:
     train_gallery_ids: list[str]
     embedding_model: str = ""
     # [GLOSSARY-1 2026-09-27] model_version → pipeline_version (용어집 D3). 학습 데이터의 photo_analysis 파이프라인 버전이다 — 선호 모델 자신의 버전이 아니다.
-    #: DB 컬럼은 preference_models.model_version (wes 용어 2단계에서 맞춘다).
+    # [GLOSSARY-2 2026-09-27] DB 컬럼도 preference_models.pipeline_version (wes V23)
     pipeline_version: str = ""
     feature_spec: str = FEATURE_SPEC
     lam: float = 0.0
@@ -64,7 +64,7 @@ class PreferenceModel:
         return {
             "feature_spec": self.feature_spec,
             "embedding_model": self.embedding_model,
-            "model_version": self.pipeline_version,
+            "pipeline_version": self.pipeline_version,
             "w_scalar": [float(v) for v in self.w_scalar],
             "w_emb": [float(v) for v in self.w_emb],
             "bias": float(self.bias),
@@ -82,7 +82,7 @@ class PreferenceModel:
             w_scalar=np.asarray(row["w_scalar"], dtype=float), w_emb=np.asarray(row["w_emb"], dtype=float),
             bias=float(row["bias"]), n_galleries=int(row["n_galleries"]), n_positives=int(row["n_positives"]),
             train_gallery_ids=[str(g) for g in row["train_gallery_ids"]],
-            embedding_model=row.get("embedding_model", ""), pipeline_version=row.get("model_version", ""),
+            embedding_model=row.get("embedding_model", ""), pipeline_version=row.get("pipeline_version", row.get("model_version", "")),   # 옛 로컬 파일은 model_version 키
             feature_spec=row.get("feature_spec", FEATURE_SPEC), lam=float(row.get("lambda", 0.0)),
             holdout=row.get("holdout", {}), active=bool(row.get("active", False)),
         )

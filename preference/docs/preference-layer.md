@@ -59,7 +59,7 @@ MMR 이 정한다.
 |---|---|---|
 | 1~3 | 기술·미학·선명도 백분위 ÷ 100 | `photo_analysis.technical_pct` · `aesthetic_pct` · `sub_scores.sharpness_pct` |
 | 4~7 | subjects 원핫 (신부·신랑·커플·단체) | `photo_analysis.subjects` |
-| 8~11 | 컨셉 그룹 크기 로그 비율 · 타임라인 위치 · 연사 길이 비율 · 연사 여부 | `embed_group_id` · `display_order` · `cluster_id` |
+| 8~11 | 임베딩 그룹 크기 로그 비율 · 타임라인 위치 · 연사 길이 비율 · 연사 여부 | `embed_group_id` · `display_order` · `burst_id` |
 | 12~1547 | L2 정규화한 DINOv3 ⊕ CLIP 에서 **갤러리 평균을 뺀 값** | `embedding` · `clip_embedding` |
 
 갤러리 평균을 빼는 이유: 촬영 장소·작가 스타일은 갤러리마다 다르므로 절대 위치가 아니라 "그 갤러리 안에서 어느 쪽"을 배운다.
@@ -96,7 +96,7 @@ pref 점수는 추천 잡이 그 자리에서 내적으로.
 ### wes 에 붙는 코드 (2단계)
 
 ```kotlin
-// 1. active 행 — embedding_model · model_version 이 이 갤러리의 photo_analysis 와 같은 것. 없으면 아래 전부 건너뜀
+// 1. active 행 — embedding_model · pipeline_version 이 이 갤러리의 photo_analysis 와 같은 것. 없으면 아래 전부 건너뜀
 val model = preferenceModelRepository.findActive(embeddingModel, modelVersion) ?: return combinedAsIs
 
 // 2. 특징 조립 + 내적 (갤러리 평균을 먼저 구한다)
@@ -119,7 +119,7 @@ Lambda 가 끝나면 행 하나가 INSERT 된다(`store.DbStore.write_model`). �
 | 컬럼 | 내용 |
 |---|---|
 | `w_scalar` `w_emb`(vector 1536) `bias` `lambda` | 벡터 |
-| `embedding_model` `model_version` `feature_spec` | 유효 조건 — embedder·score 모델이 바뀌면 wes 가 안 읽는다 |
+| `embedding_model` `pipeline_version` `feature_spec` | 유효 조건 — embedder·score 모델이 바뀌면 wes 가 안 읽는다 |
 | `n_galleries` `n_positives` `train_gallery_ids` | 무엇으로 배웠나 |
 | `holdout`(jsonb) | 갤러리별 홀드아웃 점수 · 부호 검정 p · 악화 비율 · 게이트 판정 이유 |
 | `active` | 게이트 통과. 부분 유니크로 true 는 한 행 |

@@ -22,12 +22,12 @@ log = logging.getLogger(__name__)
 _GALLERY_SQL = """
 SELECT p.id, p.original_file_name, p.display_order,
        a.technical_pct, a.aesthetic_pct, a.sub_scores, a.subjects,
-       a.cluster_id, a.cluster_rank, a.embed_group_id,
-       a.embedding, a.clip_embedding, a.embedding_model, a.model_version
+       a.burst_id, a.burst_rank, a.embed_group_id,
+       a.embedding, a.clip_embedding, a.embedding_model, a.pipeline_version
 FROM photos p
 JOIN photo_analysis a ON a.photo_id = p.id
 WHERE p.gallery_id = %s AND p.deleted_at IS NULL
-  AND a.model_version IS NOT NULL AND a.embedding IS NOT NULL AND a.clip_embedding IS NOT NULL
+  AND a.pipeline_version IS NOT NULL AND a.embedding IS NOT NULL AND a.clip_embedding IS NOT NULL
 ORDER BY p.display_order, p.id
 """
 
@@ -78,7 +78,7 @@ class DbStore:
             aesthetic_pct=np.array([r[4] for r in rows], dtype=float),
             sharpness_pct=np.array([float(s.get("sharpness_pct", 50.0) or 50.0) for s in sub], dtype=float),
             subjects=[r[6] or "unknown" for r in rows],
-            # [GLOSSARY-1 2026-09-27] 컬럼 cluster_id·cluster_rank·model_version → 필드 burst_id·burst_rank·pipeline_version (용어집)
+            # [GLOSSARY-1 2026-09-27] cluster_id·cluster_rank·model_version → burst_id·burst_rank·pipeline_version (용어집, 컬럼은 wes V23)
             burst_id=np.array([r[7] if r[7] is not None else -1 for r in rows], dtype=int),
             burst_rank=np.array([r[8] if r[8] is not None else 0 for r in rows], dtype=int),
             embed_group_id=np.array([r[9] if r[9] is not None else -1 for r in rows], dtype=int),
@@ -106,7 +106,7 @@ class DbStore:
                   AND EXISTS (SELECT 1 FROM photo_selections s JOIN photo_selection_items i ON i.selection_id = s.id
                               WHERE s.gallery_id = g.id AND s.deleted_at IS NULL)
                   AND EXISTS (SELECT 1 FROM photos p JOIN photo_analysis a ON a.photo_id = p.id
-                              WHERE p.gallery_id = g.id AND p.deleted_at IS NULL AND a.model_version IS NOT NULL)
+                              WHERE p.gallery_id = g.id AND p.deleted_at IS NULL AND a.pipeline_version IS NOT NULL)
                 ORDER BY g.updated_at, g.id
             """)
             return [str(r[0]) for r in cur.fetchall()]
@@ -122,10 +122,10 @@ class DbStore:
                 cur.execute("UPDATE preference_models SET active = false WHERE active")
             cur.execute(
                 """INSERT INTO preference_models
-                   (embedding_model, model_version, feature_spec, w_scalar, w_emb, bias, lambda,
+                   (embedding_model, pipeline_version, feature_spec, w_scalar, w_emb, bias, lambda,
                     n_galleries, n_positives, train_gallery_ids, holdout, active)
                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::jsonb, %s) RETURNING id""",
-                (row["embedding_model"], row["model_version"], row["feature_spec"], list(row["w_scalar"]),
+                (row["embedding_model"], row["pipeline_version"], row["feature_spec"], list(row["w_scalar"]),
                  np.asarray(row["w_emb"], dtype=np.float32), row["bias"], row["lambda"], row["n_galleries"],
                  row["n_positives"], [int(g) for g in row["train_gallery_ids"]],
                  json.dumps(row["holdout"], ensure_ascii=False), bool(row["active"])),
