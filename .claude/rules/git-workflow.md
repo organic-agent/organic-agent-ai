@@ -25,6 +25,11 @@
 `feat`(🌼 feat) · `fix`(🔨fix) · `docs`(📚 docs) · `chore`(⚡️chore) ·
 `refactor`(🧹refactor) · `test`(🧪 test) · `build`(🧪 build) · `cicd`(🚦cicd)
 
+## 본문 쓰는 법
+
+이슈·PR 본문은 `issue-pr-writing.md`를 따른다 — 맨 위 한 줄 요약, 왜 / 무엇을 바꿨나(전→후 표) / 어떻게 확인했나,
+한 줄에 한 사실, 제목 세 층(섹션 `##` → 칸 `###` → 본문). 만들기 전에 초안을 보여 주고 확인받는다.
+
 ## 이슈
 
 - 제목: `[<모듈>] <타입>: <한글 설명>` — 예: `[score] feat: 러너 캐시로 웜 컨테이너 재사용`
