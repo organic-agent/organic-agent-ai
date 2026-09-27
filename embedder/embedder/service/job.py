@@ -141,7 +141,7 @@ def run(
                             EmbeddingResult(item.ref, vector, item.preview_key, item.metadata)
                             for item, vector in zip(pending, vectors)
                         ],
-                        model_id=settings.model_id,
+                        embedding_model=settings.embedding_model,
                     )
 
                     # ④ 배치 단위 커밋. 중간에 죽어도 그때까지는 남는다.

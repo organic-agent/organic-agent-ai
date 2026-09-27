@@ -88,7 +88,7 @@ def _connect(settings):
 connection_module.connect = _connect
 admin_jobs_module.verify_admin_photo_event = lambda connection, event: True
 admin_jobs_module.complete_admin_derivative = lambda connection, event, preview, meta: _completed.append("DERIVATIVE")
-admin_jobs_module.complete_admin_embedding = lambda connection, event, vector, model_id: _completed.append("EMBEDDING")
+admin_jobs_module.complete_admin_embedding = lambda connection, event, vector, embedding_model: _completed.append("EMBEDDING")
 admin_jobs_module.fail_admin_photo_job = lambda connection, event, code: (_failed.append(code) or 1)
 
 images_module = types.ModuleType("embedder.service.images")
@@ -160,7 +160,7 @@ class AdminPhotoJobTest(unittest.TestCase):
         return AdminPhotoEvent(11, 2, job_type, 31, 41, "galleries/41/photo.jpg", 51)
 
     def settings(self):
-        return SimpleNamespace(s3_bucket="bucket", resize_long_edge=1024, preview_quality=82, model_id="test-model")
+        return SimpleNamespace(s3_bucket="bucket", resize_long_edge=1024, preview_quality=82, embedding_model="test-model")
 
     def test_derivative_does_not_load_embedding_model(self) -> None:
         result = admin_job.run(self.event("DERIVATIVE"), self.settings())
@@ -192,7 +192,7 @@ class AdminPhotoJobTest(unittest.TestCase):
 
     def test_result_cas_loss_marks_still_current_job_failed(self) -> None:
         original = admin_job.admin_jobs.complete_admin_embedding
-        admin_job.admin_jobs.complete_admin_embedding = lambda connection, event, vector, model_id: (_ for _ in ()).throw(
+        admin_job.admin_jobs.complete_admin_embedding = lambda connection, event, vector, embedding_model: (_ for _ in ()).throw(
             _ClaimLost("PHOTO_REVISION_MISMATCH")
         )
         try:
@@ -209,7 +209,7 @@ class AdminPhotoJobTest(unittest.TestCase):
     def test_late_previous_attempt_is_ignored_when_terminal_cas_is_lost(self) -> None:
         original_complete = admin_job.admin_jobs.complete_admin_embedding
         original_fail = admin_job.admin_jobs.fail_admin_photo_job
-        admin_job.admin_jobs.complete_admin_embedding = lambda connection, event, vector, model_id: (_ for _ in ()).throw(
+        admin_job.admin_jobs.complete_admin_embedding = lambda connection, event, vector, embedding_model: (_ for _ in ()).throw(
             _ClaimLost("JOB_ATTEMPT_MISMATCH")
         )
         admin_job.admin_jobs.fail_admin_photo_job = lambda connection, event, code: 0

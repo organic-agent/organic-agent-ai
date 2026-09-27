@@ -51,7 +51,7 @@ class _Db:
         self.fetch_calls.append({"gallery_id": gallery_id})
         return list(self.targets)
 
-    def store_embeddings(self, connection, results, model_id: str) -> int:
+    def store_embeddings(self, connection, results, embedding_model: str) -> int:
         rows = list(results)
         self.stored.append(rows)
         return len(rows)
@@ -142,7 +142,7 @@ class _Metadata:
 def _settings(batch_size: int = 2, stop_margin: int = 60, download_workers: int = 2):
     return SimpleNamespace(
         s3_bucket="bucket", batch_size=batch_size, resize_long_edge=1024, preview_quality=82,
-        model_id="test-model", stop_margin_seconds=stop_margin, download_workers=download_workers,
+        embedding_model="test-model", stop_margin_seconds=stop_margin, download_workers=download_workers,
     )
 
 

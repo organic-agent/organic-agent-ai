@@ -94,7 +94,7 @@ def complete_admin_embedding(
     connection: psycopg.Connection,
     event: AdminPhotoEvent,
     vector: np.ndarray,
-    model_id: str,
+    embedding_model: str,
 ) -> None:
     # CTE 한 문장인 이유: 사진 CAS 가 빗나가면 벡터 upsert 도 0행이어야 rowcount 로 판정할 수 있다.
     # photos.status 는 쓰지 않는다(권한 없음). version 만 올려 CAS 한다.
@@ -120,7 +120,7 @@ def complete_admin_embedding(
             version = photo_analysis.version + 1,
             updated_at = now()
         """,
-        (*_photo_identity_params(event), vector, model_id),
+        (*_photo_identity_params(event), vector, embedding_model),
     )
 
 

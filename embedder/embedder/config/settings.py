@@ -31,7 +31,8 @@ class Settings:
 
     embed_dim: int
     batch_size: int
-    model_id: str
+    # [GLOSSARY-1 2026-09-27] model_id → embedding_model (용어집: photo_analysis.embedding_model 에 저장되는 값). 환경변수 EMBED_MODEL_ID 는 인프라와 이어져 그대로 둔다.
+    embedding_model: str
 
     #: 디코딩 직후 줄이는 긴 변 길이. 모델은 어차피 224 로 다시 줄이므로 목적은 메모리 절약이다.
     #: 미리보기 파생본도 이 크기로 나간다.
@@ -64,7 +65,7 @@ class Settings:
             s3_bucket=_required("S3_BUCKET"),
             embed_dim=int(os.environ.get("EMBED_DIM", "768")),
             batch_size=int(os.environ.get("EMBED_BATCH_SIZE", "8")),
-            model_id=os.environ.get("EMBED_MODEL_ID", "facebook/dinov3-vitb16-pretrain-lvd1689m"),
+            embedding_model=os.environ.get("EMBED_MODEL_ID", "facebook/dinov3-vitb16-pretrain-lvd1689m"),
             resize_long_edge=int(os.environ.get("RESIZE_LONG_EDGE", "1024")),
             preview_quality=int(os.environ.get("PREVIEW_QUALITY", "82")),
             stop_margin_seconds=int(os.environ.get("STOP_MARGIN_SECONDS", "60")),
