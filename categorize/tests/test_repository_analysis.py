@@ -94,18 +94,17 @@ def test_preview_storage_pool_matches_download_workers(monkeypatch):
 
 # [GLOSSARY-2 2026-09-27] wes V23 뒤로 필드 이름 = 컬럼 이름이다 — 1층 concept_name, 2층 detail_name.
 def test_write_assignments_writes_layers_to_same_named_columns(tmp_path):
-    """필드 이름과 같은 컬럼에 쓴다 — 1층 이름은 concept_name, 2층 이름은 detail_name(wes V23, 용어집)."""
+    """1층 이름은 concept_name, 2층 이름은 detail_name. proposed_concept_name · clip_concept_name 은 더 쓰지 않는다(NULL)."""
     conn = JobConn()
-    row = ConceptAssignment(embed_group_id=4, concept_name="기타", detail_name="해변",
-                            confidence=0.9, assigned_by="vlm", proposed_concept_name="수영장", clip_concept_name="야외 자연")
+    row = ConceptAssignment(embed_group_id=4, concept_name="블랙 스튜디오", detail_name="촛불",
+                            confidence=0.9, assigned_by="vlm")
     _db_store(tmp_path, conn).write_assignments("7", 3, [row])
 
     sql, params = conn.executed[0]
     cols = [c.strip() for c in re.search(r"INSERT INTO concept_assignments \((.*?)\)", sql).group(1).split(",")]
     written = dict(zip(cols, params[0]))
-    assert written["concept_name"] == "기타"              # 1층
-    assert written["detail_name"] == "해변"               # 2층
-    assert written["proposed_concept_name"] == "수영장"   # 1층 제안
-    assert written["clip_concept_name"] == "야외 자연"    # 1층 검증 라벨
+    assert written["concept_name"] == "블랙 스튜디오"
+    assert written["detail_name"] == "촛불"
+    assert "proposed_concept_name" not in cols and "clip_concept_name" not in cols
     assert (written["job_id"], written["gallery_id"], written["embed_group_id"]) == (3, 7, 4)
     assert conn.commits == 1

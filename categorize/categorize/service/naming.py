@@ -1,55 +1,230 @@
-"""v3 naming — 임베딩 그룹에 (1층 concept, 2층 detail) 이름을 붙여 `concept_assignments`에 남긴다.
+"""이름 — 구간을 컨셉(1층)으로 묶고, 1층 안의 그룹(2층)에 이름을 붙여 `concept_assignments` 에 남긴다.
 
-ai-folder-structure.md의 ②~④ 구현. 층마다 잘하는 도구:
+    ① 1층   구간(service/segment.py)마다 대표 4장 2×2 타일을 **한 호출**에 보내 "같은 컨셉끼리 묶고 이름을 지어라".
+             시간 모드에 K(conceptCount)가 있으면 "정확히 K개"로 강제한다. 이미지 모드에서는 강제하지 않는다 —
+             K를 강제하면 흰 스튜디오 둘을 합치고 야외를 쪼갰다(갤러리 18, ARI 0.59~0.75 → 강제 없이 0.80).
+             이름은 갤러리 안에서 서로 달라야 한다 — wes 가 1층을 이름으로 묶는다(AiFolderPlanner).
+    ② 2층   1층마다 크기순 커버리지(naming_coverage)까지 대표 1~2장을 1층 이름과 함께 보낸다(1층당 한 호출, 동시에).
+             나머지 소그룹은 같은 1층 안 최근접 이름. 그룹이 하나뿐인 1층은 호출하지 않고 `전체`.
+    검증    VLM confidence < review_confidence, 최근접 거리 > nearest_tau, 대표와 배경 밝기(sub_scores.bg_luma) 차 > BG_GAP
+             이면 needs_review. 판정은 VLM 의 것이다.
 
-    ② 이름   크기순으로 사진 커버리지 목표(naming_coverage, 상한 naming_max_groups)까지 고른
-             그룹 + **이름을 빌려올 이웃이 없는 고립 그룹**(#118)의 대표 1~2장(spread 크면 2장)을
-             Bedrock Sonnet에 (청크 호출 → 통합 텍스트 호출 1회)
-             · 1층(concept) = 닫힌 고정 목록 (JSON 스키마 enum으로 강제, 목록 밖이면 '기타'+proposed)
-             · 세부(detail) = 열린 이름
-    ③ 배정   K 밖 소그룹 → concat 공간에서 이름 붙은 그룹 중심과 최근접. 거리 > τ 면 '기타/기타'
-             + needs_review. CLIP 텍스트는 안 쓴다 — 세부 층은 텍스트로 못 가른다
-    ④ 검증   score 가 사진마다 저장한 CLIP zero-shot 1층 라벨(sub_scores[CLIP_CONCEPT_KEY]) → 그룹 다수결.
-             VLM 의 1층과 다르거나 confidence < 기준이면 needs_review. 검증 전용 — 판정은 VLM의 것.
-             여기서 CLIP 텍스트 인코더를 올리지 않는다 — 이 모듈은 torch 없이 돈다(#26·#35)
-             배경 밝기(sub_scores.bg_luma, score #117)도 같은 자리에서 본다 — 1층은 배경색을 모른다.
-             '실내 스튜디오'라는 큰 분류는 검은 스튜디오와 흰 스튜디오를 함께 덮으므로, 이름이 가리키는
-             배경과 사진의 배경이 어긋나는 것은 이 값으로만 드러난다(#118)
-
-Bedrock 이미지 호출은 그룹 수 상한으로 절대 상한이 잡힌다(⌈이미지 수/naming_chunk⌉+1회) —
-갤러리가 커져도 비용은 커버리지 목표와 상한이 정한 범위를 넘지 않는다.
-FULL 잡의 끝에서도, NAMING 단독 잡에서도 같은 `run()`이 돈다 (분석 재실행 없음 —
-clip_embedding을 저장해 둔 이유). 파이프라인이 부를 때는 그룹화가 만든 행·concat 공간(`grouped`)을 그대로 받아
-DB 를 다시 읽지 않고, 단독 실행일 때만 `store.read_gallery` 로 읽는다.
+Bedrock 호출 = 1층 1회 + 2층 (그룹이 둘 이상인 1층 수)회. 이미지는 1층 ≤ concept_max_units 장, 2층 1층당 ≤ naming_chunk 장.
+프롬프트에 컨셉 이름 예시를 주지 않는다 — 스튜디오마다 부르는 이름이 다르고, 사용자가 고친다.
 """
 
 from __future__ import annotations
 
+import io
 import logging
-import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 
 import numpy as np
 
-from categorize.config.settings import CONCEPTS, Settings
+from categorize.config.settings import Settings
 from categorize.domain.analysis import ConceptAssignment, Store
 from categorize.domain.run import Grouped
 from categorize.infrastructure.bedrock import LlmClient, jpeg_bytes
-from categorize.service.pipeline import concat_space
+from categorize.service.segment import TIME
 
 log = logging.getLogger(__name__)
 
-ETC = "기타"
-
-#: score 가 사진마다 sub_scores 에 남기는 CLIP zero-shot 1층 라벨의 키. score 가 정한 이름이라 옛 이름 그대로다.
-# [GLOSSARY-2 2026-09-27] sub_scores 키 clip_parent → clip_concept_name (wes V23 이 기존 행도 옮긴다)
-CLIP_CONCEPT_KEY = "clip_concept_name"
+#: 그룹이 하나뿐인 1층의 2층 이름.
+DETAIL_ALL = "전체"
 
 #: 배경 밝기(0~255)가 이만큼 어긋나면 "다른 배경"으로 본다 — 검증 전용이고 배정은 바꾸지 않는다.
 #: 운영 갤러리 25 실측: 검은 스튜디오 5 · 화이트 벽 199 · 흰 배경 243 (차이 190+), 같은 세트 안의
-#: 자연스러운 흔들림은 30 안팎(야외 그룹 p10~p90 158~185). 80 은 그 사이에 넉넉히 들어간다.
+#: 자연스러운 흔들림은 30 안팎. 80 은 그 사이에 넉넉히 들어간다.
 BG_GAP = 80.0
+
+CONCEPT_SYSTEM = """당신은 웨딩 스튜디오 촬영 갤러리를 정리한다. 스튜디오는 '컨셉' 단위로 촬영한다 — 컨셉은 배경 세트와
+의상·연출의 조합이고, 한 컨셉을 찍는 동안 구도·포즈·인물 구성·거리(전신/클로즈업)는 계속 바뀐다.
+
+사진은 '구간'으로 나뉘어 있다. 구간마다 대표 4장을 2×2로 붙인 이미지가 오고, 왼쪽 위에 구간 번호가 있다.
+구간을 컨셉별로 묶어라.
+
+- 같은 컨셉을 시간을 두고 다시 찍을 수 있다 — 떨어진 구간도 같은 컨셉이면 묶는다.
+- 반지·부케 같은 디테일 클로즈업이나 준비 컷 위주 구간은 따로 컨셉을 만들지 말고 가장 가까운 컨셉에 붙인다.
+- 판단 근거는 배경 세트(벽·바닥·조명·장소)와 의상이다. 포즈·구도·인물 수는 근거가 아니다.
+- 컨셉 이름은 스튜디오 직원이 부를 법한 짧은 한국어(2~10자). 컨셉끼리 이름이 겹치면 안 된다.
+- confidence: 그 컨셉 묶음에 대한 확신 0~1.
+- 모든 구간을 정확히 한 컨셉에 넣는다."""
+
+DETAIL_SYSTEM = """웨딩 스튜디오 갤러리의 한 컨셉 안을 세부 폴더로 나눈다. 컨셉 이름과, 비슷한 사진 묶음(그룹)마다
+대표 사진 1~2장이 온다. 그룹마다 세부 이름을 정한다.
+
+- 세부 이름: 이 컨셉 안에서 그룹을 구별하는 짧은 한국어(2~12자) — 배경의 부분·소품·장소·상황으로 짓는다
+  (예: 소파, 케이크 테이블, 계단, 창가). 컨셉 이름을 되풀이하지 않는다.
+- 흑백/컬러 같은 스타일이나 인물 구성(신부 단독 등)은 이름에 넣지 않는다.
+- 같은 세트로 보이는 그룹에는 같은 이름을 붙인다.
+- confidence: 이 이름에 대한 확신 0~1. 대표가 2장인데 서로 다른 세트로 보이면 낮춘다.
+
+모든 그룹에 대해 답한다. 이미지에 보이지 않는 것을 지어내지 않는다."""
+
+
+def _concept_schema() -> dict:
+    # Bedrock InvokeModel 의 output_config 스키마는 number 에 minimum/maximum 을 못 쓴다 — 범위는 프롬프트에 두고 읽는 쪽이 클램프한다.
+    return {
+        "type": "object",
+        "properties": {"concepts": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}, "segments": {"type": "array", "items": {"type": "integer"}},
+                           "confidence": {"type": "number", "description": "0~1"}},
+            "required": ["name", "segments", "confidence"], "additionalProperties": False}}},
+        "required": ["concepts"], "additionalProperties": False,
+    }
+
+
+def _detail_schema() -> dict:
+    return {
+        "type": "object",
+        "properties": {"groups": {"type": "array", "items": {
+            "type": "object",
+            "properties": {"group_id": {"type": "integer"}, "detail": {"type": "string"},
+                           "confidence": {"type": "number", "description": "0~1"}},
+            "required": ["group_id", "detail", "confidence"], "additionalProperties": False}}},
+        "required": ["groups"], "additionalProperties": False,
+    }
+
+
+def _clamp(v) -> float:
+    return min(1.0, max(0.0, float(v)))
+
+
+# ── ① 1층 ────────────────────────────────────────────────────────────────────
+@dataclass
+class Concept:
+    name: str
+    confidence: float
+
+
+def _tile(paths: list[str], label: int, edge: int) -> bytes:
+    """대표 사진들을 2×2 로 붙이고 왼쪽 위에 구간 번호. 사진이 4장보다 적으면 빈 칸은 회색."""
+    from PIL import Image, ImageDraw, ImageFont, ImageOps
+
+    half = edge // 2
+    out = Image.new("RGB", (edge, edge), (128, 128, 128))
+    for j, p in enumerate(paths[:4]):
+        im = Image.open(p)
+        im.draft("RGB", (edge, edge))
+        im = ImageOps.exif_transpose(im).convert("RGB")
+        im.thumbnail((half, half))
+        out.paste(im, ((j % 2) * half + (half - im.width) // 2, (j // 2) * half + (half - im.height) // 2))
+    draw = ImageDraw.Draw(out)
+    try:
+        font = ImageFont.load_default(size=max(16, edge // 20))
+    except TypeError:                      # Pillow < 10.1
+        font = ImageFont.load_default()
+    draw.rectangle((0, 0, edge // 8, edge // 14), fill=(0, 0, 0))
+    draw.text((6, 2), str(label), fill=(255, 255, 0), font=font)
+    buf = io.BytesIO()
+    out.save(buf, format="JPEG", quality=80)
+    return buf.getvalue()
+
+
+def _unique(names: list[str]) -> list[str]:
+    seen: dict[str, int] = {}
+    out = []
+    for n in names:
+        n = n.strip() or "컨셉"
+        seen[n] = seen.get(n, 0) + 1
+        out.append(n if seen[n] == 1 else f"{n} {seen[n]}")
+    return out
+
+
+def name_concepts(store: Store, gallery: str, grouped: Grouped, settings: Settings, llm: LlmClient,
+                  concept_count: int | None = None) -> tuple[list[int], list[Concept], dict]:
+    """구간 → 컨셉. (구간별 컨셉 번호, 컨셉 목록, 결과 요약). 호출 1회."""
+    k = settings.knobs
+    rows, seg = grouped.rows, grouped.segmentation
+    units = seg.units
+    picks = {u: [members[int(round(q * (len(members) - 1)))] for q in (0.1, 0.37, 0.63, 0.9)]
+             for u, members in enumerate(units)}
+    paths = store.preview_paths(gallery, sorted({rows[i].photo_id for p in picks.values() for i in p}))
+
+    force_k = concept_count if (concept_count and seg.mode == TIME) else None
+    if force_k:
+        head = f"구간 {len(units)}개 (촬영 시각순). 이 촬영의 컨셉은 **정확히 {force_k}개**다."
+    elif concept_count:
+        head = (f"구간 {len(units)}개 (비슷한 사진끼리 묶었고 순서에는 의미가 없다). 사용자는 컨셉이 {concept_count}개라고 기억한다 — "
+                "확실히 같은 컨셉만 합치고, 애매하면 나눠 둬라.")
+    else:
+        head = f"구간 {len(units)}개. 컨셉 개수는 모른다 — 사진을 보고 정하라."
+    parts: list = [("text", head)]
+    sent: list[int] = []
+    for u, members in enumerate(units):
+        files = [paths[rows[i].photo_id] for i in picks[u] if rows[i].photo_id in paths]
+        if not files:
+            log.warning("[naming] 구간 %d: 대표 사진 미리보기 없음 — 이웃 컨셉으로", u)
+            continue
+        parts.append(("text", f"[구간 {u}] {len(members)}장"))
+        parts.append(("image", _tile(files, u, k.concept_tile_edge)))
+        sent.append(u)
+    if not sent:
+        raise RuntimeError(f"갤러리 {gallery}: 구간 대표 사진을 하나도 받지 못했다")
+
+    out = llm.complete_json(CONCEPT_SYSTEM, parts, _concept_schema(), k.naming_max_tokens)
+    raw = [c for c in out.get("concepts", []) if c.get("segments")]
+    names = _unique([str(c["name"]) for c in raw])
+    concepts = [Concept(name=n, confidence=_clamp(c["confidence"])) for n, c in zip(names, raw)]
+    of_unit: dict[int, int] = {}
+    for ci, c in enumerate(raw):
+        for u in c["segments"]:
+            if 0 <= int(u) < len(units) and int(u) not in of_unit:
+                of_unit[int(u)] = ci
+    if not concepts:
+        raise RuntimeError(f"갤러리 {gallery}: VLM 이 컨셉을 하나도 돌려주지 않았다")
+
+    missing = [u for u in range(len(units)) if u not in of_unit]
+    if missing:
+        log.warning("[naming] 컨셉 응답에 없는 구간 %s — %s", missing,
+                    "앞뒤 구간의 컨셉으로" if seg.mode == TIME else "가장 닮은 구간의 컨셉으로")
+        E = grouped.E
+        cent = {u: E[units[u]].mean(axis=0) for u in of_unit}
+        for u in missing:
+            if seg.mode == TIME:
+                near = [v for v in (u - 1, u + 1, u - 2, u + 2) if v in of_unit]
+                v = near[0] if near else next(iter(of_unit))
+            else:
+                c = E[units[u]].mean(axis=0)
+                v = max(cent, key=lambda w: float(cent[w] @ c))
+            of_unit[u] = of_unit[v]
+
+    used = sorted(set(of_unit.values()))                 # 구간을 하나도 못 받은 컨셉은 버린다
+    remap = {old: new for new, old in enumerate(used)}
+    concepts = [concepts[i] for i in used]
+    unit_concept = [remap[of_unit[u]] for u in range(len(units))]
+    if force_k and len(concepts) != force_k:
+        log.warning("[naming] 컨셉 %d개를 요청했는데 %d개가 왔다", force_k, len(concepts))
+    summary = {"segmentMode": seg.mode, "segments": len(units), "conceptCountRequested": concept_count,
+               "conceptCountForced": bool(force_k), "concepts": [c.name for c in concepts],
+               "missingSegments": len(missing)}
+    return unit_concept, concepts, summary
+
+
+# ── ② 2층 ────────────────────────────────────────────────────────────────────
+@dataclass
+class _EmbedGroup:
+    embed_group_id: int
+    members: list[int]              # 행 인덱스
+    centroid: np.ndarray            # concat 공간, 정규화됨
+    sample_row: int                 # 중심 최근접
+    far_sample_row: int             # 중심에서 가장 먼 멤버 — spread 클 때 두 번째 대표
+    spread: float                   # 그룹 내 평균 중심 거리(1-cos)
+
+
+def _build_embed_groups(members_by_group: dict[int, list[int]], X: np.ndarray) -> list[_EmbedGroup]:
+    """크기 내림차순. 대표 = concat 공간에서 그룹 중심에 가장 가까운 사진."""
+    out = []
+    for gid, members in members_by_group.items():
+        c = X[members].mean(axis=0)
+        c = c / max(float(np.linalg.norm(c)), 1e-8)
+        sims = X[members] @ c
+        out.append(_EmbedGroup(gid, members, c, members[int(np.argmax(sims))], members[int(np.argmin(sims))],
+                               float(np.mean(1.0 - sims))))
+    out.sort(key=lambda g: (-len(g.members), g.embed_group_id))
+    return out
 
 
 def _bg_median(rows, idxs) -> float | None:
@@ -60,324 +235,123 @@ def _bg_median(rows, idxs) -> float | None:
 
 
 def _bg_outliers(rows, idxs, ref: float | None) -> int:
-    """[ref] 에서 [BG_GAP] 넘게 벗어난 사진 수. ref 가 없으면 0 — 없는 신호가 리뷰를 켜지 않는다."""
+    """대표 사진과 배경 밝기가 BG_GAP 넘게 다른 멤버 수. 기준이 없으면 0."""
     if ref is None:
         return 0
-    n = 0
-    for i in idxs:
-        v = rows[i].sub_scores.get("bg_luma")
-        if v is not None and abs(float(v) - ref) > BG_GAP:
-            n += 1
-    return n
-
-
-def majority(labels: list[str | None]) -> str | None:
-    """score 가 사진마다 저장한 CLIP 1층 라벨의 그룹 다수결. None 은 표에서 뺀다. 표가 없으면 None.
-    CLIP 텍스트 인코더는 올리지 않는다 — 이 모듈은 torch 없이 돈다."""
-    votes = [lab for lab in labels if lab]
-    if not votes:
-        return None
-    counts: dict[str, int] = {}
-    for lab in votes:
-        counts[lab] = counts.get(lab, 0) + 1
-    return max(counts.items(), key=lambda kv: (kv[1], -votes.index(kv[0])))[0]
-
-SYSTEM = """당신은 웨딩 사진 스튜디오의 갤러리 정리를 돕는다. 비슷한 배경·구도로 찍힌 사진
-묶음(그룹)마다 대표 사진이 1~2장 온다. 대표가 2장인데 서로 다른 세트로 보이면 그 그룹의
-confidence를 낮춰라. 그룹마다 폴더 이름 두 층을 정한다.
-
-- parent(큰 분류): 주어진 목록에서만 고른다. 어느 것에도 맞지 않으면 "기타"를 고르고
-  proposed_parent에 더 맞는 큰 분류 이름을 제안한다 (맞는 것이 있으면 proposed_parent는 null).
-- concept(컨셉): 촬영 세트를 부를 짧은 한국어 이름 (2~12자). 배경·소품·상황으로 짓는다
-  (예: "소파", "케이크 테이블", "해변", "정원 산책"). 흑백/컬러 같은 스타일이나
-  인물 구성(신부 단독 등)은 컨셉 이름에 넣지 않는다. 같은 세트로 보이는 그룹들에는 같은
-  concept 이름을 붙인다.
-- confidence: 이 배정에 대한 확신 0~1.
-
-모든 그룹에 대해 답한다. 이미지에 보이지 않는 것을 지어내지 않는다."""
-
-MERGE_SYSTEM = """웨딩 갤러리 폴더 이름 목록을 정리한다. 같은 촬영 세트·컨셉을 가리키는데 표기만
-다른 concept 이름들(예: "소파 세트"와 "쇼파")을 하나의 표준 이름으로 통일한다. parent는 바꾸지
-않는다. 다른 세트를 억지로 합치지 않는다. 모든 그룹을 다시 돌려준다."""
-
-
-def _schema(concepts: list[str], with_confidence: bool = True) -> dict:
-    props: dict = {
-        "group_id": {"type": "integer"},
-        "parent": {"type": "string", "enum": concepts},
-        "proposed_parent": {"type": ["string", "null"]},
-        "concept": {"type": "string"},
-    }
-    required = ["group_id", "parent", "proposed_parent", "concept"]
-    if with_confidence:
-        # Bedrock InvokeModel의 output_config 스키마는 number에 minimum/maximum을 못 쓴다
-        # (400: "properties maximum, minimum are not supported"). 범위는 SYSTEM 프롬프트의
-        # "0~1"에 맡기고, 읽는 쪽에서 클램프한다.
-        props["confidence"] = {"type": "number", "description": "0~1"}
-        required.append("confidence")
-    return {
-        "type": "object",
-        "properties": {"groups": {"type": "array", "items": {
-            "type": "object", "properties": props, "required": required,
-            "additionalProperties": False}}},
-        "required": ["groups"],
-        "additionalProperties": False,
-    }
-
-
-@dataclass
-class _EmbedGroup:
-    embed_group_id: int
-    members: list[int]              # ordered-row 인덱스
-    centroid: np.ndarray            # concat 공간, 정규화됨
-    sample_row: int                    # 대표 사진의 ordered-row 인덱스 (중심 최근접)
-    far_sample_row: int                    # 중심에서 가장 먼 멤버 — spread 클 때 두 번째 대표
-    spread: float                   # 그룹 내 평균 중심 거리(1-cos). 이질성의 척도
-
-
-def _build_embed_groups(embed_group_ids: np.ndarray, X: np.ndarray) -> list[_EmbedGroup]:
-    """크기 내림차순. 대표 = concat 공간에서 그룹 중심에 가장 가까운 사진."""
-    by: dict[int, list[int]] = {}
-    for i, g in enumerate(embed_group_ids):
-        if int(g) >= 0:
-            by.setdefault(int(g), []).append(i)
-    out = []
-    for embed_group_id, members in by.items():
-        c = X[members].mean(axis=0)
-        c = c / max(float(np.linalg.norm(c)), 1e-8)
-        sims = X[members] @ c
-        sample = members[int(np.argmax(sims))]
-        far = members[int(np.argmin(sims))]
-        out.append(_EmbedGroup(embed_group_id=embed_group_id, members=members, centroid=c, sample_row=sample,
-                          far_sample_row=far, spread=float(np.mean(1.0 - sims))))
-    out.sort(key=lambda g: (-len(g.members), g.embed_group_id))
-    return out
-
-
-def _vlm_name(llm: LlmClient, chunks: list[list[tuple[_EmbedGroup, list[bytes]]]], concepts: list[str],
-              k) -> tuple[dict[int, dict], int]:
-    """청크 vision 호출들 → {embed_group_id: {parent, proposed_parent, concept, confidence}}, 호출 수."""
-    schema = _schema(concepts)
-
-    def one(chunk: list[tuple[_EmbedGroup, list[bytes]]]) -> dict[int, dict]:
-        parts: list = [("text", f"큰 분류 목록: {', '.join(concepts)}\n그룹 {len(chunk)}개의 대표 사진이다.")]
-        for g, imgs in chunk:
-            suffix = " — 대표 2장" if len(imgs) > 1 else ""
-            parts.append(("text", f"[그룹 {g.embed_group_id}] {len(g.members)}장{suffix}"))
-            for img in imgs:
-                parts.append(("image", img))
-        out = llm.complete_json(SYSTEM, parts, schema, k.naming_max_tokens)
-        wanted = {g.embed_group_id for g, _ in chunk}
-        got = {int(item["group_id"]): item for item in out.get("groups", []) if int(item["group_id"]) in wanted}
-        missing = wanted - set(got)
-        if missing:
-            log.warning("VLM 응답에 그룹 누락: %s — nearest 배정으로 넘긴다", sorted(missing))
-        return got
-
-    # 청크는 서로 다른 그룹·다른 사진이라 독립이다 — 동시에 보낸다(#115). 갤러리 17 실측: 11s + 7s 직렬 → max 11s.
-    # 예외는 지금과 같이 전파한다(map 이 첫 예외를 올린다) — 통합 호출과 달리 청크 결과는 산출물 자체라 삼키지 않는다.
-    with ThreadPoolExecutor(max_workers=max(1, min(k.naming_parallel, len(chunks)))) as pool:
-        results = list(pool.map(one, chunks))
-    named = {embed_group_id: item for got in results for embed_group_id, item in got.items()}
-    return named, len(chunks)
-
-
-def _merge_names(llm: LlmClient, named: dict[int, dict], sizes: dict[int, int], concepts: list[str],
-                 k) -> dict[int, dict]:
-    """통합 텍스트 호출 1회 — 청크 사이 concept 표기 통일. 실패하면 원본 유지."""
-    lines = [f"그룹 {embed_group_id}: parent={d['parent']}, concept={d['concept']}, {sizes[embed_group_id]}장"
-             for embed_group_id, d in sorted(named.items())]
-    try:
-        out = llm.complete_json(MERGE_SYSTEM, "\n".join(lines), _schema(concepts, with_confidence=False),
-                                k.naming_max_tokens)
-    except Exception as exc:  # noqa: BLE001 — 통합은 다듬기다. 실패해도 청크 결과로 간다
-        log.warning("이름 통합 호출 실패 (%s) — 청크 결과 유지", exc)
-        return named
-    for item in out.get("groups", []):
-        embed_group_id = int(item["group_id"])
-        if embed_group_id in named and str(item["parent"]) == named[embed_group_id]["parent"]:
-            named[embed_group_id]["concept"] = str(item["concept"])
-    return named
-
-
-def _load(store: Store, gallery: str) -> Grouped:
-    """단독 실행(NAMING 만) — 저장된 그룹·벡터로 [Grouped] 를 다시 만든다. 파이프라인은 이 길을 지나지 않는다."""
-    data = store.read_gallery(gallery)
-    rows = [r for r in data.rows if r.embed_group_id >= 0]
-    if not rows:
-        raise RuntimeError(f"갤러리 {gallery}: embed_group_id 가 없다 — FULL(SCORE→CATEGORIZE) 분석이 먼저다")
-    rows = [r for r in rows if r.photo_id in data.embeddings and r.photo_id in data.clip_embeddings]
-    ids = [r.photo_id for r in rows]
-    E = np.stack([data.embeddings[i] for i in ids])
-    C = np.stack([data.clip_embeddings[i] for i in ids])
-    return Grouped(rows=rows, X=concat_space(E, C))
+    return sum(1 for i in idxs if (v := rows[i].sub_scores.get("bg_luma")) is not None and abs(float(v) - float(ref)) > BG_GAP)
 
 
 def _sample_images(store: Store, gallery: str, rows, samples: dict[int, list[int]], long_edge: int) -> dict[int, list[bytes]]:
     """대표 사진 → LLM 에 보낼 JPEG. 경로는 한 번에 받고(배치 SELECT + 병렬 다운로드), 축소도 스레드로 겹친다."""
     wanted = sorted({rows[i].photo_id for rr in samples.values() for i in rr})
-    paths = store.preview_paths(gallery, wanted)
+    paths = store.preview_paths(gallery, wanted) if wanted else {}
 
     def shrink(pid: str) -> tuple[str, bytes]:
         return pid, jpeg_bytes(paths[pid], long_edge)
 
     with ThreadPoolExecutor(max_workers=min(8, max(1, len(paths)))) as pool:
         encoded = dict(pool.map(shrink, list(paths)))
-    return {embed_group_id: [encoded[rows[i].photo_id] for i in rr if rows[i].photo_id in encoded]
-            for embed_group_id, rr in samples.items()}
+    return {gid: [encoded[rows[i].photo_id] for i in rr if rows[i].photo_id in encoded] for gid, rr in samples.items()}
 
 
-def run(store: Store, gallery: str, settings: Settings, llm: LlmClient | None,
-        job_id: int | None = None, grouped: Grouped | None = None) -> dict:
-    if llm is None:
-        raise RuntimeError("naming 은 Bedrock 이 필요하다 — --llm 으로 실행하라 (AWS 자격 필요)")
-    started = time.monotonic()
+def name_details(store: Store, gallery: str, grouped: Grouped, concepts: list[Concept], concept_of_row: list[int],
+                 settings: Settings, llm: LlmClient, job_id: int | None = None) -> dict:
+    """1층마다 2층 이름 → concept_assignments. rows 의 embed_group_id 는 채워져 있어야 한다(1층 안에서 전역 유일)."""
     k = settings.knobs
-    concepts = CONCEPTS
-
-    if grouped is None:
-        grouped = _load(store, gallery)
     rows, X = grouped.rows, grouped.X
-    embed_group_ids = np.array([r.embed_group_id for r in rows], dtype=int)
 
-    embed_groups = _build_embed_groups(embed_group_ids, X)
+    by_concept: dict[int, dict[int, list[int]]] = {}
+    for i, r in enumerate(rows):
+        by_concept.setdefault(concept_of_row[i], {}).setdefault(r.embed_group_id, []).append(i)
+    groups_of = {ci: _build_embed_groups(gm, X) for ci, gm in by_concept.items()}
 
-    # ② VLM 대상 선정 — 크기 내림차순으로 사진 커버리지 목표까지, 그룹 수 상한 안에서.
-    total_photos = sum(len(g.members) for g in embed_groups)
-    top: list[_EmbedGroup] = []
-    covered = 0
-    for g in embed_groups:
-        if len(top) >= k.naming_max_groups:
-            break
-        if top and covered >= k.naming_coverage * total_photos:
-            break
-        top.append(g)
-        covered += len(g.members)
-
-    # 고립 그룹 보강(#118) — 커버리지 밖이라도 이름을 빌려올 이웃이 없으면 직접 보여 준다.
-    # 판정 거리는 nearest_tau 가 아니라 group_distance 다: 계층 군집이 "다른 그룹"이라고 가른 거리보다 먼
-    # 그룹이 이름만 빌려 가는 것이 오배정의 경로였다(운영 갤러리 25: 검은 배경 그룹이 0.239 로 τ=0.25 를
-    # 통과해 '화이트 벽 배경'을 가져갔다). 먼 것부터 넣는다 — 하나 넣으면 그 주변의 고립도가 함께 풀린다.
-    chosen = {g.embed_group_id for g in top}
-    rest = [g for g in embed_groups if g.embed_group_id not in chosen]
-    isolated = 0
-    while rest and len(top) < k.naming_max_groups:
-        C = np.stack([g.centroid for g in top])
-        far = max(rest, key=lambda g: 1.0 - float(np.max(C @ g.centroid)))
-        if 1.0 - float(np.max(C @ far.centroid)) <= k.group_distance:
-            break
-        top.append(far)
-        rest.remove(far)
-        covered += len(far.members)
-        isolated += 1
-    if isolated:
-        log.info("[naming] 고립 그룹 %d개를 대상에 추가 — 최근접 이름이 %.2f 보다 멀다", isolated, k.group_distance)
-
-    # 대표 이미지 — spread 큰(이질적) 그룹은 중심 최근접 + 최원점 2장 (review-v3-design.md (2))
+    # VLM 대상 — 1층마다 커버리지까지, 이미지 naming_chunk 장 안에서
     samples: dict[int, list[int]] = {}
-    for g in top:
-        sample_rows = [g.sample_row]
-        if g.spread > k.naming_spread_extra and g.far_sample_row != g.sample_row:
-            sample_rows.append(g.far_sample_row)
-        samples[g.embed_group_id] = sample_rows
-    images = _sample_images(store, gallery, rows, samples, k.naming_image_long_edge)
-    with_img: list[tuple[_EmbedGroup, list[bytes]]] = []
-    extra_samples = 0
-    for g in top:
-        imgs = images.get(g.embed_group_id, [])
-        if not imgs:
-            log.warning("그룹 %d 대표 사진(%s) 이미지 없음 — nearest 배정으로", g.embed_group_id, rows[g.sample_row].photo_id)
+    targets: dict[int, list[_EmbedGroup]] = {}
+    for ci, gs in groups_of.items():
+        if len(gs) < 2:
             continue
-        if len(imgs) > 1:
-            extra_samples += 1
-        with_img.append((g, imgs))
+        total = sum(len(g.members) for g in gs)
+        chosen, covered, n_img = [], 0, 0
+        for g in gs:
+            reps = [g.sample_row] + ([g.far_sample_row] if g.spread > k.naming_spread_extra and g.far_sample_row != g.sample_row else [])
+            if chosen and (covered >= k.naming_coverage * total or n_img + len(reps) > k.naming_chunk):
+                break
+            chosen.append(g)
+            samples[g.embed_group_id] = reps
+            covered += len(g.members)
+            n_img += len(reps)
+        targets[ci] = chosen
+    images = _sample_images(store, gallery, rows, samples, k.naming_image_long_edge)
 
-    # 청크는 그룹 단위를 깨지 않으면서 이미지 수(naming_chunk)로 자른다 — 비용 상한의 단위가 이미지라서.
-    chunks: list[list[tuple[_EmbedGroup, list[bytes]]]] = []
-    cur: list[tuple[_EmbedGroup, list[bytes]]] = []
-    cur_imgs = 0
-    for item in with_img:
-        if cur and cur_imgs + len(item[1]) > k.naming_chunk:
-            chunks.append(cur)
-            cur, cur_imgs = [], 0
-        cur.append(item)
-        cur_imgs += len(item[1])
-    if cur:
-        chunks.append(cur)
-    named, calls = _vlm_name(llm, chunks, concepts, k)
-    if len(chunks) > 1 and named:
-        named = _merge_names(llm, named, {g.embed_group_id: len(g.members) for g in embed_groups}, concepts, k)
-        calls += 1
+    def one(ci: int) -> tuple[int, dict[int, dict] | None]:
+        parts: list = [("text", f"컨셉: {concepts[ci].name}\n그룹 {len(targets[ci])}개의 대표 사진이다.")]
+        wanted = set()
+        for g in targets[ci]:
+            imgs = images.get(g.embed_group_id, [])
+            if not imgs:
+                continue
+            parts.append(("text", f"[그룹 {g.embed_group_id}] {len(g.members)}장" + (" — 대표 2장" if len(imgs) > 1 else "")))
+            parts.extend(("image", img) for img in imgs)
+            wanted.add(g.embed_group_id)
+        if not wanted:
+            return ci, None                         # 호출하지 않았다
+        out = llm.complete_json(DETAIL_SYSTEM, parts, _detail_schema(), k.naming_max_tokens)
+        got = {int(d["group_id"]): d for d in out.get("groups", []) if int(d["group_id"]) in wanted}
+        if wanted - set(got):
+            log.warning("[naming] 컨셉 '%s' 응답에 그룹 누락 %s — 최근접으로", concepts[ci].name, sorted(wanted - set(got)))
+        return ci, got
 
-    named_groups = [g for g in embed_groups if g.embed_group_id in named]
-    if not named_groups:
-        raise RuntimeError(f"갤러리 {gallery}: VLM 이 어떤 그룹에도 이름을 붙이지 못했다")
+    # 1층끼리 독립이다 — 동시에 보낸다. 예외는 전파한다(2층 이름이 산출물 자체라 삼키지 않는다).
+    with ThreadPoolExecutor(max_workers=max(1, min(k.naming_parallel, len(targets) or 1))) as pool:
+        named_of = dict(pool.map(one, list(targets)))
 
-    # 배정 만들기 — vlm(K 안) / nearest(K 밖·이미지 없음·응답 누락)
-    named_centroids = np.stack([g.centroid for g in named_groups])
     assignments: list[ConceptAssignment] = []
     counts = {"vlm": 0, "nearest": 0, "review": 0, "bg": 0}
-    for g in embed_groups:
-        # ④ 저장된 사진별 CLIP 1층 라벨의 그룹 다수결 — SCORE 가 계산해 둔 것
-        clip_concept = majority([rows[i].sub_scores.get(CLIP_CONCEPT_KEY) for i in g.members])
-        if g.embed_group_id in named:
-            d = named[g.embed_group_id]
-            concept, detail = str(d["parent"]), str(d["concept"])
-            conf = min(1.0, max(0.0, float(d["confidence"])))
-            # 이름은 대표 사진을 보고 지었다 — 대표와 배경이 다른 멤버는 그 이름이 안 맞을 수 있다.
-            bg_off = _bg_outliers(rows, g.members, rows[g.sample_row].sub_scores.get("bg_luma"))
-            if bg_off:
-                counts["bg"] += 1
-                log.info("[naming] 그룹 %d: 대표와 배경이 %.0f 넘게 다른 사진 %d장 — 확인 필요",
-                         g.embed_group_id, BG_GAP, bg_off)
-            review = conf < k.review_confidence or bg_off > 0 or (
-                concept != ETC and clip_concept is not None and clip_concept != concept)
-            assignments.append(ConceptAssignment(
-                embed_group_id=g.embed_group_id, concept_name=concept, detail_name=detail,
-                confidence=conf, assigned_by="vlm",
-                proposed_concept_name=(str(d["proposed_parent"]) if concept == ETC and d.get("proposed_parent") else None),
-                clip_concept_name=clip_concept, needs_review=review))
-            counts["vlm"] += 1
-        else:
-            sims = named_centroids @ g.centroid
-            j = int(np.argmax(sims))
-            dist = 1.0 - float(sims[j])
-            if dist > k.nearest_tau:
-                concept, detail, review = ETC, ETC, True
-            else:
-                src = named[named_groups[j].embed_group_id]
-                concept, detail = str(src["parent"]), str(src["concept"])
-                review = concept != ETC and clip_concept is not None and clip_concept != concept
-                # 이름을 빌려온 그룹과 배경 밝기가 다르면, 가까워도 같은 세트가 아니다 —
-                # 1층(실내 스튜디오)은 검은 스튜디오와 흰 스튜디오를 함께 덮어 CLIP 1층 라벨로는 안 잡힌다.
-                src_bg = _bg_median(rows, named_groups[j].members)
-                own_bg = _bg_median(rows, g.members)
-                if src_bg is not None and own_bg is not None and abs(own_bg - src_bg) > BG_GAP:
-                    counts["bg"] += 1
-                    review = True
-                    log.info("[naming] 그룹 %d(배경 %.0f): 그룹 %d '%s'(배경 %.0f) 의 이름을 빌렸지만 배경이 다르다 — 확인 필요",
-                             g.embed_group_id, own_bg, named_groups[j].embed_group_id, detail, src_bg)
-            assignments.append(ConceptAssignment(
-                embed_group_id=g.embed_group_id, concept_name=concept, detail_name=detail,
-                # confidence 는 vlm 의 자기 확신이 아니라 1 - 중심 거리다 — 다른 축의 값이 한 컬럼에 온다.
-                confidence=round(max(0.0, 1.0 - dist), 3), assigned_by="nearest",
-                clip_concept_name=clip_concept, needs_review=review))
-            counts["nearest"] += 1
-        if assignments[-1].needs_review:
-            counts["review"] += 1
+    for ci, gs in groups_of.items():
+        concept = concepts[ci]
+        concept_review = concept.confidence < k.review_confidence
+        named = named_of.get(ci) or {}
+        named_groups = [g for g in gs if g.embed_group_id in named]
+        for g in gs:
+            if len(gs) == 1:
+                assignments.append(ConceptAssignment(g.embed_group_id, concept.name, DETAIL_ALL, concept.confidence,
+                                                     "vlm", needs_review=concept_review))
+                counts["vlm"] += 1
+            elif g.embed_group_id in named:
+                d = named[g.embed_group_id]
+                conf = _clamp(d["confidence"])
+                bg_off = _bg_outliers(rows, g.members, rows[g.sample_row].sub_scores.get("bg_luma"))
+                counts["bg"] += bool(bg_off)
+                assignments.append(ConceptAssignment(g.embed_group_id, concept.name, str(d["detail"]).strip() or DETAIL_ALL,
+                                                     conf, "vlm",
+                                                     needs_review=concept_review or conf < k.review_confidence or bg_off > 0))
+                counts["vlm"] += 1
+            elif named_groups:
+                sims = np.stack([h.centroid for h in named_groups]) @ g.centroid
+                j = int(np.argmax(sims))
+                dist = 1.0 - float(sims[j])
+                src = named_groups[j]
+                src_bg, own_bg = _bg_median(rows, src.members), _bg_median(rows, g.members)
+                bg_diff = src_bg is not None and own_bg is not None and abs(own_bg - src_bg) > BG_GAP
+                counts["bg"] += bg_diff
+                # confidence 는 VLM 의 자기 확신이 아니라 1 - 중심 거리다 — 다른 축의 값이 한 컬럼에 온다.
+                assignments.append(ConceptAssignment(g.embed_group_id, concept.name, str(named[src.embed_group_id]["detail"]).strip(),
+                                                     round(max(0.0, 1.0 - dist), 3), "nearest",
+                                                     needs_review=concept_review or dist > k.nearest_tau or bg_diff))
+                counts["nearest"] += 1
+            else:                                   # 이 1층의 2층 호출이 아무것도 못 받았다
+                assignments.append(ConceptAssignment(g.embed_group_id, concept.name, DETAIL_ALL, concept.confidence,
+                                                     "nearest", needs_review=True))
+                counts["nearest"] += 1
+            counts["review"] += assignments[-1].needs_review
 
     store.write_assignments(gallery, job_id, assignments)
-
-    per_concept: dict[str, int] = {}
+    per_concept: dict[str, list[str]] = {}
     for a in assignments:
-        per_concept[a.concept_name] = per_concept.get(a.concept_name, 0) + 1
-    return {
-        "gallery": gallery, "pipeline": "v3", "mode": "naming",
-        "photos": len(rows), "embedGroups": len(embed_groups),
-        "vlmGroups": counts["vlm"], "nearestGroups": counts["nearest"],
-        "isolatedGroups": isolated, "bgMismatchGroups": counts["bg"],
-        "needsReview": counts["review"], "concepts": per_concept,
-        "coverage": round(covered / total_photos, 3) if total_photos else 0.0,
-        "extraReps": extra_samples,
-        "llmCalls": calls, "elapsedSeconds": round(time.monotonic() - started, 1),
-    }
+        details = per_concept.setdefault(a.concept_name, [])
+        if a.detail_name not in details:
+            details.append(a.detail_name)
+    return {"embedGroups": len(assignments), "vlmGroups": counts["vlm"], "nearestGroups": counts["nearest"],
+            "bgMismatchGroups": counts["bg"], "needsReview": counts["review"], "folders": per_concept,
+            "llmCalls": sum(1 for v in named_of.values() if v is not None)}

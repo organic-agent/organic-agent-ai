@@ -171,8 +171,7 @@ class DbStore:
         params = [
             (
                 int(job_id), int(gallery), int(r.embed_group_id), r.concept_name,
-                r.proposed_concept_name, r.detail_name, float(r.confidence), r.clip_concept_name,
-                r.assigned_by, bool(r.needs_review),
+                r.detail_name, float(r.confidence), r.assigned_by, bool(r.needs_review),
             )
             for r in rows
         ]
@@ -180,15 +179,14 @@ class DbStore:
             cur.executemany(
                 """
                 INSERT INTO concept_assignments
-                    (job_id, gallery_id, embed_group_id, concept_name, proposed_concept_name,
-                     detail_name, confidence, clip_concept_name, assigned_by, needs_review,
+                    (job_id, gallery_id, embed_group_id, concept_name,
+                     detail_name, confidence, assigned_by, needs_review,
                      created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now(), now())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now(), now())
                 ON CONFLICT (job_id, embed_group_id) DO UPDATE SET
-                    concept_name = EXCLUDED.concept_name, proposed_concept_name = EXCLUDED.proposed_concept_name,
+                    concept_name = EXCLUDED.concept_name,
                     detail_name = EXCLUDED.detail_name, confidence = EXCLUDED.confidence,
-                    clip_concept_name = EXCLUDED.clip_concept_name, assigned_by = EXCLUDED.assigned_by,
-                    needs_review = EXCLUDED.needs_review,
+                    assigned_by = EXCLUDED.assigned_by, needs_review = EXCLUDED.needs_review,
                     updated_at = now(), version = concept_assignments.version + 1
                 """,
                 params,

@@ -1,6 +1,6 @@
 """로컬 실행 진입점. Lambda 와 같은 job.run() 을 부른다.
 
-    python -m categorize --gallery-id 12 --job-id J            # DB 모드, 잡 — naming 까지 (Bedrock 필수)
+    python -m categorize --gallery-id 12 --job-id J [--concept-count 10]   # DB 모드, 잡 — naming 까지 (Bedrock 필수)
     python -m categorize --gallery-id 12 [--llm]                # DB 모드, 잡 없이 그룹화 (+naming 은 저장 안 함)
     python -m categorize --local "dataset1/데이터셋1" [--llm]    # 로컬 데이터셋 (score --local 뒤에) → out/v3/
 
@@ -26,6 +26,7 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--job-id", type=int, help="analysis_jobs.id — 배정 행에 남기고, 실패하면 error 를 쓴다(상태 전이는 wes)")
     ap.add_argument("--llm", action="store_true", help="naming 까지 Bedrock 으로 (--job-id 면 자동)")
     ap.add_argument("--limit", type=int, help="앞에서 N장만 (빠른 확인용)")
+    ap.add_argument("--concept-count", type=int, help="사용자가 기억하는 컨셉 수 (선택). 시간 모드에서는 VLM 에 정확히 이 수로 묶게 한다")
     ap.add_argument("--local", metavar="GALLERY", help="로컬 데이터셋 갤러리 이름 (DB 없이 out/ 에서 읽고 쓴다)")
     ap.add_argument("--all-formats", action="store_true", help="HEIC 포함 (기본은 JPG만, 로컬)")
     args = ap.parse_args(argv)
@@ -40,13 +41,14 @@ def main(argv: list[str] | None = None) -> None:
         from categorize.repository.photos import load_local
         st = LocalStore(settings.out_root, dataset_root=settings.dataset_root)
         refs = load_local(settings.dataset_root, args.local, limit=args.limit, jpg_only=not args.all_formats)
-        result = pipeline.run(st, args.local, refs, settings, llm, job_id=None)
+        result = pipeline.run(st, args.local, refs, settings, llm, job_id=None, concept_count=args.concept_count)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 
     if args.gallery_id is None:
         sys.exit("--gallery-id 또는 --local 이 필요하다")
-    result = job.run(gallery_id=args.gallery_id, settings=settings, job_id=args.job_id, llm=llm, limit=args.limit)
+    result = job.run(gallery_id=args.gallery_id, settings=settings, job_id=args.job_id, llm=llm, limit=args.limit,
+                     concept_count=args.concept_count)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

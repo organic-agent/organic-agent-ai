@@ -22,7 +22,7 @@ class PhotoAnalysis:
     subjects: str = "unknown"
     technical_pct: float = 50.0
     aesthetic_pct: float = 50.0
-    sub_scores: dict = field(default_factory=dict)   # technical_score, aesthetic_score, sharpness, rank_reason, clip_concept_name(score 의 키) …
+    sub_scores: dict = field(default_factory=dict)   # technical_score, aesthetic_score, sharpness, bg_luma, rank_reason …
     # [GLOSSARY-1 2026-09-27] cluster_id → burst_id, cluster_rank → burst_rank (용어집: 연사), model_version → pipeline_version (D3)
     burst_id: int = -1
     burst_rank: int = 0
@@ -35,6 +35,8 @@ class ConceptAssignment:
     """`concept_assignments` 한 행 — 임베딩 그룹 → (컨셉 이름, 세부 이름). 필드 이름 = 컬럼 이름(wes V23, 용어집).
 
     1층 = concept(`concept_name`) = wes `ConceptFolder`, 2층 = detail(`detail_name`) = wes `DetailFolder`.
+    1층 이름은 VLM 이 짓는 자유 텍스트이고 갤러리 안에서 서로 다르다(2026-09-30). 고정 목록 · CLIP 1층 라벨 ·
+    '기타' 제안 이름은 없다 — DB 의 proposed_concept_name · clip_concept_name 컬럼은 NULL 로 남는다(삭제는 wes).
     """
 
     embed_group_id: int
@@ -42,9 +44,6 @@ class ConceptAssignment:
     detail_name: str
     confidence: float
     assigned_by: str                     # 'vlm' | 'nearest'
-    # [GLOSSARY-2 2026-09-27] proposed_concept → proposed_concept_name, clip_concept → clip_concept_name (wes 필드·컬럼과 같은 이름)
-    proposed_concept_name: str | None = None  # concept_name='기타'일 때 VLM 이 제안한 1층 이름
-    clip_concept_name: str | None = None      # CLIP zero-shot 1층 라벨의 그룹 다수결 (검증)
     needs_review: bool = False
 
 
