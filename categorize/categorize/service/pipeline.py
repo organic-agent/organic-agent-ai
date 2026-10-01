@@ -1,20 +1,21 @@
-"""CATEGORIZE 본체 — 갤러리 단위 그룹화 + 이름 짓기. **torch 없음** (numpy · scipy · Bedrock).
+"""CATEGORIZE 본체 — 갤러리 단위 구간 · 컨셉 · 2층 그룹 · 이름. **torch 없음** (numpy · scipy · Bedrock).
 
 입력은 전부 DB(또는 로컬 파일)에 저장된 것이다:
     E  임베더의 DINOv3 (photo_analysis.embedding)          ← 로컬 데이터셋 모드는 CLIP 이 겸한다
     C  score 가 저장한 CLIP (photo_analysis.clip_embedding)
-    score 의 원점수·subjects·CLIP 1층 라벨 (sub_scores)
+    score 의 원점수 · bg_luma (sub_scores), photos.taken_at · camera
 
-    백분위          technical_score · aesthetic_score · sharpness → *_pct (갤러리 안 순위)
-    연사            E, 카메라 파티션 ∧ 순서 창 ∧ cos ≥ threshold      → burst_id · burst_rank
-    임베딩 그룹      X = concat(E ⊕ C), 평균연결 계층 클러스터, 적응 임계 → embed_group_id
-    → store.write_groups (pct · cluster · group · sub_scores 만 — subjects·clip_embedding 은 SCORE 의 것)
-    → naming.run (Bedrock 이름 · 소그룹 최근접 · 저장된 CLIP 1층 라벨 다수결 검증) → concept_assignments
+    백분위     technical_score · aesthetic_score · sharpness → *_pct (갤러리 안 순위)
+    연사       E, 카메라 파티션 ∧ 순서 창 ∧ cos ≥ threshold      → burst_id · burst_rank
+    구간       촬영 시각 공백(없으면 DINOv3 Ward)                  → segment.Segmentation   (service/segment.py)
+    1층        구간 타일을 VLM 이 컨셉으로 묶고 이름                → naming.name_concepts   (conceptCount 는 선택)
+    2층        1층마다 concat(E ⊕ C) 평균연결 계층 클러스터       → embed_group_id (갤러리 전체에서 유일)
+    → store.write_groups (pct · burst · embed_group · sub_scores 만 — subjects·clip_embedding 은 SCORE 의 것)
+    → naming.name_details (1층별 2층 이름 · 최근접 · 검증) → concept_assignments
 
-갤러리는 **한 번만 읽는다** — `store.read_gallery` 한 쿼리로 행·벡터를 받고, 그룹화가 만든 행과 concat 공간([Grouped])을
-naming 에 그대로 넘긴다. 예전엔 naming 이 셋을 다시 읽고 X 를 다시 만들었다(7천 장이면 벡터 44MB 를 두 번).
-항상 갤러리 전체를 다시 계산한다 — 결정적이고 싸다(822장 수 초). 재개는 score 의 일이다.
-FULL 잡은 score Lambda 가 끝에서 이 함수를 체인으로 부르고, NAMING 잡은 wes 가 직접 부른다. (#26·#35)
+갤러리는 **한 번만 읽는다**. 항상 갤러리 전체를 다시 계산한다 — 결정적이고 싸다. 재개는 score 의 일이다.
+llm 이 없으면(로컬 확인용) 구간 하나를 1층 하나로 보고 2층까지 저장한 뒤 이름은 건너뛴다.
+근거: docs/experiments/concept-segmentation-2026-09-30.md
 """
 
 from __future__ import annotations
@@ -29,7 +30,7 @@ from categorize.config.settings import PIPELINE_VERSION, Settings
 from categorize.domain.analysis import PhotoAnalysis, Store
 from categorize.domain.photo import PhotoRef
 from categorize.domain.run import CategorizeResult, Grouped
-from categorize.service import burst, grouping
+from categorize.service import burst, grouping, segment
 
 log = logging.getLogger(__name__)
 
@@ -84,7 +85,7 @@ def assign_ranks(rows: list[PhotoAnalysis]) -> None:
 
 
 def group(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings) -> tuple[Grouped, CategorizeResult]:
-    """백분위·연사·임베딩 그룹을 계산해 저장한다. naming 은 하지 않는다 — 대신 naming 이 쓸 [Grouped] 를 돌려준다."""
+    """백분위 · 연사 · 구간을 계산한다. 저장하지 않는다 — embed_group_id 는 1층이 정해진 뒤에 매긴다."""
     started = time.monotonic()
     k = settings.knobs
     result = CategorizeResult(gallery=gallery)
@@ -110,7 +111,8 @@ def group(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings) 
         raise RuntimeError(f"갤러리 {gallery}: 점수와 벡터가 모두 있는 사진이 없다 — SCORE(FULL) 이 먼저다")
     ordered = [scored[r.photo_id] for r in ordered_refs]
     ids = [r.photo_id for r in ordered]
-    E = np.stack([embs[i] for i in ids])
+    norm = lambda M: M / np.clip(np.linalg.norm(M, axis=1, keepdims=True), 1e-8, None)   # noqa: E731
+    E = norm(np.stack([embs[i] for i in ids]))
     C = np.stack([clips[i] for i in ids])
 
     for key, col in (("technical_score", "technical_pct"), ("aesthetic_score", "aesthetic_pct")):
@@ -122,38 +124,54 @@ def group(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings) 
     t0 = time.monotonic()
     parts = burst.partition_order([r.camera for r in ordered_refs], [r.taken_at for r in ordered_refs])
     burst_ids = burst.cluster_bursts_partitioned(E, parts, k.burst_threshold, k.burst_window)
-    t1 = time.monotonic()
-    X = concat_space(E, C)
-    embed_group_ids, used_d = grouping.embed_groups(X, k.group_distance, k.group_min_groups,
-                                          k.group_max_share, k.group_frag_share)
-    for r, c, g in zip(ordered, burst_ids, embed_group_ids):
-        r.burst_id, r.embed_group_id = int(c), int(g)
+    for r, b in zip(ordered, burst_ids):
+        r.burst_id = int(b)
     assign_ranks(ordered)
+    t1 = time.monotonic()
+    seg = segment.build([r.taken_at for r in ordered_refs], E, [int(b) for b in burst_ids], k)
     t2 = time.monotonic()
-    log.info("[categorize] 갤러리 %s 그룹화: %d장 · 연사 %d (%.1fs) · 그룹 %d (%.1fs) · 읽기 뒤 누적 %.1fs",
+    log.info("[categorize] 갤러리 %s 연사·구간: %d장 · 연사 %d (%.1fs) · 구간 %d %s (%.1fs) · 읽기 뒤 누적 %.1fs",
              gallery, len(ordered), int(burst_ids.max()) + 1 if len(burst_ids) else 0, t1 - t0,
-             int(embed_group_ids.max()) + 1 if len(embed_group_ids) else 0, t2 - t1, t2 - started)
-
-    store.write_groups(gallery, ordered)
+             len(seg.units), seg.mode, t2 - t1, t2 - started)
 
     result.photos = len(ordered)
     result.bursts = int(burst_ids.max()) + 1 if len(burst_ids) else 0
-    result.embed_groups = grouping.group_profile(embed_group_ids)
-    result.group_distance = used_d
+    result.segment_mode, result.segments = seg.mode, len(seg.units)
     result.similarity_profile = burst.similarity_profile(E, k.burst_window) if len(E) > 1 else {}
     result.elapsed_seconds = time.monotonic() - started
-    return Grouped(rows=ordered, X=X), result
+    return Grouped(rows=ordered, X=concat_space(E, C), E=E, segmentation=seg), result
 
 
 def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, llm,
-        job_id: int | None = None) -> dict:
-    """그룹화 뒤 naming 까지. llm 이 None 이면 그룹화만 하고 naming 은 skipped."""
+        job_id: int | None = None, concept_count: int | None = None) -> dict:
+    """구간 → 1층(VLM) → 2층 그룹 저장 → 2층 이름. llm 이 None 이면 구간 = 1층, 이름은 skipped."""
     from categorize.service import naming
 
     started = time.monotonic()
+    k = settings.knobs
     grouped, result = group(store, gallery, refs, settings)
+    units = grouped.segmentation.units
+
     if llm is not None:
-        result.naming = naming.run(store, gallery, settings, llm, job_id=job_id, grouped=grouped)
+        unit_concept, concepts, summary = naming.name_concepts(store, gallery, grouped, settings, llm, concept_count)
+    else:
+        unit_concept = list(range(len(units)))
+        concepts, summary = [], {"segmentMode": grouped.segmentation.mode, "segments": len(units)}
+    concept_of_row = [0] * len(grouped.rows)
+    for u, members in enumerate(units):
+        for i in members:
+            concept_of_row[i] = unit_concept[u]
+
+    embed_group_ids = grouping.detail_groups(grouped.X, concept_of_row, k.group_distance, k.group_frag_share)
+    for r, g in zip(grouped.rows, embed_group_ids):
+        r.embed_group_id = int(g)
+    store.write_groups(gallery, grouped.rows)
+    result.embed_groups = grouping.group_profile(embed_group_ids)
+    result.concepts = summary
+
+    if llm is not None:
+        result.naming = naming.name_details(store, gallery, grouped, concepts, concept_of_row, settings, llm, job_id=job_id)
+        result.naming["llmCalls"] += 1                      # 1층 호출
     else:
         result.naming = "skipped (no --llm)"
     result.elapsed_seconds = time.monotonic() - started

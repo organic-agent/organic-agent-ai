@@ -6,7 +6,7 @@ DB 없이 데이터셋으로 돌릴 때(`--local`)와 테스트가 쓴다. 로�
 from __future__ import annotations
 
 import json
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from pathlib import Path
 
 import numpy as np
@@ -15,22 +15,21 @@ from categorize.domain.analysis import ConceptAssignment, GalleryRead, PhotoAnal
 
 # [GLOSSARY-2 2026-09-27] 캐시 파일 키 = 필드 이름 = DB 컬럼 이름(wes V23). 아래 두 표는 그 전에 쓴 out/ 파일을 읽을 때만 쓴다.
 #: 옛 assignments.jsonl 키 → 필드. 옛 파일은 `parent_name` 키가 있는 것으로 가린다 — 옛 `concept_name` 은 2층이었다.
-_OLD_ASSIGNMENT_KEY = {"parent_name": "concept_name", "concept_name": "detail_name",
-                       "proposed_parent": "proposed_concept_name", "clip_parent": "clip_concept_name"}
-#: 옛 analysis.jsonl 키 → 필드. 세부 점수의 CLIP 컨셉 라벨 키도 함께 옮긴다.
+_OLD_ASSIGNMENT_KEY = {"parent_name": "concept_name", "concept_name": "detail_name"}
+#: 옛 analysis.jsonl 키 → 필드.
 _OLD_ANALYSIS_KEY = {"cluster_id": "burst_id", "cluster_rank": "burst_rank", "model_version": "pipeline_version"}
+_ASSIGNMENT_FIELDS = {f.name for f in fields(ConceptAssignment)}
 
 
 def _analysis_from_cache(d: dict) -> dict:
-    d = {_OLD_ANALYSIS_KEY.get(k, k): v for k, v in d.items()}
-    sub = d.get("sub_scores") or {}
-    if "clip_parent" in sub:
-        d["sub_scores"] = {("clip_concept_name" if k == "clip_parent" else k): v for k, v in sub.items()}
-    return d
+    return {_OLD_ANALYSIS_KEY.get(k, k): v for k, v in d.items()}
 
 
 def _assignment_from_cache(d: dict) -> dict:
-    return {_OLD_ASSIGNMENT_KEY.get(k, k): v for k, v in d.items()} if "parent_name" in d else d
+    """옛 키를 옮기고, 이제 없는 필드(proposed_concept_name · clip_concept_name 등)는 버린다."""
+    if "parent_name" in d:
+        d = {_OLD_ASSIGNMENT_KEY.get(k, k): v for k, v in d.items()}
+    return {k: v for k, v in d.items() if k in _ASSIGNMENT_FIELDS}
 
 
 class LocalStore:
