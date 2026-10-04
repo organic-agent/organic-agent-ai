@@ -3,7 +3,7 @@
     ARNIQA(spaq)                → technical_score
     CLIP ViT-L/14 + LAION MLP   → aesthetic_score
         CLIP 벡터는 저장한다 (photo_analysis.clip_embedding) — categorize 가 재계산 없이 읽는다
-        같은 벡터에 텍스트 프롬프트를 대어 subjects(피사체)·clip_concept_name(컨셉 검증 라벨)도 여기서
+        같은 벡터에 텍스트 프롬프트를 대어 subjects(피사체)도 여기서
     고전 지표                    → sharpness · highlight_clip · shadow_clip · mean_luma (sub_scores)
     → store.write_scores  (subjects · sub_scores · clip_embedding · pipeline_version 만)
 
@@ -69,8 +69,8 @@ def _load_runners():
         torch.set_num_threads(int(threads))
     from score.infrastructure.runners import ArniqaRunner, LaionRunner
     from score.service import classical
-    from score.service.subjects import ConceptTagger, SubjectsTagger
-    return classical, ArniqaRunner, LaionRunner, ConceptTagger, SubjectsTagger
+    from score.service.subjects import SubjectsTagger
+    return classical, ArniqaRunner, LaionRunner, SubjectsTagger
 
 
 def _as_dt(value) -> datetime | None:
@@ -90,13 +90,12 @@ class Scorer:
     def __init__(self, settings: Settings) -> None:
         k = settings.knobs
         t0 = time.monotonic()
-        classical, ArniqaRunner, LaionRunner, ConceptTagger, SubjectsTagger = _load_runners()
+        classical, ArniqaRunner, LaionRunner, SubjectsTagger = _load_runners()
         self.classical = classical
         self.laion = LaionRunner(device=k.device, fp16=k.fp16)
         self.arniqa = ArniqaRunner(long_edge=k.arniqa_long_edge, device=k.device, fp16=k.fp16)
         self.device = getattr(self.laion, "device", None)
         self.tagger = SubjectsTagger(self.laion) if k.subjects_zero_shot else None
-        self.concept_tagger = ConceptTagger(self.laion)
         self.load_seconds = time.monotonic() - t0
         log.info("[score] 러너 로드 %.1fs · %s · clip_batch=%d arniqa_batch=%d fp16=%s decode_workers=%d",
                  self.load_seconds, _compute_env(self.device), k.clip_batch, k.arniqa_batch, k.fp16, k.decode_workers)
@@ -123,7 +122,7 @@ class Scorer:
               stage: dict[str, float], remaining_seconds: Callable[[], float] | None = None) -> None:
         """`todo` 를 계산해 store 에 쓴다. result·stage 를 채운다(호출자가 만든 것)."""
         k = settings.knobs
-        classical, laion, arniqa, tagger, concept_tagger = self.classical, self.laion, self.arniqa, self.tagger, self.concept_tagger
+        classical, laion, arniqa, tagger = self.classical, self.laion, self.arniqa, self.tagger
         result.subjects_used = tagger is not None
         stage["load"] = self.load_seconds
         #: 장별 누적 시간 — 어디서 시간이 가는지 로그로 본다(#51). decode·clip·arniqa 는 묶음 단위라 묶음 시간을 장수로 나눈다.
@@ -229,8 +228,6 @@ class Scorer:
                         if tagger is not None:
                             subjects, margin = tagger.tag(clip_emb)
                             sub["subjects_margin"] = margin
-                        # [GLOSSARY-2 2026-09-27] 세부 점수 키 clip_parent → clip_concept_name (wes V23 이 기존 행도 옮긴다)
-                        sub["clip_concept_name"] = concept_tagger.tag(clip_emb)
                         t_stage["tag"] += time.monotonic() - t
                         rows.append(PhotoAnalysis(photo_id=ref.photo_id, subjects=subjects,
                                                   sub_scores=sub, pipeline_version=PIPELINE_VERSION))

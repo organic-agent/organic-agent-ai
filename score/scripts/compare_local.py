@@ -107,7 +107,7 @@ def compare(a: Path, b: Path, gallery: str, tol: float) -> bool:
         same = diff <= tol
         ok &= same
         print(f"  {key:16s} n={len(pairs):3d} max|Δ|={diff:.3e} {'OK' if same else 'DIFF'}")
-    for key in ("subjects", "clip_concept_name"):
+    for key in ("subjects",):
         va = [ra[i].get(key) if key == "subjects" else ra[i]["sub_scores"].get(key) for i in ids]
         vb = [rb[i].get(key) if key == "subjects" else rb[i]["sub_scores"].get(key) for i in ids]
         mism = sum(1 for x, y in zip(va, vb) if x != y)

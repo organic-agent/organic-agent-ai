@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from score.config.settings import PIPELINE_VERSION, MODULE_ROOT, CONCEPTS, Knobs, Settings
+from score.config.settings import PIPELINE_VERSION, MODULE_ROOT, Knobs, Settings
 from score.controller import handler
 from score.domain.photo import PhotoAnalysis, PhotoRef
 from score.repository.store import LocalStore
@@ -115,7 +115,7 @@ def _world(tmp_path, n=12):
     store = LocalStore(tmp_path / "out", dataset_root=img_root)
     scored = ids[: n // 2]
     rows = [PhotoAnalysis(photo_id=pid, subjects="couple", technical_pct=77.0, burst_id=3, embed_group_id=5,
-                          sub_scores={"technical_score": 0.5, "clip_concept_name": "실내 스튜디오"},
+                          sub_scores={"technical_score": 0.5},
                           pipeline_version=PIPELINE_VERSION) for pid in scored]
     store.write_scores("g", rows, (scored, np.stack([_unit(np.ones(32) + i) for i in range(len(scored))])))
     refs = [PhotoRef(photo_id=pid, path=str(img_root / pid)) for pid in ids]
@@ -124,7 +124,7 @@ def _world(tmp_path, n=12):
 
 
 # ── pipeline ──────────────────────────────────────────────────────────────────
-def test_skips_scored_photos_and_stores_clip_concept_name(tmp_path, fake_runners):
+def test_skips_scored_photos_and_stores_sub_scores(tmp_path, fake_runners):
     store, refs, scored, settings = _world(tmp_path)
 
     result = pipeline.run(store, "g", refs, settings)
@@ -134,7 +134,7 @@ def test_skips_scored_photos_and_stores_clip_concept_name(tmp_path, fake_runners
     assert result["stopped"] is False and result["remaining"] == 0
     back = {r.photo_id: r for r in store.read_analysis("g")}
     new = back[refs[-1].photo_id]
-    assert new.sub_scores["clip_concept_name"] in CONCEPTS and new.pipeline_version == PIPELINE_VERSION
+    assert new.pipeline_version == PIPELINE_VERSION
     assert "technical_score" in new.sub_scores and "sharpness" in new.sub_scores
     ids, C = store.read_clip_embeddings("g")
     assert set(ids) == {r.photo_id for r in refs} and C.shape[0] == len(refs)
@@ -312,30 +312,6 @@ def test_classical_measure_same_for_path_and_decoded_image(tmp_path):
     assert classical.measure(str(path)) == classical.measure(images.load_image(str(path)))
 
 
-def test_bg_luma_reads_the_border_not_the_subject():
-    """검은 배경 + 큰 흰 피사체 — mean_luma 는 밝다고 하고 bg_luma 는 어둡다고 한다(#117)."""
-    from score.service import classical
-
-    a = np.zeros((400, 600), dtype=np.uint8)
-    a[80:320, 150:450] = 255                      # 가운데 흰 드레스 (화면의 30%)
-    dark_bg = classical.measure(Image.fromarray(a).convert("RGB"))
-    assert dark_bg["bg_luma"] < 10                # 테두리는 검다
-    assert dark_bg["mean_luma"] > 60              # 평균은 피사체에 끌려 올라간다
-
-    white_bg = classical.measure(Image.fromarray(255 - a).convert("RGB"))
-    assert white_bg["bg_luma"] > 245              # 같은 구도, 배경만 반대
-    assert dark_bg["bg_luma"] < white_bg["bg_luma"] - 200
-
-
-def test_bg_luma_ignores_a_subject_touching_the_border():
-    """링에 팔 하나가 걸려도 median 이라 배경 값이 유지된다."""
-    from score.service import classical
-
-    a = np.zeros((400, 600), dtype=np.uint8)
-    a[:, 280:320] = 255                           # 위아래 테두리를 관통하는 밝은 띠
-    assert classical.measure(Image.fromarray(a).convert("RGB"))["bg_luma"] < 10
-
-
 # ── categorize 와의 계약 ───────────────────────────────────────────────────────
 def _literal(path: Path, name: str):
     tree = ast.parse(path.read_text(encoding="utf-8"))
@@ -347,11 +323,10 @@ def _literal(path: Path, name: str):
 
 
 # [GLOSSARY-1 2026-09-27] categorize 설정은 층 구조(#131) 뒤 config/settings.py 에 있다 — 옛 경로(config.py)를 보던 탓에 깨져 있었다.
-def test_pipeline_version_and_concepts_match_categorize_module():
+def test_pipeline_version_matches_categorize_module():
     other = MODULE_ROOT.parent / "categorize" / "categorize" / "config" / "settings.py"
     assert MODULE_ROOT.name == "score" and (MODULE_ROOT / "Dockerfile").is_file()   # parents[2] 가 모듈 루트
     assert _literal(other, "PIPELINE_VERSION") == PIPELINE_VERSION
-    assert _literal(other, "CONCEPTS") == CONCEPTS
 
 
 # ── handler ───────────────────────────────────────────────────────────────────

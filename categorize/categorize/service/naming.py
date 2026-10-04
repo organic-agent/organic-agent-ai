@@ -6,8 +6,6 @@
              이름은 갤러리 안에서 서로 달라야 한다 — wes 가 1층을 이름으로 묶는다(AiFolderPlanner).
     ② 2층   1층마다 크기순 커버리지(naming_coverage)까지 대표 1~2장을 1층 이름과 함께 보낸다(1층당 한 호출, 동시에).
              나머지 소그룹은 같은 1층 안 최근접 이름. 그룹이 하나뿐인 1층은 호출하지 않고 `전체`.
-    검증    VLM confidence < review_confidence, 최근접 거리 > nearest_tau, 대표와 배경 밝기(sub_scores.bg_luma) 차 > BG_GAP
-             이면 needs_review. 판정은 VLM 의 것이다.
 
 Bedrock 호출 = 1층 1회 + 2층 (그룹이 둘 이상인 1층 수)회. 이미지는 1층 ≤ concept_max_units 장, 2층 1층당 ≤ naming_chunk 장.
 프롬프트에 컨셉 이름 예시를 주지 않는다 — 스튜디오마다 부르는 이름이 다르고, 사용자가 고친다.
@@ -32,11 +30,6 @@ log = logging.getLogger(__name__)
 
 #: 그룹이 하나뿐인 1층의 2층 이름.
 DETAIL_ALL = "전체"
-
-#: 배경 밝기(0~255)가 이만큼 어긋나면 "다른 배경"으로 본다 — 검증 전용이고 배정은 바꾸지 않는다.
-#: 운영 갤러리 25 실측: 검은 스튜디오 5 · 화이트 벽 199 · 흰 배경 243 (차이 190+), 같은 세트 안의
-#: 자연스러운 흔들림은 30 안팎. 80 은 그 사이에 넉넉히 들어간다.
-BG_GAP = 80.0
 
 CONCEPT_SYSTEM = """당신은 웨딩 스튜디오 촬영 갤러리를 정리한다. 스튜디오는 '컨셉' 단위로 촬영한다 — 컨셉은 배경 세트와
 의상·연출의 조합이고, 한 컨셉을 찍는 동안 구도·포즈·인물 구성·거리(전신/클로즈업)는 계속 바뀐다.
@@ -227,20 +220,6 @@ def _build_embed_groups(members_by_group: dict[int, list[int]], X: np.ndarray) -
     return out
 
 
-def _bg_median(rows, idxs) -> float | None:
-    """사진들의 배경 밝기 median. 값이 하나도 없으면 None — 재점수 전 갤러리는 검증을 건너뛴다."""
-    vals = [rows[i].sub_scores.get("bg_luma") for i in idxs]
-    vals = [float(v) for v in vals if v is not None]
-    return float(np.median(vals)) if vals else None
-
-
-def _bg_outliers(rows, idxs, ref: float | None) -> int:
-    """대표 사진과 배경 밝기가 BG_GAP 넘게 다른 멤버 수. 기준이 없으면 0."""
-    if ref is None:
-        return 0
-    return sum(1 for i in idxs if (v := rows[i].sub_scores.get("bg_luma")) is not None and abs(float(v) - float(ref)) > BG_GAP)
-
-
 def _sample_images(store: Store, gallery: str, rows, samples: dict[int, list[int]], long_edge: int) -> dict[int, list[bytes]]:
     """대표 사진 → LLM 에 보낼 JPEG. 경로는 한 번에 받고(배치 SELECT + 병렬 다운로드), 축소도 스레드로 겹친다."""
     wanted = sorted({rows[i].photo_id for rr in samples.values() for i in rr})
@@ -307,44 +286,32 @@ def name_details(store: Store, gallery: str, grouped: Grouped, concepts: list[Co
         named_of = dict(pool.map(one, list(targets)))
 
     assignments: list[ConceptAssignment] = []
-    counts = {"vlm": 0, "nearest": 0, "review": 0, "bg": 0}
+    counts = {"vlm": 0, "nearest": 0}
     for ci, gs in groups_of.items():
         concept = concepts[ci]
-        concept_review = concept.confidence < k.review_confidence
         named = named_of.get(ci) or {}
         named_groups = [g for g in gs if g.embed_group_id in named]
         for g in gs:
             if len(gs) == 1:
-                assignments.append(ConceptAssignment(g.embed_group_id, concept.name, DETAIL_ALL, concept.confidence,
-                                                     "vlm", needs_review=concept_review))
+                assignments.append(ConceptAssignment(g.embed_group_id, concept.name, DETAIL_ALL, concept.confidence, "vlm"))
                 counts["vlm"] += 1
             elif g.embed_group_id in named:
                 d = named[g.embed_group_id]
-                conf = _clamp(d["confidence"])
-                bg_off = _bg_outliers(rows, g.members, rows[g.sample_row].sub_scores.get("bg_luma"))
-                counts["bg"] += bool(bg_off)
                 assignments.append(ConceptAssignment(g.embed_group_id, concept.name, str(d["detail"]).strip() or DETAIL_ALL,
-                                                     conf, "vlm",
-                                                     needs_review=concept_review or conf < k.review_confidence or bg_off > 0))
+                                                     _clamp(d["confidence"]), "vlm"))
                 counts["vlm"] += 1
             elif named_groups:
                 sims = np.stack([h.centroid for h in named_groups]) @ g.centroid
                 j = int(np.argmax(sims))
                 dist = 1.0 - float(sims[j])
                 src = named_groups[j]
-                src_bg, own_bg = _bg_median(rows, src.members), _bg_median(rows, g.members)
-                bg_diff = src_bg is not None and own_bg is not None and abs(own_bg - src_bg) > BG_GAP
-                counts["bg"] += bg_diff
                 # confidence 는 VLM 의 자기 확신이 아니라 1 - 중심 거리다 — 다른 축의 값이 한 컬럼에 온다.
                 assignments.append(ConceptAssignment(g.embed_group_id, concept.name, str(named[src.embed_group_id]["detail"]).strip(),
-                                                     round(max(0.0, 1.0 - dist), 3), "nearest",
-                                                     needs_review=concept_review or dist > k.nearest_tau or bg_diff))
+                                                     round(max(0.0, 1.0 - dist), 3), "nearest"))
                 counts["nearest"] += 1
             else:                                   # 이 1층의 2층 호출이 아무것도 못 받았다
-                assignments.append(ConceptAssignment(g.embed_group_id, concept.name, DETAIL_ALL, concept.confidence,
-                                                     "nearest", needs_review=True))
+                assignments.append(ConceptAssignment(g.embed_group_id, concept.name, DETAIL_ALL, concept.confidence, "nearest"))
                 counts["nearest"] += 1
-            counts["review"] += assignments[-1].needs_review
 
     store.write_assignments(gallery, job_id, assignments)
     per_concept: dict[str, list[str]] = {}
@@ -353,5 +320,5 @@ def name_details(store: Store, gallery: str, grouped: Grouped, concepts: list[Co
         if a.detail_name not in details:
             details.append(a.detail_name)
     return {"embedGroups": len(assignments), "vlmGroups": counts["vlm"], "nearestGroups": counts["nearest"],
-            "bgMismatchGroups": counts["bg"], "needsReview": counts["review"], "folders": per_concept,
+            "folders": per_concept,
             "llmCalls": sum(1 for v in named_of.values() if v is not None)}

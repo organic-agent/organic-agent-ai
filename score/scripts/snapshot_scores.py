@@ -3,7 +3,7 @@
     python scripts/snapshot_scores.py dump 7 cpu-g7.json        # DB_* 환경변수(터널) 로 photo_analysis 를 내려받는다
     python scripts/snapshot_scores.py compare cpu-g7.json gpu-g7.json
 
-비교: technical·aesthetic·sharpness 의 Spearman ρ · 최대 절대차, subjects·clip_concept_name 일치율, CLIP 벡터 코사인 최소값,
+비교: technical·aesthetic·sharpness 의 Spearman ρ · 최대 절대차, subjects 일치율, CLIP 벡터 코사인 최소값,
 technical+aesthetic 상위 50 집합 겹침. 판정 기준(계획 §4.1): ρ ≥ 0.99.
 """
 
@@ -50,8 +50,7 @@ def compare(a_path: str, b_path: str) -> None:
         rho = spearmanr(x[ok], y[ok]).correlation
         print(f"  {key:16s} spearman={rho:.4f}  maxabs={np.abs(x[ok] - y[ok]).max():.2e}  mean|d|={np.abs(x[ok] - y[ok]).mean():.2e}")
     same_s = sum(a[i]["subjects"] == b[i]["subjects"] for i in ids)
-    same_p = sum(a[i]["sub_scores"].get("clip_concept_name") == b[i]["sub_scores"].get("clip_concept_name") for i in ids)
-    print(f"  subjects 일치 {same_s}/{len(ids)} ({100 * same_s / len(ids):.1f}%)  clip_concept_name 일치 {same_p}/{len(ids)} ({100 * same_p / len(ids):.1f}%)")
+    print(f"  subjects 일치 {same_s}/{len(ids)} ({100 * same_s / len(ids):.1f}%)")
     with_clip = [i for i in ids if a[i]["clip"] and b[i]["clip"]]
     if with_clip:
         cos = [float(np.dot(a[i]["clip"], b[i]["clip"])) for i in with_clip]

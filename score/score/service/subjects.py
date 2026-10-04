@@ -1,22 +1,16 @@
 """CLIP zero-shot 라벨 — 이미 계산하는 CLIP 이미지 임베딩에 텍스트 프롬프트를 대는 것. 추가 비용 ~0.
 
-두 라벨러가 같은 구조다(프롬프트 평균 → 정규화 → 코사인 argmax). score 가 사진마다 계산해
-`photo_analysis`에 저장하고, categorize 는 저장된 라벨만 읽는다(naming.majority) — 그래서 categorize 쪽은 CLIP
-텍스트 인코더(torch)가 필요 없다(#26·#35).
+프롬프트 평균 → 정규화 → 코사인 argmax. score 가 사진마다 계산해 `photo_analysis.subjects` 에 저장한다.
 
     SubjectsTagger  피사체 유형 — 신부 단독 / 신랑 단독 / 둘 / 단체. 2026-08-29 갤러리 1 검증에서
                     확신 라벨 36/36 정답. margin(1위-2위 코사인 차) < 0.01 이면 `unknown` —
                     이 구간의 argmax 는 커플을 신부/신랑 단독으로 오인하는 경우(신랑이 등만 보이는 컷 등)가
                     84장 중 9장이었다. wes 가 세부폴더 칩(BRIDE/GROOM/COUPLE/GROUP)의 다수결에 쓴다.
-    ConceptTagger   컨셉(1층) 고정 목록 — 검증 전용. 822장 실측 일치 79%라 판정에는 못 쓰고,
-                    naming 이 그룹 다수결을 VLM 컨셉과 비교해 needs_review 를 켠다. '기타'는 후보에 없다.
 """
 
 from __future__ import annotations
 
 import numpy as np
-
-from score.config.settings import CONCEPT_PROMPTS, CONCEPTS
 
 SUBJECTS = ("bride", "groom", "couple", "group")
 
@@ -61,16 +55,3 @@ class SubjectsTagger(_ZeroShot):
         if margin < self.min_margin:
             return "unknown", margin
         return labels[0], margin
-
-
-class ConceptTagger(_ZeroShot):
-    def __init__(self, laion_runner) -> None:
-        super().__init__(laion_runner, {p: CONCEPT_PROMPTS[p] for p in CONCEPTS if p in CONCEPT_PROMPTS})
-
-    def tag(self, image_emb: np.ndarray) -> str | None:
-        """사진 한 장의 컨셉 argmax. 후보가 없으면 None."""
-        if not len(self._T):
-            return None
-        labels, _ = self.ranked(image_emb)
-        return labels[0]
-

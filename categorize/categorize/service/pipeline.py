@@ -3,7 +3,7 @@
 입력은 전부 DB(또는 로컬 파일)에 저장된 것이다:
     E  임베더의 DINOv3 (photo_analysis.embedding)          ← 로컬 데이터셋 모드는 CLIP 이 겸한다
     C  score 가 저장한 CLIP (photo_analysis.clip_embedding)
-    score 의 원점수 · bg_luma (sub_scores), photos.taken_at · camera
+    score 의 원점수 (sub_scores), photos.taken_at · camera
 
     백분위     technical_score · aesthetic_score · sharpness → *_pct (갤러리 안 순위)
     연사       E, 카메라 파티션 ∧ 순서 창 ∧ cos ≥ threshold      → burst_id · burst_rank

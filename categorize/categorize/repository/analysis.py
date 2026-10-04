@@ -163,7 +163,9 @@ class DbStore:
         """naming 의 배정을 잡에 매달아 INSERT. 같은 잡의 재실행은 UPSERT 로 덮는다.
 
         잡이 없으면(CLI 확인용 실행) 저장하지 않는다 — concept_assignments 는 job_id 에 매달리고, wes 는 최신 잡의
-        배정을 읽는다. 이름은 로그·결과 payload 로만 남는다."""
+        배정을 읽는다. 이름은 로그·결과 payload 로만 남는다.
+
+        `needs_review` 는 쓰지 않는다 — 컬럼 기본값(false)이 들어간다. wes 가 V34 에서 읽기를 멈췄고 컬럼 삭제는 wes 가 한다."""
         if job_id is None:
             log.warning("gallery %s: 잡이 없어 배정 %d그룹을 저장하지 않는다 (--job-id 가 있어야 concept_assignments 에 남는다)",
                         gallery, len(rows))
@@ -171,7 +173,7 @@ class DbStore:
         params = [
             (
                 int(job_id), int(gallery), int(r.embed_group_id), r.concept_name,
-                r.detail_name, float(r.confidence), r.assigned_by, bool(r.needs_review),
+                r.detail_name, float(r.confidence), r.assigned_by,
             )
             for r in rows
         ]
@@ -180,13 +182,13 @@ class DbStore:
                 """
                 INSERT INTO concept_assignments
                     (job_id, gallery_id, embed_group_id, concept_name,
-                     detail_name, confidence, assigned_by, needs_review,
+                     detail_name, confidence, assigned_by,
                      created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, now(), now())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, now(), now())
                 ON CONFLICT (job_id, embed_group_id) DO UPDATE SET
                     concept_name = EXCLUDED.concept_name,
                     detail_name = EXCLUDED.detail_name, confidence = EXCLUDED.confidence,
-                    assigned_by = EXCLUDED.assigned_by, needs_review = EXCLUDED.needs_review,
+                    assigned_by = EXCLUDED.assigned_by,
                     updated_at = now(), version = concept_assignments.version + 1
                 """,
                 params,

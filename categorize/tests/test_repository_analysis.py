@@ -94,7 +94,8 @@ def test_preview_storage_pool_matches_download_workers(monkeypatch):
 
 # [GLOSSARY-2 2026-09-27] wes V23 뒤로 필드 이름 = 컬럼 이름이다 — 1층 concept_name, 2층 detail_name.
 def test_write_assignments_writes_layers_to_same_named_columns(tmp_path):
-    """1층 이름은 concept_name, 2층 이름은 detail_name. proposed_concept_name · clip_concept_name 은 더 쓰지 않는다(NULL)."""
+    """1층 이름은 concept_name, 2층 이름은 detail_name. proposed_concept_name · clip_concept_name 은 더 쓰지 않는다(NULL).
+    needs_review 도 쓰지 않는다 — 컬럼 기본값(false)이 들어간다. wes 는 읽지 않고 컬럼 삭제는 wes 가 한다."""
     conn = JobConn()
     row = ConceptAssignment(embed_group_id=4, concept_name="블랙 스튜디오", detail_name="촛불",
                             confidence=0.9, assigned_by="vlm")
@@ -106,5 +107,6 @@ def test_write_assignments_writes_layers_to_same_named_columns(tmp_path):
     assert written["concept_name"] == "블랙 스튜디오"
     assert written["detail_name"] == "촛불"
     assert "proposed_concept_name" not in cols and "clip_concept_name" not in cols
+    assert "needs_review" not in sql
     assert (written["job_id"], written["gallery_id"], written["embed_group_id"]) == (3, 7, 4)
     assert conn.commits == 1

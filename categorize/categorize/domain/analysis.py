@@ -22,7 +22,7 @@ class PhotoAnalysis:
     subjects: str = "unknown"
     technical_pct: float = 50.0
     aesthetic_pct: float = 50.0
-    sub_scores: dict = field(default_factory=dict)   # technical_score, aesthetic_score, sharpness, bg_luma, rank_reason …
+    sub_scores: dict = field(default_factory=dict)   # technical_score, aesthetic_score, sharpness, rank_reason …
     # [GLOSSARY-1 2026-09-27] cluster_id → burst_id, cluster_rank → burst_rank (용어집: 연사), model_version → pipeline_version (D3)
     burst_id: int = -1
     burst_rank: int = 0
@@ -44,7 +44,6 @@ class ConceptAssignment:
     detail_name: str
     confidence: float
     assigned_by: str                     # 'vlm' | 'nearest'
-    needs_review: bool = False
 
 
 @dataclass
