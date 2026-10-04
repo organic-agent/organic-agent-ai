@@ -48,7 +48,7 @@ def test_local_store_reads_cache_written_with_old_names(tmp_path):
 
     a, b = store.read_assignments("g")
     assert (a.concept_name, a.detail_name) == ("야외 자연", "해변")
-    assert (b.concept_name, b.detail_name, b.needs_review) == ("실내", "소파", True)
+    assert (b.concept_name, b.detail_name) == ("실내", "소파")   # 옛 needs_review 키는 버린다
     (r,) = store.read_analysis("g")
     assert (r.burst_id, r.burst_rank, r.pipeline_version) == (3, 1, "v")
 

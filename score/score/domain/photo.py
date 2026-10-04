@@ -28,7 +28,7 @@ class PhotoAnalysis:
     subjects: str = "unknown"
     technical_pct: float = 50.0
     aesthetic_pct: float = 50.0
-    sub_scores: dict = field(default_factory=dict)   # technical_score, aesthetic_score, sharpness, clip_concept_name …
+    sub_scores: dict = field(default_factory=dict)   # technical_score, aesthetic_score, sharpness, subjects_margin …
     # [GLOSSARY-1 2026-09-27] cluster_id → burst_id, cluster_rank → burst_rank (용어집: 연사), model_version → pipeline_version (D3)
     burst_id: int = -1
     burst_rank: int = 0

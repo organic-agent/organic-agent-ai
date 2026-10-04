@@ -2,8 +2,8 @@
 
 갤러리 하나를 **한 번에** 읽어 백분위 · 연사를 만들고, 촬영 시각(없으면 이미지)으로 자른 구간을 Bedrock 이 **컨셉(1층)**으로 묶은 뒤
 1층 안에서 **세부(2층)** 그룹을 만들어 이름을 붙인다. `photo_analysis`(pct · burst · embed_group) 와 `concept_assignments` 에 적재한다.
-입력은 전부 DB 에 저장된 것이다 — [`embedder/`](../embedder/README.md) 의 DINOv3 · 촬영 시각, [`score/`](../score/README.md) 의 원점수 · CLIP ·
-`bg_luma`. 그래서 numpy · scipy · Bedrock 만으로 돌고 torch 가 없다(테스트가 고정). 실제 폴더는 wes 가 배정을 읽어 만든다.
+입력은 전부 DB 에 저장된 것이다 — [`embedder/`](../embedder/README.md) 의 DINOv3 · 촬영 시각, [`score/`](../score/README.md) 의 원점수 · CLIP.
+그래서 numpy · scipy · Bedrock 만으로 돌고 torch 가 없다(테스트가 고정). 실제 폴더는 wes 가 배정을 읽어 만든다.
 
 ```
 wes ──EVENT {galleryId, jobId, conceptCount?}──▶ [categorize] ──▶ concept_assignments · photo_analysis 백분위·연사·그룹
@@ -17,7 +17,7 @@ VLM 이 짓는 자유 이름이고 사용자가 고친다. 근거: `docs/experim
 ## 무엇을 계산하나 (`service/pipeline.py`)
 
 ```
-갤러리 한 번 (E = DINOv3, C = CLIP, 원점수 · bg_luma, taken_at · camera — 전부 DB)
+갤러리 한 번 (E = DINOv3, C = CLIP, 원점수, taken_at · camera — 전부 DB)
   백분위     technical/aesthetic_score · sharpness → *_pct (NaN → 50)
   연사       E, 카메라 파티션 ∧ taken_at 순 창 ≤ 8 ∧ cos ≥ 0.96 → burst_id · burst_rank(연사 대표 0, rank_reason)
   구간       (service/segment.py) 시각이 90% 이상 있고 서로 다르면 → 시각순, 5분 넘게 쉰 곳에서 자름.
@@ -30,7 +30,6 @@ VLM 이 짓는 자유 이름이고 사용자가 고친다. 근거: `docs/experim
 → store.write_groups  (pct · burst · embed_group · sub_scores 만 — subjects · clip_embedding · pipeline_version 은 score 의 것)
 → naming.name_details  1층마다 커버리지 85% 까지 대표 1~2장 + 1층 이름 → 2층 이름(1층당 한 호출, 동시에)
                        나머지는 같은 1층 안 최근접. 그룹이 하나뿐인 1층은 호출 없이 "전체"
-                       needs_review: confidence < 0.8 · 최근접 거리 > 0.25 · 배경 밝기 차 > 80
 → store.write_assignments (concept_assignments, job_id 에 매달림)
 ```
 
@@ -103,15 +102,16 @@ naming 이 닿는다. 메모리 2–3GB 면 7,000장(거리행렬 ~200MB)까지 
 
 - `photo_analysis`: `technical_pct` · `aesthetic_pct` · `burst_id` · `burst_rank` · `embed_group_id` ·
   `sub_scores{sharpness_pct, rank_reason}`(score 의 키에 더해서)
-- `concept_assignments`: `job_id` · `embed_group_id` · `concept_name` · `detail_name` · `confidence` · `assigned_by` · `needs_review`.
+- `concept_assignments`: `job_id` · `embed_group_id` · `concept_name` · `detail_name` · `confidence` · `assigned_by`.
+  `needs_review` 는 쓰지 않는다(컬럼 기본값 false, wes 는 V34 부터 읽지 않는다. 컬럼 삭제는 wes).
   `concept_name` 은 자유 이름이고 갤러리 안에서 유일하다. `proposed_concept_name` · `clip_concept_name` 은 더 쓰지 않는다(NULL, 컬럼 삭제는 wes)
 - 페이로드 `conceptCount`(선택): 사용자가 기억하는 컨셉 수. wes 가 넘긴다
 - 용어: 이름의 정본은 용어집(WES-DOCS `docs/glossary.md`)이다. 필드 이름 = DB 컬럼 이름 = wes 필드 이름(wes V23) —
   1층 `concept_name` = wes `ConceptFolder`, 2층 `detail_name` = wes `DetailFolder`, 연사 `burst_id`·`burst_rank`, 임베딩 그룹 `embed_group_id`,
   파이프라인 버전 `pipeline_version`·`PIPELINE_VERSION`. Bedrock 프롬프트의 JSON 키는 `concepts[].segments` · `groups[].detail` 이다.
   로컬 캐시(`out/`)의 옛 키는 읽을 때 옮기고, 없어진 필드는 버린다(`repository/local.py`).
-- 손잡이(`config/settings.py`): 연사 0.96, 구간 공백 300초 · 흡수 0.5% · 시각 비율 90% · 이미지 묶음 36, 그룹 거리 0.2, 최근접 τ 0.25,
-  커버리지 0.85, review confidence 0.8. 연사·그룹 값은
+- 손잡이(`config/settings.py`): 연사 0.96, 구간 공백 300초 · 흡수 0.5% · 시각 비율 90% · 이미지 묶음 36, 그룹 거리 0.2,
+  커버리지 0.85. 연사·그룹 값은
   CLIP/DINOv2 시절 실측이라 DINOv3 기준 재측정 대상 — 결과의 `similarityProfile` 이 근거.
 
 설계 근거·역사는 `docs/photoselect/`(review-v3-design.md, plan-v3-folder-compare.md, pipeline-history.md).

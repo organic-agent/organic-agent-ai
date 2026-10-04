@@ -65,10 +65,6 @@ class Knobs:
     naming_max_tokens: int = 4096
     #: VLM에 보내는 2층 대표 JPEG 긴 변.
     naming_image_long_edge: int = 768
-    #: 최근접으로 2층 이름을 빌린 그룹의 코사인 거리가 이보다 멀면 needs_review.
-    nearest_tau: float = 0.25
-    #: VLM confidence가 이보다 낮으면 needs_review.
-    review_confidence: float = 0.8
 
 
 @dataclass(frozen=True)

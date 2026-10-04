@@ -17,8 +17,7 @@
 사진마다 (embedder 가 만든 미리보기 JPEG 입력)
   LaionRunner.embed         → CLIP 768d (저장: photo_analysis.clip_embedding — categorize 가 재계산 없이 읽는다)
      ├─ score_from_embedding → aesthetic_score (LAION MLP)
-     ├─ SubjectsTagger.tag   → subjects (bride|groom|couple|group|unknown, margin < 0.01 → unknown)
-     └─ ConceptTagger.tag    → sub_scores.clip_concept_name (컨셉 고정 목록 argmax — categorize naming 의 검증용)
+     └─ SubjectsTagger.tag   → subjects (bride|groom|couple|group|unknown, margin < 0.01 → unknown)
   ArniqaRunner.score        → technical_score (spaq 회귀기)
   classical.measure         → sharpness · highlight_clip · shadow_clip · mean_luma
 → store.write_scores  (subjects · sub_scores · clip_embedding · pipeline_version 만)
@@ -52,13 +51,13 @@ score/
 │   ├── service/               job.py(photoIds 경로 = 운영 폴백 / 갤러리 경로 = 로컬·벤치마크, 잡·체인 없음 #98)
 │   │                          · pipeline.py(SCORE 본체 — 위 그림. Scorer 러너 1회 로드 · 디코드 1회 · CLIP/ARNIQA 배치 · 배치 쓰기 · 데드라인 정지)
 │   │                          · worker.py(GPU 워커 루프 #75: photo_analysis SKIP LOCKED 32장 집기 → 점수 → commit, 유휴면 자기 정지)
-│   │                          · classical.py(Laplacian 선명도 · 노출 클립 · bg_luma) · subjects.py(CLIP zero-shot — SubjectsTagger · ConceptTagger)
+│   │                          · classical.py(Laplacian 선명도 · 노출 클립 · 평균 밝기) · subjects.py(CLIP zero-shot — SubjectsTagger)
 │   ├── domain/                photo.py(PhotoRef · PhotoAnalysis) · run.py(ScoreResult) · errors.py(PREVIEW_MISSING · SCORE_FAILED) — 로직 없음
 │   ├── repository/            connection.py(Postgres 접속) · photos.py(대상 조회: load_db · load_by_ids) · store.py(LocalStore(out/v3/) · DbStore — write_scores · claim_batch · write_errors)
 │   │                          · storage.py(S3 미리보기 · download_previews, 404 → missing) · dataset.py(로컬 데이터셋 폴더: list_galleries · load_local)
 │   ├── infrastructure/        runners/(ArniqaRunner — torch.hub SHA 고정 · LaionRunner — open_clip + MLP) · device.py(cuda → mps → cpu · fp16 autocast)
 │   │                          · images.py(PIL 로드 — load_image · fit_long_edge · as_image) · ec2.py(IMDS · StopInstances) · gpu.py(NVML 사용률 표본)
-│   └── config/settings.py     Settings · Knobs · PIPELINE_VERSION · CONCEPTS · CONCEPT_PROMPTS · MODULE_ROOT
+│   └── config/settings.py     Settings · Knobs · PIPELINE_VERSION · MODULE_ROOT
 ├── tests/test_score.py   pytest 35 — 재개 · 컬럼 경계 · 배치/데드라인 · CLIP/ARNIQA 배치·실패 격리 · 프리페치 · 집기(SKIP LOCKED·error) · GPU 워커 루프 · photoIds 폴백 · handler 계약 · categorize 와의 상수 일치
 ├── Dockerfile · deploy.sh   컨테이너 Lambda (가중치 빌드 시 번들, CMD `score.controller.handler.handler`) · ECR 푸시 + update-function-code
 ├── Dockerfile.gpu           GPU 워커·벤치마크 이미지 (cu121 torch). main 의 score/** 변경마다 CI 가 ECR :gpu(이동) + :gpu-<sha>(불변) 로 민다(#77)
@@ -145,6 +144,5 @@ ARNIQA hub)는 빌드 시 `/opt` 아래에 굽는다 — NAT 없는 서브넷이
 
 ## wes 가 읽는 계약
 
-`photo_analysis.subjects` · `sub_scores{technical_score, aesthetic_score, sharpness, highlight_clip, shadow_clip, subjects_margin,
-clip_concept_name}` · `clip_embedding` · `pipeline_version`. 키 이름을 바꾸면 wes·categorize 와 함께 바꾼다.
+`photo_analysis.subjects` · `sub_scores{technical_score, aesthetic_score, sharpness, highlight_clip, shadow_clip, subjects_margin}` · `clip_embedding` · `pipeline_version`. 키 이름을 바꾸면 wes·categorize 와 함께 바꾼다.
 설계 근거·역사는 `docs/photoselect/`(review-v3-design.md, pipeline-history.md).

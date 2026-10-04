@@ -35,11 +35,11 @@ class World:
     set_of: list[int]              # 사진별 정답 세트(갤러리 전체에서 유일)
 
 
-def world(tmp_path, order=(0, 1, 2), sets=1, per_set=10, seed=0, bg=None, timed=True, gap_s=900, shot_s=5) -> World:
+def world(tmp_path, order=(0, 1, 2), sets=1, per_set=10, seed=0, timed=True, gap_s=900, shot_s=5) -> World:
     """컨셉마다 중심 + 세트마다 중심에서 벗어난 방향 + 작은 노이즈. E·C 는 같은 구조를 공유한다.
 
     order = 촬영 순서의 컨셉 번호 — (0, 1, 0) 이면 컨셉 0 을 나중에 다시 찍는다. 블록 사이 공백 gap_s, 블록 안 간격 shot_s.
-    bg(concept, set, j) 를 주면 sub_scores.bg_luma 로 싣는다. timed=False 면 taken_at 이 없다(이미지 모드).
+    timed=False 면 taken_at 이 없다(이미지 모드).
     """
     rng = np.random.default_rng(seed)
     dim = 32
@@ -59,8 +59,6 @@ def world(tmp_path, order=(0, 1, 2), sets=1, per_set=10, seed=0, bg=None, timed=
                 pid = f"b{b}-c{c}-s{s}-{j:02d}.jpg"
                 sub = {"technical_score": rng.uniform(0.3, 0.8), "aesthetic_score": rng.uniform(5, 6.5),
                        "sharpness": rng.uniform(50, 500)}
-                if bg is not None:
-                    sub["bg_luma"] = float(bg(c, s, j))
                 rows.append(PhotoAnalysis(photo_id=pid, subjects="couple", sub_scores=sub, pipeline_version=PIPELINE_VERSION))
                 refs.append(PhotoRef(photo_id=pid, path=None, taken_at=t if timed else None, camera="A"))
                 concept_of.append(c)
@@ -94,11 +92,10 @@ class FakeLlm:
 
     merge 기본값은 구간마다 자기 컨셉. names 로 컨셉 이름을 바꿀 수 있다(중복 이름 시험용)."""
 
-    def __init__(self, merge=None, names=None, concept_conf=0.95, low_conf_group=None, drop_segments=()):
+    def __init__(self, merge=None, names=None, concept_conf=0.95, drop_segments=()):
         self.merge = merge or (lambda u: u)
         self.names = names or (lambda c: f"컨셉{c}")
         self.concept_conf = concept_conf
-        self.low_conf_group = low_conf_group
         self.drop_segments = set(drop_segments)
         self.calls: list[tuple[str, str]] = []      # (kind, 첫 텍스트)
 
@@ -114,7 +111,7 @@ class FakeLlm:
                                  for c, us in sorted(by.items())]}
         assert system == DETAIL_SYSTEM
         self.calls.append(("detail", head))
-        return {"groups": [{"group_id": g, "detail": f"세트{g}", "confidence": 0.3 if g == self.low_conf_group else 0.95}
+        return {"groups": [{"group_id": g, "detail": f"세트{g}", "confidence": 0.95}
                            for g in _labels(user, "[그룹")]}
 
     def kinds(self) -> list[str]:

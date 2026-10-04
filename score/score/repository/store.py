@@ -36,16 +36,12 @@ class Store(Protocol):
 #: 분석 필드 → analysis.jsonl 키. 키는 photo_analysis 컬럼 이름 그대로 — categorize 의 LocalStore 와 같은 파일 규약.
 # [GLOSSARY-1 2026-09-27] 필드 이름만 용어집으로 바꾸고 파일 키는 유지한다(기존 out/ 파일 호환).
 # [GLOSSARY-2 2026-09-27] 캐시 파일 키 = 필드 이름 = DB 컬럼 이름(wes V23). 이 표는 그 전에 쓴 out/ 파일을 읽을 때만 쓴다
-#: (categorize 의 LocalStore 와 같은 규칙 — 세부 점수의 clip_parent 키도 옮긴다).
+#: (categorize 의 LocalStore 와 같은 규칙).
 _OLD_ANALYSIS_KEY = {"cluster_id": "burst_id", "cluster_rank": "burst_rank", "model_version": "pipeline_version"}
 
 
 def _analysis_from_cache(d: dict) -> dict:
-    d = {_OLD_ANALYSIS_KEY.get(k, k): v for k, v in d.items()}
-    sub = d.get("sub_scores") or {}
-    if "clip_parent" in sub:
-        d["sub_scores"] = {("clip_concept_name" if k == "clip_parent" else k): v for k, v in sub.items()}
-    return d
+    return {_OLD_ANALYSIS_KEY.get(k, k): v for k, v in d.items()}
 
 
 class LocalStore:

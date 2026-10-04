@@ -98,7 +98,7 @@ def test_sets_inside_a_concept_get_their_own_names(tmp_path):
     back = w.store.read_assignments("g")
     assert llm.kinds().count("detail") == 2 and result["llmCalls"] == 2
     assert result["embedGroups"] == 6 and result["vlmGroups"] == 6
-    assert all(a.detail_name.startswith("세트") and not a.needs_review for a in back)
+    assert all(a.detail_name.startswith("세트") for a in back)
     # 2층이 1층을 넘지 않는다
     by_group = {}
     for r, c in zip(grouped.rows, concept_of_row):
@@ -108,50 +108,13 @@ def test_sets_inside_a_concept_get_their_own_names(tmp_path):
 
 def test_coverage_target_sends_the_rest_to_the_nearest_group(tmp_path):
     w = world(tmp_path, order=(0,), sets=4, per_set=6)
-    settings = with_knobs(w.settings, naming_coverage=0.4, nearest_tau=1.0)
+    settings = with_knobs(w.settings, naming_coverage=0.4)
     llm = FakeLlm()
     grouped = _grouped(w, settings)
     unit_concept, concepts, _ = name_concepts(w.store, "g", grouped, settings, llm)
     result, _ = _details(w, grouped, unit_concept, concepts, llm, settings)
     assert result["vlmGroups"] == 2 and result["nearestGroups"] == 2
     assert all(a.detail_name.startswith("세트") for a in w.store.read_assignments("g"))
-
-
-def test_far_nearest_low_confidence_and_weak_concept_need_review(tmp_path):
-    w = world(tmp_path, order=(0,), sets=3, per_set=6)
-    settings = with_knobs(w.settings, naming_coverage=0.5, nearest_tau=0.0)
-    grouped = _grouped(w, settings)
-    llm = FakeLlm(low_conf_group=0)
-    unit_concept, concepts, _ = name_concepts(w.store, "g", grouped, settings, llm)
-    _details(w, grouped, unit_concept, concepts, llm, settings)
-    back = {a.embed_group_id: a for a in w.store.read_assignments("g")}
-    assert back[0].needs_review                                               # 낮은 확신
-    assert all(a.needs_review for a in back.values() if a.assigned_by == "nearest")   # τ=0 밖
-
-    llm = FakeLlm(concept_conf=0.5)                                          # 1층 자체가 약하면 전부
-    grouped = _grouped(w, settings)
-    unit_concept, concepts, _ = name_concepts(w.store, "g", grouped, settings, llm)
-    _details(w, grouped, unit_concept, concepts, llm, settings)
-    assert all(a.needs_review for a in w.store.read_assignments("g"))
-
-
-def test_background_outlier_inside_a_named_group_needs_review(tmp_path):
-    w = world(tmp_path, order=(0,), sets=2, per_set=8, bg=lambda c, s, j: 200.0 if j % 2 == 0 else 5.0)
-    llm = FakeLlm()
-    grouped = _grouped(w)
-    unit_concept, concepts, _ = name_concepts(w.store, "g", grouped, w.settings, llm)
-    result, _ = _details(w, grouped, unit_concept, concepts, llm)
-    assert result["bgMismatchGroups"] == result["embedGroups"] == 2
-    assert all(a.needs_review for a in w.store.read_assignments("g"))
-
-
-def test_missing_bg_luma_never_triggers_review(tmp_path):
-    w = world(tmp_path, order=(0,), sets=3, per_set=6)
-    llm = FakeLlm()
-    grouped = _grouped(w)
-    unit_concept, concepts, _ = name_concepts(w.store, "g", grouped, w.settings, llm)
-    result, _ = _details(w, grouped, unit_concept, concepts, llm)
-    assert result["bgMismatchGroups"] == 0 and result["needsReview"] == 0
 
 
 def test_detail_calls_run_concurrently_and_failures_propagate(tmp_path):
