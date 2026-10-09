@@ -27,6 +27,14 @@ ENV HOME=/opt/home \
 RUN mkdir -p /opt/home /opt/torch \
  && SCORE_DEVICE=cpu python -c "from score.infrastructure.runners import LaionRunner, ArniqaRunner; LaionRunner(); ArniqaRunner()"
 
+# GPU 손잡이(wes #274 S-6). 기본값(settings.py Knobs)은 Lambda(CPU)용이라, 이 이미지는 GPU 벤치마크(#68)에서 고른 값을 쓴다.
+# 인프라 유닛은 이 값을 넘기지 않는다 — 값의 주인은 여기 하나. 급할 때는 유닛의 `docker run -e` 로 덮는다.
+ENV CLIP_BATCH=32 \
+    ARNIQA_BATCH=8 \
+    SCORE_DECODE_WORKERS=4 \
+    SCORE_DOWNLOAD_WORKERS=16 \
+    SCORE_FP16=1
+
 # 기본은 GPU 워커(#75): `docker run --gpus all <image>` → `python -m score worker --gpu`.
 # SageMaker 벤치마크는 `docker run <image> train` 으로 띄우므로 CMD 가 `train` 으로 바뀌어 sagemaker 진입점이 돈다.
 ENTRYPOINT ["python", "-m", "score"]
