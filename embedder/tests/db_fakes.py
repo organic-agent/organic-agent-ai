@@ -21,6 +21,7 @@ def install_stubs() -> None:
     except ModuleNotFoundError:
         psycopg_module = types.ModuleType("psycopg")
         psycopg_module.Error = RuntimeError
+        psycopg_module.OperationalError = type("OperationalError", (RuntimeError,), {})
         sys.modules["psycopg"] = psycopg_module
 
     try:
