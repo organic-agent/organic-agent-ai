@@ -35,6 +35,10 @@ ENV CLIP_BATCH=32 \
     SCORE_DOWNLOAD_WORKERS=16 \
     SCORE_FP16=1
 
+# 점수 두 단계(wes #274 2물결, #151). 폴더가 기다리는 CLIP·피사체를 먼저 내고 화질 점수는 뒤에 채운다 — GPU 이미지만 켠다.
+# Lambda(CPU) 폴백은 이 값과 무관하게 한 번에 계산한다. 되돌리기: 이 줄을 0 으로(또는 유닛의 `docker run -e SCORE_SPLIT=0`).
+ENV SCORE_SPLIT=1
+
 # 기본은 GPU 워커(#75): `docker run --gpus all <image>` → `python -m score worker --gpu`.
 # SageMaker 벤치마크는 `docker run <image> train` 으로 띄우므로 CMD 가 `train` 으로 바뀌어 sagemaker 진입점이 돈다.
 ENTRYPOINT ["python", "-m", "score"]
