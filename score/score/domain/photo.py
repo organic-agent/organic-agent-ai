@@ -36,3 +36,5 @@ class PhotoAnalysis:
     pipeline_version: str = ""
     #: 마지막으로 점수를 쓴 시각(DB timestamptz | 로컬 ISO 문자열). force 재계산의 "이번 실행 전 점수" 판정(#54).
     analyzed_at: object | None = None
+    #: 이 쓰기가 화질 점수(2단계)까지 담았나 — 그러면 `quality_scored_at` 을 찍는다(wes V40). 1단계만이면 False.
+    quality_scored: bool = True

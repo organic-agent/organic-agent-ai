@@ -401,12 +401,16 @@ class _Cur:
         self.conn.executed.append((" ".join(sql.split()), list(params)))
 
     def fetchall(self):
+        if self.conn.returning:
+            return self.conn.returning.pop(0)
         return self.conn.rows
 
 
 class _Conn:
-    def __init__(self, rows=()):
+    def __init__(self, rows=(), returning=()):
         self.rows = list(rows)
+        #: 문장마다 fetchall 이 돌려줄 행(차례로). 비면 rows.
+        self.returning = [list(r) for r in returning]
         self.executed = []
         self.commits = 0
         self.rollbacks = 0
@@ -485,7 +489,17 @@ def fake_worker(monkeypatch, tmp_path):
         def write_errors(self, ids, error):
             state.setdefault("errors", []).append((list(ids), error))
 
+        def claim_quality_batch(self, n, exclude=None, lease_seconds=120):
+            batch = state["quality_queue"].pop(0) if state.get("quality_queue") else []
+            state.setdefault("quality_claims", []).append(len(batch))
+            return batch
+
+        def write_quality(self, gallery, scores):
+            state.setdefault("quality_marks", []).append(sorted(scores))
+            return set(scores)
+
     def run(store, gallery, refs, settings, force=False, scorer=None, **kw):
+        state.setdefault("stages", []).append(kw.get("stage"))
         state["runs"].append([r.photo_id for r in refs])
         if any(r.photo_id == "boom" for r in refs):
             raise RuntimeError("batch boom")
@@ -790,3 +804,149 @@ def test_gpu_worker_stop_self_skips_outside_ec2(monkeypatch):
     monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda *a, **k: pytest.fail("boto3 를 부르면 안 된다")))
 
     assert ec2.stop_self() is False
+
+
+# ── 두 단계(wes #274 2물결, SCORE_SPLIT) ──────────────────────────────────────
+def _split_settings(settings):
+    from dataclasses import replace
+
+    return replace(settings, knobs=replace(settings.knobs, split=True))
+
+
+def test_fast_stage_scores_clip_subjects_aesthetic_only_with_reduced_decode(tmp_path, fake_runners, monkeypatch):
+    """1단계: 축소 디코드 + CLIP·피사체·미학. ARNIQA·화질 지표는 돌지 않고, technical_score 키를 쓰지 않는다(categorize 가 그 키로 화질 점수를 읽는다)."""
+    store, refs, scored, settings = _world(tmp_path)
+    opened = []
+    real = pipeline.load_for_clip
+    monkeypatch.setattr(pipeline, "load_for_clip", lambda path: opened.append(path) or real(path))
+    new = refs[len(scored):]
+
+    result = pipeline.run(store, "g", new, settings, force=True, stage=pipeline.STAGE_FAST)
+
+    assert result["processed"] == len(new) and result["stage"] == "fast"
+    assert len(opened) == len(new) and fake_runners.arniqa.seen == []
+    back = {r.photo_id: r for r in store.read_analysis("g")}
+    for ref in new:
+        row = back[ref.photo_id]
+        assert "aesthetic_score" in row.sub_scores and "technical_score" not in row.sub_scores and "sharpness" not in row.sub_scores
+        assert row.quality_scored is False
+
+
+def test_quality_stage_merges_arniqa_and_classical_and_marks_done_even_on_failure(tmp_path, fake_runners):
+    """2단계: 1024 디코드 + ARNIQA·화질 지표를 sub_scores 에 더한다(1단계 키는 남는다). 디코드에 실패한 장도 빈 점수로 끝 표시."""
+    store, refs, scored, settings = _world(tmp_path)
+    new = refs[len(scored):]
+    pipeline.run(store, "g", new, settings, force=True, stage=pipeline.STAGE_FAST)
+    broken = PhotoRef(photo_id=new[0].photo_id, path=str(tmp_path / "없는.jpg"))
+
+    result = pipeline.run(store, "g", [broken] + new[1:], settings, force=True, stage=pipeline.STAGE_QUALITY)
+
+    assert result["stage"] == "quality" and result["qualityFailed"] == [broken.photo_id] and result["failed"] == []
+    back = {r.photo_id: r for r in store.read_analysis("g")}
+    assert all(back[r.photo_id].quality_scored for r in new)
+    ok = back[new[1].photo_id].sub_scores
+    assert ok["technical_score"] == 0.6 and ok["sharpness"] == 100.0 and "aesthetic_score" in ok
+    assert "technical_score" not in back[broken.photo_id].sub_scores
+
+
+def test_write_scores_merges_sub_scores_and_stamps_quality_only_when_included():
+    from score.repository.store import DbStore
+
+    conn = _Conn()
+    rows = [PhotoAnalysis(photo_id="11", subjects="couple", sub_scores={"aesthetic_score": 5.0}, pipeline_version=PIPELINE_VERSION,
+                          quality_scored=False),
+            PhotoAnalysis(photo_id="12", subjects="couple", sub_scores={"technical_score": 0.5}, pipeline_version=PIPELINE_VERSION)]
+    DbStore(SimpleNamespace(), conn).write_scores("g", rows, (["11", "12"], np.zeros((2, 4))))
+
+    sql, params = conn.executed[0]
+    assert "sub_scores = photo_analysis.sub_scores || EXCLUDED.sub_scores" in sql
+    assert "CASE WHEN %s THEN now() END" in sql
+    assert "quality_scored_at = COALESCE(EXCLUDED.quality_scored_at, photo_analysis.quality_scored_at)" in sql
+    assert [p[-1] for p in params] == [False, True]
+    assert conn.commits == 1
+
+
+def test_claim_quality_batch_marks_a_lease_and_commits_without_holding_locks():
+    """방식 B(wes #274 R-2-2): 찜을 찍고 곧바로 commit — 계산하는 동안 행을 잠그지 않는다. 찜이 오래되면 다시 집힌다."""
+    from score.repository.store import DbStore
+
+    conn = _Conn(rows=[(21, "previews/q.jpg", None, None, None)])
+    refs = DbStore(SimpleNamespace(), conn).claim_quality_batch(32, exclude=[5], lease_seconds=120)
+
+    sql, params = conn.executed[0]
+    assert "a.clip_embedding IS NOT NULL AND a.quality_scored_at IS NULL AND a.error IS NULL" in sql
+    assert "a.quality_claimed_at IS NULL OR a.quality_claimed_at < now() - make_interval(secs => %s)" in sql
+    assert "FOR UPDATE OF a SKIP LOCKED" in sql and "SET quality_claimed_at = now()" in sql and "OFFSET 0" in sql
+    assert params == (120, [5], 32)
+    assert [r.photo_id for r in refs] == ["21"]
+    assert conn.commits == 1                                      # 잠금은 찜 한 문장 동안만
+
+
+def test_write_quality_writes_only_lockable_rows_in_one_statement_and_retries_the_rest():
+    """잠긴 행(categorize 가 폴더 묶음을 쓰는 중)은 기다리지 않고 건너뛴 뒤 다시 쓴다 — categorize 를 막지도, 교착을 만들지도 않는다."""
+    from score.repository.store import DbStore
+
+    conn = _Conn(returning=[[(21,)], [(22,)]])                    # 첫 시도엔 21만 잠겼고, 다음 시도에 22
+    sleeps = []
+    written = DbStore(SimpleNamespace(), conn).write_quality(
+        "worker", {"21": {"technical_score": 0.4}, "22": {}}, sleep=sleeps.append)
+
+    assert written == {"21", "22"}
+    first_sql, first_params = conn.executed[0]
+    assert "FOR UPDATE OF a SKIP LOCKED" in first_sql and "unnest(%s::bigint[], %s::text[])" in first_sql
+    assert "sub_scores = a.sub_scores || v.patch::jsonb" in first_sql and "quality_claimed_at = NULL" in first_sql
+    assert first_params == ([21, 22], ['{"technical_score": 0.4}', "{}"])
+    assert conn.executed[1][1] == ([22], ["{}"])                  # 남은 행만 다시
+    assert len(sleeps) == 1 and conn.commits == 2
+
+
+def test_write_quality_gives_up_after_retries_and_leaves_lease_to_expire():
+    from score.repository.store import DbStore, WRITE_QUALITY_RETRIES
+
+    conn = _Conn(returning=[[] for _ in range(WRITE_QUALITY_RETRIES + 1)])
+    sleeps = []
+    written = DbStore(SimpleNamespace(), conn).write_quality("worker", {"31": {}}, sleep=sleeps.append)
+
+    assert written == set()
+    assert len(conn.executed) == WRITE_QUALITY_RETRIES + 1 and len(sleeps) == WRITE_QUALITY_RETRIES
+
+
+def test_gpu_worker_split_does_stage_one_first_then_quality_when_it_runs_dry(fake_worker):
+    w = fake_worker
+    w["settings"] = _split_settings(w["settings"])
+    w["queue"] = [_refs(1, 2)]
+    w["quality_queue"] = [_refs(1, 2)]
+
+    summary = w["module"].loop(w["settings"], stop_on_idle=False, max_batches=2)
+
+    assert w["runs"] == [["1", "2"], ["1", "2"]]
+    assert w["stages"] == [pipeline.STAGE_FAST, pipeline.STAGE_QUALITY]
+    assert summary["batches"] == 2
+
+
+def test_gpu_worker_marks_missing_previews_in_quality_stage_without_error(fake_worker, monkeypatch):
+    """2단계에서 미리보기가 없으면 error 를 쓰지 않는다 — 쓰면 폴더 대상에서 빠진다. 빈 점수로 끝 표시."""
+    w = fake_worker
+    w["settings"] = _split_settings(w["settings"])
+
+    def download(storage, refs, d, workers=8, missing=None):
+        kept = []
+        for r in refs:
+            (missing.append(r.photo_id) if r.photo_id == "2" else kept.append(r))
+        return kept
+
+    monkeypatch.setattr(w["module"], "download_previews", download)
+    w["quality_queue"] = [_refs(1, 2)]
+
+    w["module"].loop(w["settings"], stop_on_idle=False, max_batches=1)
+
+    assert "errors" not in w
+    assert w["quality_marks"] == [["2"]]
+    assert w["runs"] == [["1"]] and w["stages"] == [pipeline.STAGE_QUALITY]
+
+
+def test_split_flag_reads_from_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCORE_SPLIT", "1")
+    assert Settings.from_env().knobs.split is True
+    monkeypatch.setenv("SCORE_SPLIT", "0")
+    assert Settings.from_env().knobs.split is False

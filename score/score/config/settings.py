@@ -46,6 +46,10 @@ class Knobs:
     #: 디코드·classical(선명도) 을 GPU 추론과 겹치게 하는 스레드 수. 0 이면 지금처럼 한 스레드에서 순서대로.
     #: GPU 는 4 vCPU 의 JPEG 디코드를 기다리는 게 병목이라 GPU 환경에서 켠다. Lambda(CPU) 는 0 — 디코드와 추론이 같은 코어를 다툰다.
     decode_workers: int = 0
+    #: 점수를 두 단계로 나눈다(wes #274 2물결, ADR 0002 B). 켜면 GPU 워커가 1단계(축소 디코드 + CLIP·피사체·미학 — 폴더가
+    #: 기다리는 것)를 먼저 하고, 1단계 대기가 비면 2단계(1024 디코드 + ARNIQA·화질 지표 — 추천만 쓰는 것)를 집는다.
+    #: 끄면 지금처럼 한 번에 다 계산한다. Lambda 폴백은 이 값과 무관하게 늘 한 번에 한다(드문 경로라 단순하게).
+    split: bool = False
 
 
 @dataclass(frozen=True)
@@ -78,6 +82,9 @@ class Settings:
     worker_batch: int = 32
     worker_poll_seconds: float = 3.0
     worker_idle_stop_seconds: int = 30
+    #: 화질 점수(2단계) 찜의 유효 시간(초, wes V41 `quality_claimed_at`). 워커가 죽으면 이 시간 뒤 다른 워커가 다시 집는다.
+    #: 배치 하나(32장, 1~2초)보다 넉넉하고, 죽은 워커의 사진을 너무 오래 묶어 두지 않을 만큼.
+    worker_quality_lease_seconds: int = 120
     #: 배치가 이만큼 연속으로 실패하면 루프를 끝낸다(#81) — 같은 오류로 헛도는 것을 막는다. 종료 코드 1, 인스턴스 정지는 wes 감시 몫.
     worker_max_consecutive_failures: int = 5
     #: 이만큼 배치를 처리하면 루프를 끝낸다(0 = 무한). 검증·벤치마크용.
@@ -115,6 +122,7 @@ class Settings:
             worker_batch=int(os.environ.get("WORKER_BATCH", "32")),
             worker_poll_seconds=float(os.environ.get("WORKER_POLL_SECONDS", "3")),
             worker_idle_stop_seconds=int(os.environ.get("WORKER_IDLE_STOP_SECONDS", "30")),
+            worker_quality_lease_seconds=int(os.environ.get("WORKER_QUALITY_LEASE_SECONDS", "120")),
             worker_max_consecutive_failures=int(os.environ.get("WORKER_MAX_CONSECUTIVE_FAILURES", "5")),
             worker_max_batches=int(os.environ.get("WORKER_MAX_BATCHES", "0")),
             stop_margin_seconds=int(os.environ.get("STOP_MARGIN_SECONDS", "60")),
@@ -125,5 +133,6 @@ class Settings:
                 device=os.environ.get("SCORE_DEVICE", Knobs.device),
                 fp16=os.environ.get("SCORE_FP16", "1" if Knobs.fp16 else "0") not in ("0", "false", "no", ""),
                 decode_workers=int(os.environ.get("SCORE_DECODE_WORKERS", Knobs.decode_workers)),
+                split=os.environ.get("SCORE_SPLIT", "1" if Knobs.split else "0") not in ("0", "false", "no", ""),
             ),
         )
