@@ -1,8 +1,10 @@
 """저장소 — `photo_analysis` 중 SCORE 가 읽고 쓰는 부분.
 
-쓰기는 `write_scores` 하나다: subjects · sub_scores · clip_embedding · pipeline_version. 백분위·연사·그룹은
+쓰기는 `write_scores`(1단계 또는 한 번에 — subjects · sub_scores · clip_embedding · pipeline_version, 2단계까지 담았으면
+quality_scored_at)와 `write_quality`(2단계 화질 점수만 — sub_scores · quality_scored_at, wes #274 2물결)다. 백분위·연사·그룹은
 categorize 의 컬럼, embedding·embedding_model 은 embedder 의 컬럼이라 **건드리지 않는다**(UPSERT 의 SET 절이
-그 경계다). photo_ratings · photo_selection_items 는 읽지도 않는다(CLAUDE.md).
+그 경계다). `sub_scores` 는 categorize 와 키를 나눠 쓰므로 통째로 덮지 않고 병합한다(`||`) — 덮으면 단계 사이에 서로의 키를
+지운다. photo_ratings · photo_selection_items 는 읽지도 않는다(CLAUDE.md).
 
 읽기는 재개 판정용이다 — 같은 PIPELINE_VERSION 이고 CLIP 벡터가 저장된 사진은 건너뛴다.
 """
@@ -30,6 +32,7 @@ class Store(Protocol):
     def read_clip_embeddings(self, gallery: str) -> tuple[list[str], np.ndarray]: ...
     def write_scores(self, gallery: str, rows: list[PhotoAnalysis],
                      clip_embeddings: tuple[list[str], np.ndarray]) -> None: ...
+    def write_quality(self, gallery: str, scores: dict[str, dict], commit: bool = True) -> None: ...
 
 
 # ── 로컬 구현 ────────────────────────────────────────────────────────────────
@@ -87,11 +90,10 @@ class LocalStore:
             if cur is None:
                 by_id[r.photo_id] = r
                 continue
-            for f in ("subjects", "sub_scores", "pipeline_version", "analyzed_at"):
+            for f in ("subjects", "pipeline_version", "analyzed_at", "quality_scored"):
                 setattr(cur, f, getattr(r, f))
-        with (self._dir(gallery) / "analysis.jsonl").open("w", encoding="utf-8") as f:
-            for r in by_id.values():
-                f.write(json.dumps(asdict(r), ensure_ascii=False) + "\n")
+            cur.sub_scores = {**cur.sub_scores, **r.sub_scores}
+        self._write_rows(gallery, list(by_id.values()))
 
         ids, emb = clip_embeddings
         if len(ids):
@@ -102,6 +104,20 @@ class LocalStore:
             d = self._dir(gallery)
             (d / "clip_embeddings_ids.json").write_text(json.dumps(all_ids, ensure_ascii=False), encoding="utf-8")
             np.save(d / "clip_embeddings.npy", np.stack([merged[i] for i in all_ids]))
+
+    def write_quality(self, gallery: str, scores: dict[str, dict], commit: bool = True) -> None:
+        """2단계 화질 점수를 sub_scores 에 더하고 끝 표시를 남긴다. 없는 사진은 건너뛴다."""
+        rows = self.read_analysis(gallery)
+        for r in rows:
+            if r.photo_id in scores:
+                r.sub_scores = {**r.sub_scores, **scores[r.photo_id]}
+                r.quality_scored = True
+        self._write_rows(gallery, rows)
+
+    def _write_rows(self, gallery: str, rows: list[PhotoAnalysis]) -> None:
+        with (self._dir(gallery) / "analysis.jsonl").open("w", encoding="utf-8") as f:
+            for r in rows:
+                f.write(json.dumps(asdict(r), ensure_ascii=False) + "\n")
 
 
 def _jsonb(value) -> str:
@@ -218,10 +234,12 @@ class DbStore:
 
     def write_scores(self, gallery: str, rows: list[PhotoAnalysis],
                      clip_embeddings: tuple[list[str], np.ndarray]) -> None:
-        """score 의 컬럼만 UPSERT — subjects · sub_scores · clip_embedding · pipeline_version.
+        """score 의 컬럼만 UPSERT — subjects · sub_scores(병합) · clip_embedding · pipeline_version, 2단계까지 담은 행은
+        quality_scored_at 도(`PhotoAnalysis.quality_scored`). 1단계만 담은 행은 이전의 quality_scored_at 을 지우지 않는다.
         백분위·클러스터·그룹은 categorize 의 것, embedding·embedding_model 은 embedder 의 것 — 건드리지 않는다."""
         clip_map = dict(zip(*clip_embeddings)) if clip_embeddings[0] else {}
-        params = [(int(r.photo_id), r.subjects, _jsonb(r.sub_scores), clip_map.get(r.photo_id), r.pipeline_version)
+        params = [(int(r.photo_id), r.subjects, _jsonb(r.sub_scores), clip_map.get(r.photo_id), r.pipeline_version,
+                   bool(r.quality_scored))
                   for r in rows]
         if not params:
             return
@@ -230,14 +248,70 @@ class DbStore:
                 """
                 INSERT INTO photo_analysis
                     (photo_id, subjects, sub_scores, clip_embedding, pipeline_version,
-                     analyzed_at, created_at, updated_at)
-                VALUES (%s, %s, %s::jsonb, %s, %s, now(), now(), now())
+                     analyzed_at, quality_scored_at, created_at, updated_at)
+                VALUES (%s, %s, %s::jsonb, %s, %s, now(), CASE WHEN %s THEN now() END, now(), now())
                 ON CONFLICT (photo_id) DO UPDATE SET
-                    subjects = EXCLUDED.subjects, sub_scores = EXCLUDED.sub_scores,
+                    subjects = EXCLUDED.subjects, sub_scores = photo_analysis.sub_scores || EXCLUDED.sub_scores,
                     clip_embedding = EXCLUDED.clip_embedding, pipeline_version = EXCLUDED.pipeline_version,
+                    quality_scored_at = COALESCE(EXCLUDED.quality_scored_at, photo_analysis.quality_scored_at),
                     analyzed_at = now(), updated_at = now(), version = photo_analysis.version + 1
                 """,
                 params,
             )
         self.conn.commit()
         log.info("photo_analysis 점수 적재: gallery=%s %d행", gallery, len(params))
+
+    def claim_quality_batch(self, n: int, exclude: list[int] | None = None) -> list:
+        """2단계(화질 점수) 집기(wes #274 2물결) — 1단계(CLIP)는 끝났는데 화질 점수가 아직인 사진을 n장 잠근다.
+
+        [claim_batch] 와 같은 모양이다: wes 의 부분 인덱스 `idx_photo_analysis_quality_unscored`(V40, 같은 조건)에서 출발해 사진·갤러리
+        조건을 한 장씩 찔러 보고, `FOR UPDATE OF a SKIP LOCKED` 로 잠근 채 돌려준다. 워커는 1단계 대기가 비었을 때만 부른다 —
+        폴더가 기다리는 것은 1단계뿐이다."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT p.id, p.preview_key, p.taken_at, p.camera_make, p.camera_model
+                FROM photo_analysis a
+                CROSS JOIN LATERAL (
+                    SELECT p.id, p.preview_key, p.taken_at, p.camera_make, p.camera_model
+                    FROM photos p
+                    JOIN galleries g ON g.id = p.gallery_id
+                    WHERE p.id = a.photo_id
+                      AND p.preview_key IS NOT NULL AND p.deleted_at IS NULL AND g.deleted_at IS NULL
+                    OFFSET 0
+                ) p
+                WHERE a.clip_embedding IS NOT NULL AND a.quality_scored_at IS NULL AND a.error IS NULL
+                  AND NOT (a.photo_id = ANY(%s))
+                ORDER BY a.photo_id
+                LIMIT %s
+                FOR UPDATE OF a SKIP LOCKED
+                """,
+                (list(exclude or []), int(n)),
+            )
+            rows = cur.fetchall()
+        refs = []
+        for photo_id, key, taken_at, make, model in rows:
+            camera = " ".join(s.strip() for s in (make, model) if s and s.strip()) or None
+            refs.append(PhotoRef(photo_id=str(photo_id), path=None, taken_at=taken_at, camera=camera, preview_key=key))
+        return refs
+
+    def write_quality(self, gallery: str, scores: dict[str, dict], commit: bool = True) -> None:
+        """2단계 화질 점수 — `sub_scores` 에 더하고(병합) quality_scored_at 을 찍는다. 계산에 실패한 사진은 빈 점수로 찍는다:
+        `error` 에 쓰면 그 사진이 폴더 대상에서도 빠진다(화질 점수는 추천만 쓴다). commit 이 잠금 해제다 — 집기 도중(미리보기 없음)에
+        부를 때는 `commit=False` 로 배치 트랜잭션에 묶는다(여기서 commit 하면 방금 잠근 배치의 잠금까지 풀린다)."""
+        params = [(_jsonb(patch), int(pid)) for pid, patch in scores.items() if str(pid).isdigit()]
+        if not params:
+            return
+        with self.conn.cursor() as cur:
+            cur.executemany(
+                """
+                UPDATE photo_analysis
+                SET sub_scores = sub_scores || %s::jsonb, quality_scored_at = now(),
+                    updated_at = now(), version = version + 1
+                WHERE photo_id = %s
+                """,
+                params,
+            )
+        if commit:
+            self.conn.commit()
+        log.info("photo_analysis 화질 점수 적재: gallery=%s %d행", gallery, len(params))
