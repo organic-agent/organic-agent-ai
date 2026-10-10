@@ -15,6 +15,10 @@ GPU(#68)에서는 디코드·classical 을 `decode_workers` 스레드가 두 묶
 `write_batch` 장마다 commit 하고, `remaining_seconds` 가 있으면(Lambda) 배치 경계에서 데드라인을 보고 멈춘다 —
 결과의 `stopped`·`remaining` 으로 드러나고, 재호출은 handler 의 몫이다(embedder #24 와 같은 규칙).
 임베더(DINOv3) 벡터 유무는 보지 않는다 — 그건 categorize 의 입력 조건이다.
+
+단계(wes #274 2물결, `Knobs.split`): 한 번에(`full`, 기본·Lambda) / 1단계(`fast` — 축소 디코드 + CLIP·피사체·미학, 폴더가 기다리는
+것) / 2단계(`quality` — 1024 디코드 + ARNIQA·화질 지표, 추천만 쓰는 것). 1단계는 `technical_score` 키를 쓰지 않는다 — categorize 가
+그 키로 "화질 점수 있음"을 읽는다. 2단계는 실패해도 `error` 에 쓰지 않고 빈 점수로 끝 표시만 남긴다.
 """
 
 from __future__ import annotations
@@ -30,12 +34,17 @@ import numpy as np
 from score.config.settings import PIPELINE_VERSION, Settings
 from score.domain.photo import PhotoAnalysis, PhotoRef
 from score.domain.run import ScoreResult
-from score.infrastructure.images import load_image
+from score.infrastructure.images import load_for_clip, load_image
 from score.repository.store import Store
 
 log = logging.getLogger(__name__)
 
 UNKNOWN = "unknown"
+
+#: 점수 단계. full = 한 번에(지금까지의 동작), fast = 1단계, quality = 2단계.
+STAGE_FULL = "full"
+STAGE_FAST = "fast"
+STAGE_QUALITY = "quality"
 
 
 #: 디코드 스레드가 앞서 준비해 두는 묶음 수. 묶음 = clip_batch 장. 2 면 메모리의 PIL 이미지는 세 묶음을 넘지 않는다.
@@ -119,9 +128,12 @@ class Scorer:
         return took
 
     def score(self, store: Store, gallery: str, todo: list[PhotoRef], settings: Settings, result: ScoreResult,
-              stage: dict[str, float], remaining_seconds: Callable[[], float] | None = None) -> None:
-        """`todo` 를 계산해 store 에 쓴다. result·stage 를 채운다(호출자가 만든 것)."""
+              stage: dict[str, float], remaining_seconds: Callable[[], float] | None = None,
+              mode: str = STAGE_FULL) -> None:
+        """`todo` 를 계산해 store 에 쓴다. result·stage 를 채운다(호출자가 만든 것).
+        `mode` 가 fast 면 1단계만 — 축소 디코드로 CLIP·피사체·미학만 내고 ARNIQA·화질 지표는 건너뛴다."""
         k = settings.knobs
+        fast = mode == STAGE_FAST
         classical, laion, arniqa, tagger = self.classical, self.laion, self.arniqa, self.tagger
         result.subjects_used = tagger is not None
         stage["load"] = self.load_seconds
@@ -137,7 +149,11 @@ class Scorer:
 
         def prepare(ref: PhotoRef) -> tuple[object, dict, float, object, object]:
             """CPU 만 쓰는 준비 — 디코드 1회 + classical + 러너별 전처리(CLIP 224 · ARNIQA uint8). 스레드에서 돈다 —
-            GPU forward 를 제외한 장당 CPU 일이 전부 여기 있어야 메인 스레드(GPU)가 기다리지 않는다(#68)."""
+            GPU forward 를 제외한 장당 CPU 일이 전부 여기 있어야 메인 스레드(GPU)가 기다리지 않는다(#68).
+            1단계는 CLIP 만 보므로 축소 디코드하고 classical·ARNIQA 전처리를 건너뛴다."""
+            if fast:
+                img = load_for_clip(ref.path)
+                return img, {}, 0.0, laion.prepare(img), None
             img = load_image(ref.path)
             t = time.monotonic()
             cl = classical.measure(img)
@@ -176,6 +192,8 @@ class Scorer:
             t_stage["clip"] += time.monotonic() - t
             t = time.monotonic()
             alive = [out[ref.photo_id] for ref in chunk if out[ref.photo_id][5] is None]
+            if fast:
+                return [tuple(out[ref.photo_id]) for ref in chunk]
             step = max(1, k.arniqa_batch)
             for start in range(0, len(alive), step):
                 group = alive[start:start + step]
@@ -222,7 +240,7 @@ class Scorer:
                         if err is not None:
                             raise err
                         aes = laion.score_from_embedding(clip_emb)
-                        sub = {"technical_score": tech, "aesthetic_score": aes, **cl}
+                        sub = {"aesthetic_score": aes} if fast else {"technical_score": tech, "aesthetic_score": aes, **cl}
                         subjects = UNKNOWN
                         t = time.monotonic()
                         if tagger is not None:
@@ -230,7 +248,8 @@ class Scorer:
                             sub["subjects_margin"] = margin
                         t_stage["tag"] += time.monotonic() - t
                         rows.append(PhotoAnalysis(photo_id=ref.photo_id, subjects=subjects,
-                                                  sub_scores=sub, pipeline_version=PIPELINE_VERSION))
+                                                  sub_scores=sub, pipeline_version=PIPELINE_VERSION,
+                                                  quality_scored=not fast))
                         clips[ref.photo_id] = clip_emb
                         result.processed += 1
                         t_photo += time.monotonic() - t0 + t_shared
@@ -267,16 +286,82 @@ class Scorer:
         stage["photos"] = t_photo
         stage.update(t_stage)
 
+    def score_quality(self, store: Store, gallery: str, todo: list[PhotoRef], settings: Settings, result: ScoreResult,
+                      stage: dict[str, float]) -> None:
+        """2단계 — 1024 디코드 + classical + ARNIQA 를 계산해 `write_quality` 한 번으로 쓴다(commit = 잠금 해제).
+
+        CLIP·피사체는 1단계가 이미 냈다. 한 장이 실패해도 그 장은 빈 점수로 끝 표시만 남긴다 — `error` 에 쓰면 폴더 대상에서
+        빠지고, 끝 표시를 안 하면 다시 집혀 영원히 돈다. 디코드는 `decode_workers` 스레드가 나눠 한다."""
+        k = settings.knobs
+        classical, arniqa = self.classical, self.arniqa
+        stage["load"] = self.load_seconds
+        t_stage = {"decode": 0.0, "arniqa": 0.0, "write": 0.0}
+
+        def prepare(ref: PhotoRef):
+            img = load_image(ref.path)
+            return img, classical.measure(img), arniqa.prepare(img)
+
+        def safe_prepare(ref: PhotoRef):
+            try:
+                return prepare(ref)
+            except Exception as exc:  # noqa: BLE001 — 한 장 실패가 묶음을 죽이면 안 된다
+                return exc
+
+        t = time.monotonic()
+        if k.decode_workers > 0:
+            with ThreadPoolExecutor(max_workers=k.decode_workers) as executor:
+                prepared = list(executor.map(safe_prepare, todo))
+        else:
+            prepared = [safe_prepare(ref) for ref in todo]
+        t_stage["decode"] = time.monotonic() - t
+
+        scores: dict[str, dict] = {}
+        alive: list[tuple[PhotoRef, object, dict, object]] = []
+        for ref, item in zip(todo, prepared):
+            if isinstance(item, Exception):
+                log.warning("[score] 화질 점수 디코드 실패 %s (%s) — 빈 점수로 끝 표시", ref.photo_id, item)
+                scores[ref.photo_id] = {}
+                result.quality_failed.append(ref.photo_id)
+                continue
+            img, cl, arniqa_x = item
+            alive.append((ref, img, cl, arniqa_x))
+            scores[ref.photo_id] = dict(cl)
+
+        t = time.monotonic()
+        step = max(1, k.arniqa_batch)
+        for start in range(0, len(alive), step):
+            group = alive[start:start + step]
+            try:
+                for (ref, _, _, _), tech in zip(group, arniqa.score_prepared([x for _, _, _, x in group])):
+                    scores[ref.photo_id]["technical_score"] = tech["technical_score"]
+            except Exception as exc:  # noqa: BLE001 — 묶음이 죽으면 한 장씩 물러난다
+                log.warning("ARNIQA 배치 %d장 실패(%s) — 한 장씩 재시도", len(group), exc)
+                for ref, img, _, _ in group:
+                    try:
+                        scores[ref.photo_id]["technical_score"] = arniqa.score(img)["technical_score"]
+                    except Exception as exc1:  # noqa: BLE001
+                        log.warning("[score] ARNIQA 실패 %s (%s) — 화질 지표만 남긴다", ref.photo_id, exc1)
+                        result.quality_failed.append(ref.photo_id)
+        t_stage["arniqa"] = time.monotonic() - t
+
+        t = time.monotonic()
+        store.write_quality(gallery, scores)
+        t_stage["write"] = time.monotonic() - t
+        result.processed += len(scores)
+        log.info("  화질 점수 %d장 (실패 %d) %s", len(scores), len(result.quality_failed),
+                 " ".join(f"{name}={v / max(1, len(todo)):.2f}" for name, v in t_stage.items()))
+        stage.update(t_stage)
+
 
 def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, force: bool = False,
         remaining_seconds: Callable[[], float] | None = None, since: datetime | None = None,
-        scorer: Scorer | None = None) -> dict:
+        scorer: Scorer | None = None, stage: str = STAGE_FULL) -> dict:
     """`since` 가 있으면 그 시각 이후에 쓴 점수만 "있음"으로 친다 — force 실행의 시작 시각을 재호출·샤드에 넘겨,
     force 를 잃어도 이번 실행 전 점수는 다시 계산한다(#54). force 는 since 없는 로컬 전체 재계산.
     `scorer` 를 주면 러너를 다시 올리지 않는다(#75, GPU 워커) — 없으면 여기서 하나 만든다(대상이 있을 때만)."""
     started = time.monotonic()
     result = ScoreResult(gallery=gallery, targets=len(refs))
-    stage: dict[str, float] = {}
+    stage_times: dict[str, float] = {}
 
     def fresh(r: PhotoAnalysis) -> bool:
         if r.pipeline_version != PIPELINE_VERSION:
@@ -300,7 +385,12 @@ def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, fo
         return result.to_dict()
 
     scorer = scorer or Scorer(settings)
-    scorer.score(store, gallery, todo, settings, result, stage, remaining_seconds=remaining_seconds)
-    result.per_stage_seconds = stage
+    if stage == STAGE_QUALITY:
+        result.stage = STAGE_QUALITY
+        scorer.score_quality(store, gallery, todo, settings, result, stage_times)
+    else:
+        result.stage = stage
+        scorer.score(store, gallery, todo, settings, result, stage_times, remaining_seconds=remaining_seconds, mode=stage)
+    result.per_stage_seconds = stage_times
     result.elapsed_seconds = time.monotonic() - started
     return result.to_dict()

@@ -485,7 +485,16 @@ def fake_worker(monkeypatch, tmp_path):
         def write_errors(self, ids, error):
             state.setdefault("errors", []).append((list(ids), error))
 
+        def claim_quality_batch(self, n, exclude=None):
+            batch = state["quality_queue"].pop(0) if state.get("quality_queue") else []
+            state.setdefault("quality_claims", []).append(len(batch))
+            return batch
+
+        def write_quality(self, gallery, scores, commit=True):
+            state.setdefault("quality_marks", []).append((sorted(scores), commit))
+
     def run(store, gallery, refs, settings, force=False, scorer=None, **kw):
+        state.setdefault("stages", []).append(kw.get("stage"))
         state["runs"].append([r.photo_id for r in refs])
         if any(r.photo_id == "boom" for r in refs):
             raise RuntimeError("batch boom")
@@ -790,3 +799,123 @@ def test_gpu_worker_stop_self_skips_outside_ec2(monkeypatch):
     monkeypatch.setitem(sys.modules, "boto3", SimpleNamespace(client=lambda *a, **k: pytest.fail("boto3 를 부르면 안 된다")))
 
     assert ec2.stop_self() is False
+
+
+# ── 두 단계(wes #274 2물결, SCORE_SPLIT) ──────────────────────────────────────
+def _split_settings(settings):
+    from dataclasses import replace
+
+    return replace(settings, knobs=replace(settings.knobs, split=True))
+
+
+def test_fast_stage_scores_clip_subjects_aesthetic_only_with_reduced_decode(tmp_path, fake_runners, monkeypatch):
+    """1단계: 축소 디코드 + CLIP·피사체·미학. ARNIQA·화질 지표는 돌지 않고, technical_score 키를 쓰지 않는다(categorize 가 그 키로 화질 점수를 읽는다)."""
+    store, refs, scored, settings = _world(tmp_path)
+    opened = []
+    real = pipeline.load_for_clip
+    monkeypatch.setattr(pipeline, "load_for_clip", lambda path: opened.append(path) or real(path))
+    new = refs[len(scored):]
+
+    result = pipeline.run(store, "g", new, settings, force=True, stage=pipeline.STAGE_FAST)
+
+    assert result["processed"] == len(new) and result["stage"] == "fast"
+    assert len(opened) == len(new) and fake_runners.arniqa.seen == []
+    back = {r.photo_id: r for r in store.read_analysis("g")}
+    for ref in new:
+        row = back[ref.photo_id]
+        assert "aesthetic_score" in row.sub_scores and "technical_score" not in row.sub_scores and "sharpness" not in row.sub_scores
+        assert row.quality_scored is False
+
+
+def test_quality_stage_merges_arniqa_and_classical_and_marks_done_even_on_failure(tmp_path, fake_runners):
+    """2단계: 1024 디코드 + ARNIQA·화질 지표를 sub_scores 에 더한다(1단계 키는 남는다). 디코드에 실패한 장도 빈 점수로 끝 표시."""
+    store, refs, scored, settings = _world(tmp_path)
+    new = refs[len(scored):]
+    pipeline.run(store, "g", new, settings, force=True, stage=pipeline.STAGE_FAST)
+    broken = PhotoRef(photo_id=new[0].photo_id, path=str(tmp_path / "없는.jpg"))
+
+    result = pipeline.run(store, "g", [broken] + new[1:], settings, force=True, stage=pipeline.STAGE_QUALITY)
+
+    assert result["stage"] == "quality" and result["qualityFailed"] == [broken.photo_id] and result["failed"] == []
+    back = {r.photo_id: r for r in store.read_analysis("g")}
+    assert all(back[r.photo_id].quality_scored for r in new)
+    ok = back[new[1].photo_id].sub_scores
+    assert ok["technical_score"] == 0.6 and ok["sharpness"] == 100.0 and "aesthetic_score" in ok
+    assert "technical_score" not in back[broken.photo_id].sub_scores
+
+
+def test_write_scores_merges_sub_scores_and_stamps_quality_only_when_included():
+    from score.repository.store import DbStore
+
+    conn = _Conn()
+    rows = [PhotoAnalysis(photo_id="11", subjects="couple", sub_scores={"aesthetic_score": 5.0}, pipeline_version=PIPELINE_VERSION,
+                          quality_scored=False),
+            PhotoAnalysis(photo_id="12", subjects="couple", sub_scores={"technical_score": 0.5}, pipeline_version=PIPELINE_VERSION)]
+    DbStore(SimpleNamespace(), conn).write_scores("g", rows, (["11", "12"], np.zeros((2, 4))))
+
+    sql, params = conn.executed[0]
+    assert "sub_scores = photo_analysis.sub_scores || EXCLUDED.sub_scores" in sql
+    assert "CASE WHEN %s THEN now() END" in sql
+    assert "quality_scored_at = COALESCE(EXCLUDED.quality_scored_at, photo_analysis.quality_scored_at)" in sql
+    assert [p[-1] for p in params] == [False, True]
+    assert conn.commits == 1
+
+
+def test_claim_quality_batch_starts_from_quality_backlog_and_write_quality_merges():
+    from score.repository.store import DbStore
+
+    conn = _Conn(rows=[(21, "previews/q.jpg", None, None, None)])
+    store = DbStore(SimpleNamespace(), conn)
+
+    refs = store.claim_quality_batch(32, exclude=[5])
+    store.write_quality("worker", {"21": {"technical_score": 0.4}}, commit=False)
+
+    claim_sql, claim_params = conn.executed[0]
+    assert "a.clip_embedding IS NOT NULL AND a.quality_scored_at IS NULL AND a.error IS NULL" in claim_sql
+    assert "FOR UPDATE OF a SKIP LOCKED" in claim_sql and "OFFSET 0" in claim_sql and claim_params == ([5], 32)
+    assert [r.photo_id for r in refs] == ["21"]
+    write_sql, write_params = conn.executed[1]
+    assert "sub_scores = sub_scores || %s::jsonb, quality_scored_at = now()" in write_sql
+    assert write_params == [('{"technical_score": 0.4}', 21)]
+    assert conn.commits == 0                                      # 집기 중에는 배치 트랜잭션에 묶는다
+
+
+def test_gpu_worker_split_does_stage_one_first_then_quality_when_it_runs_dry(fake_worker):
+    w = fake_worker
+    w["settings"] = _split_settings(w["settings"])
+    w["queue"] = [_refs(1, 2)]
+    w["quality_queue"] = [_refs(1, 2)]
+
+    summary = w["module"].loop(w["settings"], stop_on_idle=False, max_batches=2)
+
+    assert w["runs"] == [["1", "2"], ["1", "2"]]
+    assert w["stages"] == [pipeline.STAGE_FAST, pipeline.STAGE_QUALITY]
+    assert summary["batches"] == 2
+
+
+def test_gpu_worker_marks_missing_previews_in_quality_stage_without_error(fake_worker, monkeypatch):
+    """2단계에서 미리보기가 없으면 error 를 쓰지 않는다 — 쓰면 폴더 대상에서 빠진다. 빈 점수로 끝 표시(잠금은 배치에 묶음)."""
+    w = fake_worker
+    w["settings"] = _split_settings(w["settings"])
+
+    def download(storage, refs, d, workers=8, missing=None):
+        kept = []
+        for r in refs:
+            (missing.append(r.photo_id) if r.photo_id == "2" else kept.append(r))
+        return kept
+
+    monkeypatch.setattr(w["module"], "download_previews", download)
+    w["quality_queue"] = [_refs(1, 2)]
+
+    w["module"].loop(w["settings"], stop_on_idle=False, max_batches=1)
+
+    assert "errors" not in w
+    assert w["quality_marks"] == [(["2"], False)]
+    assert w["runs"] == [["1"]] and w["stages"] == [pipeline.STAGE_QUALITY]
+
+
+def test_split_flag_reads_from_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCORE_SPLIT", "1")
+    assert Settings.from_env().knobs.split is True
+    monkeypatch.setenv("SCORE_SPLIT", "0")
+    assert Settings.from_env().knobs.split is False
