@@ -82,6 +82,9 @@ class Settings:
     worker_batch: int = 32
     worker_poll_seconds: float = 3.0
     worker_idle_stop_seconds: int = 30
+    #: 화질 점수(2단계) 찜의 유효 시간(초, wes V41 `quality_claimed_at`). 워커가 죽으면 이 시간 뒤 다른 워커가 다시 집는다.
+    #: 배치 하나(32장, 1~2초)보다 넉넉하고, 죽은 워커의 사진을 너무 오래 묶어 두지 않을 만큼.
+    worker_quality_lease_seconds: int = 120
     #: 배치가 이만큼 연속으로 실패하면 루프를 끝낸다(#81) — 같은 오류로 헛도는 것을 막는다. 종료 코드 1, 인스턴스 정지는 wes 감시 몫.
     worker_max_consecutive_failures: int = 5
     #: 이만큼 배치를 처리하면 루프를 끝낸다(0 = 무한). 검증·벤치마크용.
@@ -119,6 +122,7 @@ class Settings:
             worker_batch=int(os.environ.get("WORKER_BATCH", "32")),
             worker_poll_seconds=float(os.environ.get("WORKER_POLL_SECONDS", "3")),
             worker_idle_stop_seconds=int(os.environ.get("WORKER_IDLE_STOP_SECONDS", "30")),
+            worker_quality_lease_seconds=int(os.environ.get("WORKER_QUALITY_LEASE_SECONDS", "120")),
             worker_max_consecutive_failures=int(os.environ.get("WORKER_MAX_CONSECUTIVE_FAILURES", "5")),
             worker_max_batches=int(os.environ.get("WORKER_MAX_BATCHES", "0")),
             stop_margin_seconds=int(os.environ.get("STOP_MARGIN_SECONDS", "60")),
