@@ -100,6 +100,17 @@ class LocalStore:
                 setattr(cur, f, getattr(r, f))
         self._write_rows(gallery, list(by_id.values()))
 
+    def write_ranks(self, gallery: str, rows: list[PhotoAnalysis]) -> None:
+        """rank 모드 — 백분위·순위만 덮는다. 그룹·연사 묶음은 full 이 정한 그대로다."""
+        by_id = {r.photo_id: r for r in self.read_analysis(gallery)}
+        for r in rows:
+            cur = by_id.get(r.photo_id)
+            if cur is None:
+                continue
+            for f in ("technical_pct", "aesthetic_pct", "sub_scores", "burst_rank"):
+                setattr(cur, f, getattr(r, f))
+        self._write_rows(gallery, list(by_id.values()))
+
     def write_analysis(self, gallery: str, rows: list[PhotoAnalysis],
                        embeddings: tuple[list[str], np.ndarray],
                        clip_embeddings: tuple[list[str], np.ndarray]) -> None:

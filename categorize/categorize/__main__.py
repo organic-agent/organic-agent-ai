@@ -3,6 +3,7 @@
     python -m categorize --gallery-id 12 --job-id J [--concept-count 10]   # DB 모드, 잡 — naming 까지 (Bedrock 필수)
     python -m categorize --gallery-id 12 [--llm]                # DB 모드, 잡 없이 그룹화 (+naming 은 저장 안 함)
     python -m categorize --local "dataset1/데이터셋1" [--llm]    # 로컬 데이터셋 (score --local 뒤에) → out/v3/
+    python -m categorize --gallery-id 12 --mode rank            # rank 모드 — 화질 점수가 다 찬 뒤 백분위·순위만
 
 DB 모드 접속은 DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD/DB_SSLMODE, 대표 사진은 S3_BUCKET.
 --job-id 가 있으면 --llm 은 자동이다(잡의 산출물이 naming 이라서). Bedrock 은 AWS 자격증명 + InvokeModel.
@@ -29,6 +30,8 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--concept-count", type=int, help="사용자가 기억하는 컨셉 수 (선택). 시간 모드에서는 VLM 에 정확히 이 수로 묶게 한다")
     ap.add_argument("--local", metavar="GALLERY", help="로컬 데이터셋 갤러리 이름 (DB 없이 out/ 에서 읽고 쓴다)")
     ap.add_argument("--all-formats", action="store_true", help="HEIC 포함 (기본은 JPG만, 로컬)")
+    ap.add_argument("--mode", choices=("full", "rank"), default="full",
+                    help="rank = 백분위·연사 대표 순위만 (그룹·이름·배정은 그대로, Bedrock 없음)")
     args = ap.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)-5s %(name)s | %(message)s")
@@ -47,6 +50,9 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.gallery_id is None:
         sys.exit("--gallery-id 또는 --local 이 필요하다")
+    if args.mode == "rank":
+        print(json.dumps(job.rank(gallery_id=args.gallery_id, settings=settings), ensure_ascii=False, indent=2))
+        return
     result = job.run(gallery_id=args.gallery_id, settings=settings, job_id=args.job_id, llm=llm, limit=args.limit,
                      concept_count=args.concept_count)
     print(json.dumps(result, ensure_ascii=False, indent=2))

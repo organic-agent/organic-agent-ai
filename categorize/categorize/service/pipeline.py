@@ -13,6 +13,10 @@
     → store.write_groups (pct · burst · embed_group · sub_scores 만 — subjects·clip_embedding 은 SCORE 의 것)
     → naming.name_details (1층별 2층 이름 · 최근접 · 검증) → concept_assignments
 
+백분위·연사 대표 순위는 화질 점수(score 2단계)가 갤러리 전부에 찼을 때만 매긴다(wes #274 2물결). 한 장이라도 덜 찼으면
+NULL 로 두고 폴더용(연사 묶음·구간·그룹·이름)만 쓴다 — 점수 없는 사진을 50 으로 채우면 가짜 순위가 완료처럼 보인다.
+나중에 화질 점수가 다 차면 wes 가 `rank()`(rank 모드)를 불러 순위만 채운다.
+
 갤러리는 **한 번만 읽는다**. 항상 갤러리 전체를 다시 계산한다 — 결정적이고 싸다. 재개는 score 의 일이다.
 llm 이 없으면(로컬 확인용) 구간 하나를 1층 하나로 보고 2층까지 저장한 뒤 이름은 건너뛴다.
 근거: docs/experiments/concept-segmentation-2026-09-30.md
@@ -84,6 +88,45 @@ def assign_ranks(rows: list[PhotoAnalysis]) -> None:
                 m.sub_scores["rank_reason"] = _rep_reason(m, members[1:])
 
 
+def set_percentiles(rows: list[PhotoAnalysis]) -> None:
+    """화질·미학·선명도의 갤러리 안 백분위. 순위의 재료라 화질 점수가 다 찬 행에만 부른다."""
+    for key, col in (("technical_score", "technical_pct"), ("aesthetic_score", "aesthetic_pct")):
+        for r, v in zip(rows, percentile([r.sub_scores.get(key, math.nan) for r in rows])):
+            setattr(r, col, v)
+    for r, v in zip(rows, percentile([r.sub_scores.get("sharpness", math.nan) for r in rows])):
+        r.sub_scores["sharpness_pct"] = v
+
+
+def clear_ranks(rows: list[PhotoAnalysis]) -> None:
+    """순위 없음 — 백분위·순위·순위 사유를 비운다. 이전 실행이 남긴 값이 새 그룹 위에 남지 않게 한다."""
+    for r in rows:
+        r.technical_pct = r.aesthetic_pct = r.burst_rank = None
+        r.sub_scores.pop("sharpness_pct", None)
+        r.sub_scores.pop("rank_reason", None)
+
+
+def rank(store: Store, gallery: str) -> dict:
+    """rank 모드 — 그룹(폴더)이 이미 있는 사진의 백분위·연사 대표 순위만 다시 매긴다. Bedrock·잡 없음.
+
+    연사 묶음은 full 이 저장한 `burst_id` 를 그대로 쓴다(다시 묶으면 폴더와 어긋날 수 있다). 화질 점수가 덜 찬 사진이 있으면
+    매기지 않고 돌아간다 — 백분위는 상대 순위라 덜 찬 채로 매기면 빈 사진이 섞인다. wes 는 다 찼을 때만 부르므로 그 경우는
+    그 사이에 사진이 바뀐 것이고, wes 가 기다릴 시간 뒤 다시 보낸다.
+    """
+    started = time.monotonic()
+    data = store.read_gallery(gallery)
+    rows = [r for r in data.rows if r.pipeline_version == PIPELINE_VERSION and r.embed_group_id >= 0 and r.burst_id >= 0]
+    pending = sum(1 for r in rows if not r.quality_scored)
+    if not rows or pending:
+        log.warning("[categorize] 갤러리 %s rank: 매길 수 없다 — 그룹 있는 사진 %d장 중 화질 점수 대기 %d장", gallery, len(rows), pending)
+        return {"gallery": gallery, "mode": "rank", "ranked": 0, "pending": pending}
+    set_percentiles(rows)
+    assign_ranks(rows)
+    store.write_ranks(gallery, rows)
+    elapsed = round(time.monotonic() - started, 1)
+    log.info("[categorize] 갤러리 %s rank: %d장 · %.1fs", gallery, len(rows), elapsed)
+    return {"gallery": gallery, "mode": "rank", "ranked": len(rows), "pending": 0, "elapsedSeconds": elapsed}
+
+
 def group(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings) -> tuple[Grouped, CategorizeResult]:
     """백분위 · 연사 · 구간을 계산한다. 저장하지 않는다 — embed_group_id 는 1층이 정해진 뒤에 매긴다."""
     started = time.monotonic()
@@ -115,18 +158,21 @@ def group(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings) 
     E = norm(np.stack([embs[i] for i in ids]))
     C = np.stack([clips[i] for i in ids])
 
-    for key, col in (("technical_score", "technical_pct"), ("aesthetic_score", "aesthetic_pct")):
-        for r, v in zip(ordered, percentile([r.sub_scores.get(key, math.nan) for r in ordered])):
-            setattr(r, col, v)
-    for r, v in zip(ordered, percentile([r.sub_scores.get("sharpness", math.nan) for r in ordered])):
-        r.sub_scores["sharpness_pct"] = v
+    ranked = all(r.quality_scored for r in ordered)
+    if ranked:
+        set_percentiles(ordered)
 
     t0 = time.monotonic()
     parts = burst.partition_order([r.camera for r in ordered_refs], [r.taken_at for r in ordered_refs])
     burst_ids = burst.cluster_bursts_partitioned(E, parts, k.burst_threshold, k.burst_window)
     for r, b in zip(ordered, burst_ids):
         r.burst_id = int(b)
-    assign_ranks(ordered)
+    if ranked:
+        assign_ranks(ordered)
+    else:
+        clear_ranks(ordered)
+        log.info("[categorize] 갤러리 %s: 화질 점수가 덜 찬 사진 %d장 — 순위는 비워 두고 폴더용만 쓴다(rank 모드가 뒤에 채운다)",
+                 gallery, sum(1 for r in ordered if not r.quality_scored))
     t1 = time.monotonic()
     seg = segment.build([r.taken_at for r in ordered_refs], E, [int(b) for b in burst_ids], k)
     t2 = time.monotonic()
@@ -135,6 +181,7 @@ def group(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings) 
              len(seg.units), seg.mode, t2 - t1, t2 - started)
 
     result.photos = len(ordered)
+    result.ranked = ranked
     result.bursts = int(burst_ids.max()) + 1 if len(burst_ids) else 0
     result.segment_mode, result.segments = seg.mode, len(seg.units)
     result.similarity_profile = burst.similarity_profile(E, k.burst_window) if len(E) > 1 else {}
