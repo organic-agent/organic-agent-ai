@@ -288,7 +288,8 @@ class Scorer:
 
     def score_quality(self, store: Store, gallery: str, todo: list[PhotoRef], settings: Settings, result: ScoreResult,
                       stage: dict[str, float]) -> None:
-        """2단계 — 1024 디코드 + classical + ARNIQA 를 계산해 `write_quality` 한 번으로 쓴다(commit = 잠금 해제).
+        """2단계 — 1024 디코드 + classical + ARNIQA 를 계산해 `write_quality` 한 문장 배치로 쓴다. 집을 때 찜만 찍고 commit 했으므로
+        계산 중에는 행을 잠그지 않는다(wes #274 R-2-2 방식 B).
 
         CLIP·피사체는 1단계가 이미 냈다. 한 장이 실패해도 그 장은 빈 점수로 끝 표시만 남긴다 — `error` 에 쓰면 폴더 대상에서
         빠지고, 끝 표시를 안 하면 다시 집혀 영원히 돈다. 디코드는 `decode_workers` 스레드가 나눠 한다."""

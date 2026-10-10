@@ -111,7 +111,10 @@ python -m score worker --gpu --once                        # 배치 하나만 (�
 - 잡 테이블은 건드리지 않는다 — 완료는 wes 가 데이터로 관측.
 - **두 단계(wes #274 2물결, `SCORE_SPLIT`, 기본 끔):** 켜면 1단계(축소 디코드 + CLIP·피사체·미학 — 폴더가 기다리는 것)를 먼저 집고, 1단계 대기가
   비면 2단계(1024 디코드 + ARNIQA·화질 지표 — 추천만 쓰는 것)를 집는다(`claim_quality_batch`, `clip_embedding IS NOT NULL AND quality_scored_at IS NULL`,
-  wes 부분 인덱스 `idx_photo_analysis_quality_unscored`). 1단계는 `technical_score` 키를 쓰지 않는다 — categorize 가 그 키·`quality_scored_at` 으로
+  wes 부분 인덱스 `idx_photo_analysis_quality_unscored`). 2단계 집기는 **찜 표시**다(wes V41 `quality_claimed_at`, R-2-2 방식 B): 찜을 찍고 곧바로
+  commit 해 계산 중에는 행을 잠그지 않고, 결과는 `FOR UPDATE SKIP LOCKED` 한 문장 배치로 지금 잠글 수 있는 행에만 쓴다(categorize 가 폴더 묶음을
+  쓰는 행은 건너뛰고 3초 뒤 다시, 5번까지). 찜이 `WORKER_QUALITY_LEASE_SECONDS`(120)보다 오래되면 다시 집힌다. R-2-1에서는 잠근 채 계산해
+  categorize 적재가 16초 → 95초였다. 1단계는 `technical_score` 키를 쓰지 않는다 — categorize 가 그 키·`quality_scored_at` 으로
   "화질 점수 있음"을 읽는다. 2단계는 `write_quality`(sub_scores 병합 + `quality_scored_at`)이고, 실패해도 `error` 에 쓰지 않고 빈 점수로 끝 표시만
   남긴다(쓰면 폴더 대상에서 빠진다). 유휴는 두 대기가 다 비었을 때. 끄면(또는 Lambda 폴백) 한 번에 다 계산하고 `quality_scored_at` 도 찍는다.
   `sub_scores` 는 categorize 와 키를 나눠 쓰므로 모든 쓰기가 병합(`||`)이다.

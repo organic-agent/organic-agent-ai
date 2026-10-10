@@ -59,13 +59,15 @@ class _Lane:
         if not refs and split:
             # 1단계 대기가 비었다 — 화질 점수(2단계)를 집는다. 빈 SELECT 가 연 트랜잭션 안에서 이어서 잠근다.
             self.stage = pipeline.STAGE_QUALITY
-            refs = self.store.claim_quality_batch(settings.worker_batch, exclude=poison)
+            # 찜만 찍고 곧바로 commit 한다(잠금 없이 계산 — wes #274 R-2-2 방식 B). 결과는 잠글 수 있는 행에만 한 문장으로 쓴다.
+            refs = self.store.claim_quality_batch(settings.worker_batch, exclude=poison,
+                                                  lease_seconds=settings.worker_quality_lease_seconds)
         if refs:
             refs = download_previews(storage, refs, self.work_dir, workers=settings.download_workers, missing=self.missing)
             if self.missing:
                 if self.stage == pipeline.STAGE_QUALITY:
                     # 2단계는 error 에 쓰지 않는다 — 쓰면 폴더 대상에서 빠진다. 빈 점수로 끝 표시만(다시 집지 않게).
-                    self.store.write_quality("worker", {pid: {} for pid in self.missing}, commit=False)
+                    self.store.write_quality("worker", {pid: {} for pid in self.missing})
                     self.missing = []
                 else:
                     self.store.write_errors(self.missing, PREVIEW_MISSING)
