@@ -23,8 +23,8 @@ def test_db_store_read_gallery_is_one_query(tmp_path):
     """분석 행 + DINOv3 + CLIP 을 한 SELECT 로. pipeline_version 없는 행은 벡터만 남고 행 목록에서 빠진다."""
     e, c = np.ones(4, dtype=np.float32), np.zeros(4, dtype=np.float32)
     conn = RowConn(rows=[
-        (11, "couple", 50.0, 50.0, {"technical_score": 0.5}, -1, 0, -1, PIPELINE_VERSION, e, "dinov3", c),
-        (12, "unknown", 50.0, 50.0, None, -1, 0, -1, None, e, "dinov3", None),          # 임베딩만, 점수 아직
+        (11, "couple", 50.0, 50.0, {"technical_score": 0.5}, -1, 0, -1, PIPELINE_VERSION, e, "dinov3", c, True),
+        (12, "unknown", 50.0, 50.0, None, -1, 0, -1, None, e, "dinov3", None, False),          # 임베딩만, 점수 아직
     ])
     data = _db_store(tmp_path, conn).read_gallery("7")
 
@@ -40,8 +40,8 @@ def test_db_store_read_gallery_is_one_query(tmp_path):
 def test_db_store_read_gallery_rejects_mixed_embedding_models(tmp_path):
     e = np.ones(4, dtype=np.float32)
     conn = RowConn(rows=[
-        (11, "couple", 50.0, 50.0, {}, -1, 0, -1, PIPELINE_VERSION, e, "dinov3", e),
-        (12, "couple", 50.0, 50.0, {}, -1, 0, -1, PIPELINE_VERSION, e, "dinov2", e),
+        (11, "couple", 50.0, 50.0, {}, -1, 0, -1, PIPELINE_VERSION, e, "dinov3", e, True),
+        (12, "couple", 50.0, 50.0, {}, -1, 0, -1, PIPELINE_VERSION, e, "dinov2", e, True),
     ])
     with pytest.raises(RuntimeError, match="embedding_model"):
         _db_store(tmp_path, conn).read_gallery("7")
@@ -109,4 +109,48 @@ def test_write_assignments_writes_layers_to_same_named_columns(tmp_path):
     assert "proposed_concept_name" not in cols and "clip_concept_name" not in cols
     assert "needs_review" not in sql
     assert (written["job_id"], written["gallery_id"], written["embed_group_id"]) == (3, 7, 4)
+    assert conn.commits == 1
+
+
+def test_read_gallery_marks_quality_scored_from_column_or_old_technical_score(tmp_path):
+    """화질 점수 끝 = quality_scored_at 이 있거나 옛 score 가 한 번에 쓴 technical_score 가 있다(배포 순서가 섞여도 옛 점수를 읽는다)."""
+    e = np.ones(4, dtype=np.float32)
+    conn = RowConn(rows=[
+        (11, "couple", None, None, {}, None, None, None, PIPELINE_VERSION, e, "dinov3", e, False),
+    ])
+    data = _db_store(tmp_path, conn).read_gallery("7")
+
+    sql, _ = conn.executed[0]
+    assert "a.quality_scored_at IS NOT NULL" in sql and "a.sub_scores->>'technical_score' IS NOT NULL" in sql
+    row = data.rows[0]
+    assert row.quality_scored is False
+    assert (row.technical_pct, row.burst_rank, row.embed_group_id, row.burst_id) == (None, None, -1, -1)
+
+
+def test_write_groups_without_ranks_writes_null_and_merges_only_rank_keys(tmp_path):
+    """sub_scores 는 score 와 나눠 쓴다 — 통째로 덮지 않고 categorize 의 키만 지우고 붙인다(wes #274 2물결)."""
+    from categorize.domain.analysis import PhotoAnalysis
+
+    conn = JobConn()
+    row = PhotoAnalysis(photo_id="11", sub_scores={"technical_score": 0.4}, burst_id=2, embed_group_id=5)
+    _db_store(tmp_path, conn).write_groups("7", [row])
+
+    sql, params = conn.executed[0]
+    assert "sub_scores = (sub_scores - 'sharpness_pct' - 'rank_reason') || %s::jsonb" in sql
+    assert params[0] == (None, None, "{}", 2, None, 5, 11)
+
+
+def test_write_ranks_touches_only_rank_columns_of_grouped_rows(tmp_path):
+    from categorize.domain.analysis import PhotoAnalysis
+
+    conn = JobConn()
+    row = PhotoAnalysis(photo_id="11", technical_pct=80.0, aesthetic_pct=60.0, burst_rank=0,
+                        sub_scores={"technical_score": 0.4, "sharpness_pct": 70.0, "rank_reason": "single"},
+                        burst_id=2, embed_group_id=5)
+    _db_store(tmp_path, conn).write_ranks("7", [row])
+
+    sql, params = conn.executed[0]
+    assert "embed_group_id = %s" not in sql and "burst_id = %s" not in sql
+    assert "WHERE photo_id = %s AND embed_group_id IS NOT NULL" in sql
+    assert params[0] == (80.0, 60.0, '{"sharpness_pct": 70.0, "rank_reason": "single"}', 0, 11)
     assert conn.commits == 1
