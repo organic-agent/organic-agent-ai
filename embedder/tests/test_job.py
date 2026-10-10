@@ -24,13 +24,18 @@ class _Ref:
 
 
 class _Connection:
-    def __init__(self) -> None:
+    """psycopg 처럼 `with` 를 벗어나면 닫힌다. 열린 연결 수를 _Db 가 셀 수 있게 알린다."""
+
+    def __init__(self, db: "_Db") -> None:
+        self.db = db
         self.commits = 0
 
     def __enter__(self):
+        self.db.open_now += 1
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        self.db.open_now -= 1
         return None
 
     def commit(self) -> None:
@@ -40,12 +45,19 @@ class _Connection:
 class _Db:
     def __init__(self, targets: list[_Ref]) -> None:
         self.targets = targets
-        self.connection = _Connection()
+        self.connections: list[_Connection] = []
+        self.open_now = 0
         self.stored: list[list] = []
         self.fetch_calls: list[dict] = []
 
+    @property
+    def commits(self) -> int:
+        return sum(c.commits for c in self.connections)
+
     def connect(self, settings):
-        return self.connection
+        connection = _Connection(self)
+        self.connections.append(connection)
+        return connection
 
     def fetch_targets(self, connection, gallery_id: int):
         self.fetch_calls.append({"gallery_id": gallery_id})
@@ -191,7 +203,7 @@ class GalleryJobTest(unittest.TestCase):
         self.assertEqual(0, result["remaining"])
         self.assertFalse(result["stopped"])
         self.assertNotIn("previewsFailed", result)
-        self.assertEqual(1, fake_db.connection.commits)
+        self.assertEqual(1, fake_db.commits)
 
     def test_put_failure_keeps_photo_out_of_encode_and_store(self) -> None:
         fake_db = self._install_db([_Ref(1, "galleries/7/good.jpg"), _Ref(2, "galleries/7/bad.jpg")])
@@ -268,8 +280,46 @@ class GalleryJobTest(unittest.TestCase):
         self.assertEqual(2, result["processed"])
         self.assertEqual(3, result["remaining"])
         self.assertEqual(5, result["targets"])
-        self.assertEqual(1, fake_db.connection.commits)
+        self.assertEqual(1, fake_db.commits)
         self.assertEqual(1, len(self.model.encoded))
+
+    def test_connection_is_held_only_for_fetch_and_store(self) -> None:
+        """모델 로드·GET·PUT·추론 동안에는 연결이 하나도 열려 있지 않다 — 동시 실행 수가 연결 수가 되지 않게(wes #274)."""
+        targets = [_Ref(i, f"galleries/7/{i}.jpg") for i in range(1, 6)]
+        fake_db = self._install_db(targets)
+        open_while_computing: list[tuple[str, int]] = []
+
+        def watch(name, fn):
+            def wrapped(*args, **kwargs):
+                open_while_computing.append((name, fake_db.open_now))
+                return fn(*args, **kwargs)
+            return wrapped
+
+        self.model.load_from = watch("load", self.model.load_from)
+        self.model.encode = watch("encode", self.model.encode)
+        original_write = _Storage.write
+        _Storage.write = watch("put", original_write)
+        try:
+            result = job.run(7, settings=_settings(batch_size=2))
+        finally:
+            _Storage.write = original_write
+
+        self.assertEqual(5, result["processed"])
+        self.assertEqual({"load", "encode", "put"}, {name for name, _ in open_while_computing})
+        self.assertTrue(all(count == 0 for _, count in open_while_computing), open_while_computing)
+        # 조회 1번 + 배치(2·2·1장) 적재 3번. 적재마다 자기 연결에서 한 번 커밋한다.
+        self.assertEqual(4, len(fake_db.connections))
+        self.assertEqual([0, 1, 1, 1], [c.commits for c in fake_db.connections])
+        self.assertEqual(0, fake_db.open_now)
+
+    def test_batch_with_no_survivors_does_not_open_a_connection(self) -> None:
+        fake_db = self._install_db([_Ref(1, "galleries/7/missing.jpg"), _Ref(2, "galleries/7/bad.jpg")])
+
+        result = job.run(7, settings=_settings(batch_size=2))
+
+        self.assertEqual(0, result["processed"])
+        self.assertEqual(1, len(fake_db.connections))   # 대상 조회만
+        self.assertEqual(0, fake_db.commits)
 
     def test_no_deadline_processes_everything(self) -> None:
         targets = [_Ref(i, f"galleries/7/{i}.jpg") for i in range(1, 6)]
@@ -279,7 +329,7 @@ class GalleryJobTest(unittest.TestCase):
 
         self.assertFalse(result["stopped"])
         self.assertEqual(5, result["processed"])
-        self.assertEqual(3, fake_db.connection.commits)
+        self.assertEqual(3, fake_db.commits)
 
 
 class PhotoIdsJobTest(GalleryJobTest):
