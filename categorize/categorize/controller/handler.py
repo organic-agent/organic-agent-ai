@@ -14,6 +14,7 @@ from __future__ import annotations
 import logging
 
 from categorize.config.settings import Settings
+from categorize.controller import fault
 from categorize.infrastructure import bedrock
 from categorize.service import job
 
@@ -38,6 +39,7 @@ def handler(event: dict, context) -> dict:
     if mode != MODE_FULL:
         raise ValueError(f"모르는 mode: {mode}")
     job_id = int(event["jobId"]) if event.get("jobId") is not None else None
+    fault.maybe_exit(f"categorize gallery={gallery_id} jobId={job_id}")
     concept_count = int(event["conceptCount"]) if event.get("conceptCount") else None
 
     return job.run(
