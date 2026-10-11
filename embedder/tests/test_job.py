@@ -321,6 +321,18 @@ class GalleryJobTest(unittest.TestCase):
         self.assertEqual(1, len(fake_db.connections))   # 대상 조회만
         self.assertEqual(0, fake_db.commits)
 
+    def test_logs_seconds_per_stage_once_per_run(self) -> None:
+        self._install_db([_Ref(1, "galleries/7/a.jpg"), _Ref(2, "galleries/7/b.jpg"), _Ref(3, "galleries/7/c.jpg")])
+
+        with self.assertLogs(job.log, level="INFO") as logs:
+            job.run(7, settings=_settings(batch_size=2))
+
+        lines = [line for line in logs.output if "단계 시간" in line]
+        self.assertEqual(1, len(lines))
+        self.assertIn("3장", lines[0])
+        for stage in job.STAGES:
+            self.assertRegex(lines[0], rf"{stage}=\d+\.\d\d")
+
     def test_no_deadline_processes_everything(self) -> None:
         targets = [_Ref(i, f"galleries/7/{i}.jpg") for i in range(1, 6)]
         fake_db = self._install_db(targets)

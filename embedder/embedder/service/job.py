@@ -19,8 +19,10 @@ from __future__ import annotations
 
 import logging
 import time
+from collections import defaultdict
 from concurrent.futures import Future, ThreadPoolExecutor
-from typing import Callable, NamedTuple
+from contextlib import contextmanager
+from typing import Callable, Iterator, NamedTuple
 
 from PIL import Image
 
@@ -36,6 +38,28 @@ log = logging.getLogger(__name__)
 
 #: 몇 배치 앞까지 원본 GET 을 미리 걸어 두는가. 2 면 메모리에 원본이 최대 세 배치(~300MB) 올라간다.
 PREFETCH_BATCHES = 2
+
+
+#: 단계 시간 로그의 순서. 받기 대기 · 원본 디코드(EXIF 포함) · JPEG 인코딩 · PUT · 미리보기 다시 열기 · 추론 · 적재 · 모델 로드.
+STAGES = ("get", "decode", "jpeg", "put", "reopen", "infer", "store", "model")
+
+
+class _StageClock:
+    """단계별 누적 시간(wes #274 T0). 장당 0.5초가 어디에 쓰이는지 보고 처리량 처방을 고르려는 계측이다."""
+
+    def __init__(self) -> None:
+        self.seconds: dict[str, float] = defaultdict(float)
+
+    @contextmanager
+    def measure(self, stage: str) -> Iterator[None]:
+        started = time.perf_counter()
+        try:
+            yield
+        finally:
+            self.seconds[stage] += time.perf_counter() - started
+
+    def summary(self) -> str:
+        return " ".join(f"{stage}={self.seconds[stage]:.2f}" for stage in STAGES)
 
 
 class _Prepared(NamedTuple):
@@ -64,6 +88,7 @@ def run(
     tag = f"갤러리 {gallery_id}" + (f" 사진 {len(photo_ids)}장" if photo_ids is not None else "")
 
     storage = PhotoStorage(settings.s3_bucket, max_concurrency=settings.download_workers)
+    clock = _StageClock()
 
     with connection.connect(settings) as conn:
         if photo_ids is not None:
@@ -74,7 +99,8 @@ def run(
     result.targets = len(targets)
     log.info("%s: 대상 %s장", tag, len(targets))
 
-    embedder = model.load_from(settings)
+    with clock.measure("model"):
+        embedder = model.load_from(settings)
 
     # 데드라인 판단은 평균이 아니라 최댓값으로 한다. 배치 시간은 원본 크기에 따라 크게 흔들린다.
     longest_batch = 0.0
@@ -113,19 +139,24 @@ def run(
             for ref, download in zip(batch, downloads):
                 result.attempted += 1
                 try:
-                    data = download.result()  # GET 실패는 여기서 터진다
-                    original = images.open_original(data)
-                    prepared = images.prepare(data, settings.resize_long_edge)
-                    # ① EXIF 는 회전·축소 전 원본에서. 실패해도 사진을 버리지 않는다.
-                    photo_metadata = _read_metadata(ref, original, len(data), result)
+                    with clock.measure("get"):
+                        data = download.result()  # GET 실패는 여기서 터진다
+                    with clock.measure("decode"):
+                        original = images.open_original(data)
+                        prepared = images.prepare(data, settings.resize_long_edge)
+                        # ① EXIF 는 회전·축소 전 원본에서. 실패해도 사진을 버리지 않는다.
+                        photo_metadata = _read_metadata(ref, original, len(data), result)
 
                     # ② 미리보기를 먼저 올린다. 실패하면 encode 에 들어가지 않아 벡터만 남는 사진이 없다.
                     key = images.preview_key_for(ref.storage_key)
-                    jpeg = images.to_jpeg(prepared, settings.preview_quality)
-                    storage.write(key, jpeg, "image/jpeg")
+                    with clock.measure("jpeg"):
+                        jpeg = images.to_jpeg(prepared, settings.preview_quality)
+                    with clock.measure("put"):
+                        storage.write(key, jpeg, "image/jpeg")
 
                     # ③ 모델 입력은 S3 에 올린 바로 그 바이트다.
-                    model_input = images.open_preview(jpeg)
+                    with clock.measure("reopen"):
+                        model_input = images.open_preview(jpeg)
 
                     # 두 리스트는 함께 늘린다. 위에서 실패하면 어느 쪽에도 안 들어가 벡터와 짝이 어긋나지 않는다.
                     pending.append(_Prepared(ref, key, photo_metadata))
@@ -136,14 +167,15 @@ def run(
                     result.failed.append(ref.storage_key)
 
             if loaded_images:
-                vectors = embedder.encode(loaded_images)
+                with clock.measure("infer"):
+                    vectors = embedder.encode(loaded_images)
                 embedded = [
                     EmbeddingResult(item.ref, vector, item.preview_key, item.metadata)
                     for item, vector in zip(pending, vectors)
                 ]
 
                 # ④ 계산이 끝난 뒤에만 연결을 열어 적재하고 배치 단위로 커밋한다. 중간에 죽어도 그때까지는 남는다.
-                with connection.connect(settings) as conn:
+                with clock.measure("store"), connection.connect(settings) as conn:
                     stored = photos.store_embeddings(conn, embedded, embedding_model=settings.embedding_model)
                     conn.commit()
                 result.processed += stored
@@ -160,6 +192,7 @@ def run(
         pool.shutdown(wait=False, cancel_futures=True)
 
     result.elapsed_seconds = time.monotonic() - started
+    log.info("단계 시간(초, %s장): %s", result.processed, clock.summary())
     log.info("완료: %s", result.to_dict())
     return result.to_dict()
 
