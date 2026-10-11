@@ -130,7 +130,9 @@ class DbStore:
     def read_gallery(self, gallery: str) -> GalleryRead:
         """분석 행과 벡터 두 종류를 **한 쿼리**로. embedding_model 이 섞여 있으면 실패한다 — 다른 공간의 코사인은 무의미."""
         cols = ", ".join(f"a.{f}" for f in self.ANALYSIS_FIELDS)
-        with self.conn.cursor() as cur:
+        # 바이너리로 받는다 — 텍스트면 7천 장 × 768차원 × 2종(≈ 1,100만 개 수)을 문자열로 보내고 파이썬에서 다시 풀어
+        # 읽기 8~11초의 대부분이 된다(R-2-2). 바이너리는 같은 값을 ≈ 1/10 시간에(로컬 1.04 → 0.10초, #274).
+        with self.conn.cursor(binary=True) as cur:
             cur.execute(
                 f"SELECT a.photo_id, {cols}, a.embedding, a.embedding_model, a.clip_embedding, {_QUALITY_SCORED_SQL} "
                 "FROM photo_analysis a JOIN photos p ON p.id = a.photo_id "
@@ -217,6 +219,9 @@ class DbStore:
         잡이 없으면(CLI 확인용 실행) 저장하지 않는다 — concept_assignments 는 job_id 에 매달리고, wes 는 최신 잡의
         배정을 읽는다. 이름은 로그·결과 payload 로만 남는다.
 
+        시각은 `clock_timestamp()` — `now()`는 트랜잭션 시작(이름 짓기 전 preview_key 조회)이라 실제 커밋보다 9~10초
+        이르게 찍혀, 부하 측정 타임라인이 categorize 몫을 wes 몫으로 잘못 읽었다(#274 R-2-2).
+
         `needs_review` 는 쓰지 않는다 — 컬럼 기본값(false)이 들어간다. wes 가 V34 에서 읽기를 멈췄고 컬럼 삭제는 wes 가 한다."""
         if job_id is None:
             log.warning("gallery %s: 잡이 없어 배정 %d그룹을 저장하지 않는다 (--job-id 가 있어야 concept_assignments 에 남는다)",
@@ -236,12 +241,12 @@ class DbStore:
                     (job_id, gallery_id, embed_group_id, concept_name,
                      detail_name, confidence, assigned_by,
                      created_at, updated_at)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, now(), now())
+                VALUES (%s, %s, %s, %s, %s, %s, %s, clock_timestamp(), clock_timestamp())
                 ON CONFLICT (job_id, embed_group_id) DO UPDATE SET
                     concept_name = EXCLUDED.concept_name,
                     detail_name = EXCLUDED.detail_name, confidence = EXCLUDED.confidence,
                     assigned_by = EXCLUDED.assigned_by,
-                    updated_at = now(), version = concept_assignments.version + 1
+                    updated_at = clock_timestamp(), version = concept_assignments.version + 1
                 """,
                 params,
             )

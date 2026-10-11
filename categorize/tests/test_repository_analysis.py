@@ -37,6 +37,14 @@ def test_db_store_read_gallery_is_one_query(tmp_path):
     assert set(data.embeddings) == {"11", "12"} and set(data.clip_embeddings) == {"11"}
 
 
+def test_db_store_read_gallery_reads_vectors_in_binary(tmp_path):
+    """벡터 두 종을 텍스트로 받으면 파싱이 읽기의 대부분이다(#274 R-2-2 8~11초) — 바이너리 커서로 읽는다."""
+    conn = RowConn(rows=[])
+    _db_store(tmp_path, conn).read_gallery("7")
+
+    assert conn.binary == [True]
+
+
 def test_db_store_read_gallery_rejects_mixed_embedding_models(tmp_path):
     e = np.ones(4, dtype=np.float32)
     conn = RowConn(rows=[
@@ -110,6 +118,16 @@ def test_write_assignments_writes_layers_to_same_named_columns(tmp_path):
     assert "needs_review" not in sql
     assert (written["job_id"], written["gallery_id"], written["embed_group_id"]) == (3, 7, 4)
     assert conn.commits == 1
+
+
+def test_write_assignments_stamps_commit_time_not_transaction_start(tmp_path):
+    """now()는 트랜잭션 시작(이름 짓기 전)이라 측정이 9~10초 어긋났다 — 배정 시각은 clock_timestamp()."""
+    conn = JobConn()
+    row = ConceptAssignment(embed_group_id=4, concept_name="a", detail_name="b", confidence=0.9, assigned_by="vlm")
+    _db_store(tmp_path, conn).write_assignments("7", 3, [row])
+
+    sql, _ = conn.executed[0]
+    assert "now()" not in sql and sql.count("clock_timestamp()") == 3
 
 
 def test_read_gallery_marks_quality_scored_from_column_or_old_technical_score(tmp_path):

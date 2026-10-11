@@ -29,8 +29,10 @@ class RowConn:
     def __init__(self, rows):
         self.rows = rows
         self.executed = []
+        self.binary = []
 
-    def cursor(self):
+    def cursor(self, binary=False):
+        self.binary.append(binary)
         return _Cursor(self)
 
 
