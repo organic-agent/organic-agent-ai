@@ -2,6 +2,10 @@
 
 DB 접속은 원래 RDS IAM 토큰이었으나 조직 SCP 가 `rds-db:connect` 를 막아 임시로 `DB_PASSWORD` 를 쓴다.
 원복 절차는 인프라 레포 `docs/runbook.md` "SCP 차단" 절.
+
+`RESULT_QUEUE_URL` 이 스위치다(wes #286). 있으면 결과를 SQS 결과 큐로 보내고 DB 를 열지 않는다 — 배치 임베더는
+VPC 밖에서 DB 환경변수 없이 돈다. 그래서 그때는 DB_* 를 요구하지 않는다(값이 없으면 None). 없으면 지금처럼 DB_* 가 필수다.
+관리자 경로(별도 함수 embedder-admin, VPC 안)는 큐를 두지 않으므로 늘 DB_* 가 있다.
 """
 
 from __future__ import annotations
@@ -12,16 +16,17 @@ from dataclasses import dataclass
 
 @dataclass(frozen=True)
 class Settings:
-    db_host: str
+    #: DB_* 는 결과 큐 모드(`result_queue_url`)에서만 None 일 수 있다.
+    db_host: str | None
     db_port: int
-    db_name: str
-    db_user: str
+    db_name: str | None
+    db_user: str | None
 
     #: embedder 전용 사용자 비밀번호. SCP 우회용 임시 필드 — IAM 토큰으로 돌아가면 지운다.
-    db_password: str
+    db_password: str | None
 
     #: IAM 토큰 서명용 호스트. 로컬 터널에서는 db_host(localhost)와 다르다. 지금은 안 쓰지만 원복 때 필요.
-    db_auth_host: str
+    db_auth_host: str | None
 
     #: Lambda 기본 verify-full. 로컬 터널은 호스트명이 안 맞아 require 로 낮춘다.
     db_sslmode: str
@@ -49,16 +54,24 @@ class Settings:
 
     #: 빌드 때 받은 모델 snapshot 과 런타임 로드를 같은 commit 으로 고정한다.
     model_revision: str = "5931719e67bbdb9737e363e781fb0c67687896bc"
+
+    #: 결과 SQS 큐 URL(wes #286). 있으면 결과를 큐로 보내고(writer Lambda 가 모아 적재) DB 를 열지 않는다.
+    #: 없으면 지금처럼 DB 에 바로 쓴다.
+    result_queue_url: str | None = None
+
     @staticmethod
     def from_env() -> "Settings":
-        db_host = _required("DB_HOST")
+        result_queue_url = os.environ.get("RESULT_QUEUE_URL") or None
+        # 큐 모드는 DB 없이 돈다. 비어 있으면 None 이고, 실수로 DB 를 열려 하면 connection.connect 가 막는다.
+        db_value = _optional if result_queue_url else _required
+        db_host = db_value("DB_HOST")
 
         return Settings(
             db_host=db_host,
             db_port=int(os.environ.get("DB_PORT", "5432")),
-            db_name=_required("DB_NAME"),
-            db_user=_required("DB_USER"),
-            db_password=_required("DB_PASSWORD"),
+            db_name=db_value("DB_NAME"),
+            db_user=db_value("DB_USER"),
+            db_password=db_value("DB_PASSWORD"),
             db_auth_host=os.environ.get("DB_AUTH_HOST") or db_host,
             db_sslmode=os.environ.get("DB_SSLMODE", "verify-full"),
             db_sslrootcert=os.environ.get("DB_SSLROOTCERT", "/opt/rds-ca/global-bundle.pem"),
@@ -74,6 +87,7 @@ class Settings:
                 "EMBED_MODEL_REVISION",
                 "5931719e67bbdb9737e363e781fb0c67687896bc",
             ),
+            result_queue_url=result_queue_url,
         )
 
 
@@ -83,3 +97,7 @@ def _required(name: str) -> str:
         # 사진 절반을 처리한 뒤 발견하는 것보다 초기화 때 죽는 편이 낫다.
         raise RuntimeError(f"환경변수 {name}이(가) 비어 있습니다")
     return value
+
+
+def _optional(name: str) -> str | None:
+    return os.environ.get(name) or None

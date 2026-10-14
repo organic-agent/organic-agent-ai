@@ -21,7 +21,7 @@ embedder/
 ├── controller/        handler.py(Lambda 진입·분기만) · embed.py(일반) · admin.py(어드민, 페이로드 검증 → AdminPhotoEvent)
 ├── service/           job.py(배치 본체) · admin_job.py(한 장 교체) · images.py(다듬기) · metadata.py(EXIF)
 ├── domain/            photo.py(PhotoRef · PhotoMetadata · EmbeddingResult) · run.py(RunResult) · admin.py(AdminPhotoEvent · AdminJobResult) — 로직 없음
-├── repository/        connection.py(접속) · photos.py(일반) · admin_jobs.py(어드민) · storage.py(S3, 공유)
+├── repository/        connection.py(접속) · photos.py(일반) · results.py(결과 큐 SQS, #286) · admin_jobs.py(어드민) · storage.py(S3, 공유)
 ├── infrastructure/    model.py(DINOv3 로드·추론, torch 는 여기서만)
 └── config/            settings.py(환경변수 → Settings)
 ```
@@ -86,6 +86,27 @@ photoselect가 보는 픽셀과 벡터가 같은 파일이라는 점도 따라�
   이전 값을 지킨다(`preview_key`는 이번에 올린 파일이 곧 벡터의 원본이라 그냥 덮어쓴다).
 - **재계산은 플래그가 아니다(#100).** 모델·전처리를 바꿔 다시 돌리려면 `photo_analysis` 행을 지운다(관리자 재처리) — 그러면 대상 조회에 다시 걸린다.
 - **`PENDING`은 건너뛴다.** 업로드 URL만 발급되고 S3에 객체가 없을 수 있는 상태다.
+
+## 결과 큐 모드 (`RESULT_QUEUE_URL`, wes #286)
+
+부하 실측에서 동시 임베더 72개가 8장마다 각자 `INSERT photo_analysis` + `UPDATE photos` 를 하며 DB 시간의 57%(INSERT 평균
+86ms)를 먹어 사용자 요청을 굶겼다. 그래서 쓰기를 한 곳으로 모은다:
+
+```
+wes ──EVENT {galleryId, photoIds, storageKeys}──▶ embedder (VPC 밖, DB 없음)
+        └─ 모델 배치(8장) = SQS 메시지 하나 ──▶ 결과 큐 ──▶ embedwriter (VPC 안, 동시 ≤ 2) ── 수백 장 / 트랜잭션 ──▶ RDS
+```
+
+- **스위치는 `RESULT_QUEUE_URL` 하나다.** 있으면 ④(적재)를 DB 대신 큐로 보낸다. 그때는 `DB_*` 를
+  요구하지 않는다. 없으면 지금 그대로 DB 에 바로 쓴다(로컬 CLI · 큐 없는 배포).
+- **`storageKeys`** 가 페이로드에 있으면 대상을 DB 에서 읽지 않는다(photoIds 와 같은 순서·같은 길이, 어긋나면 ValueError).
+  큐 모드 + storageKeys 면 DB 접속을 아예 열지 않는다. 큐 모드인데 storageKeys 가 없으면 대상만 DB 에서 읽는다(DB_* 필요).
+- **순서 계약은 그대로다** — 미리보기 PUT → 그 JPEG 로 벡터 → 결과 전송. 전송 실패는 그 배치 사진 전부의 `failed` 다
+  (벡터가 적재되지 않으므로 wes 가 다시 배정한다). `processed` 는 큐로 보낸 장수다 — 실제 적재(CAS)는 writer 가 한다.
+- 메시지 모양(계약 v1)은 `repository/results.py` 와 `../embedwriter/README.md`. 벡터는 little-endian float32 의 base64.
+- **관리자 경로는 따로 간다.** 관리자 사진 교체(`{"jobId", …}`)는 같은 이미지로 만든 두 번째 함수 `<prefix>-embedder-admin`
+  (VPC 안, `DB_*` 있음, `RESULT_QUEUE_URL` 없음)이 맡는다. 큐 모드 함수에 관리자 페이로드가 잘못 오면 `connection.connect` 가
+  "DB_HOST 가 없습니다" 로 바로 죽는다.
 
 ## 접속: 원래는 비밀번호가 없었다
 
@@ -216,6 +237,8 @@ python -m embedder --gallery-id 1
 ```
 
 이미지를 만들어 ECR에 올리고, Lambda가 그 이미지를 집게 한 뒤, 실제로 걸렸는지까지 확인한다.
+**관리자 함수 `<prefix>-embedder-admin` 이 있으면 같은 이미지(같은 다이제스트)로 함께 갱신한다** — `aws lambda get-function`
+으로 확인하고 없으면(운영은 아직) 조용히 건너뛴다. 이름 접두사는 기본 `wes`, dev 스택은 `NAME_PREFIX=wes-dev ./deploy.sh`.
 `torch`와 모델 가중치 레이어는 캐시되므로 파이썬 코드만 고쳤다면 1분이 안 걸린다.
 
 **앱과 배포 경로가 다르다.** `cd.yml`은 `embedder/`를 건드리지 않으므로 main에 머지해도 운영
@@ -256,7 +279,8 @@ python -m embedder --gallery-id 1
 
 | 변수 | 기본값 | 비고 |
 |---|---|---|
-| `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` | — | 필수(포트 기본 5432). Lambda는 Terraform이 주입 |
+| `RESULT_QUEUE_URL` | — | 있으면 결과 큐 모드(위 절). DB 에 쓰지 않고, 아래 `DB_*` 가 필수가 아니게 된다 |
+| `DB_HOST` / `DB_PORT` / `DB_NAME` / `DB_USER` | — | 필수(포트 기본 5432) — 결과 큐 모드에서만 생략 가능. Lambda는 Terraform이 주입 |
 | `DB_PASSWORD` | — | 필수. **Terraform이 주입하지 않는다** — apply 밖에서 넣고 `ignore_changes`가 지킨다. SCP 우회로용이라 원복 시 사라진다 |
 | `DB_AUTH_HOST` | `DB_HOST` | IAM 토큰에 서명할 호스트. 지금은 안 쓰인다(원복용). 터널로 로컬 실행할 때만 달라진다 |
 | `DB_SSLMODE` | `verify-full` | 터널로 로컬 실행할 때는 `require` |

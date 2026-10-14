@@ -13,6 +13,10 @@ from embedder.config.settings import Settings
 
 
 def connect(settings: Settings) -> psycopg.Connection:
+    if not settings.db_host:
+        # 결과 큐 모드(RESULT_QUEUE_URL)는 DB 환경변수 없이 뜬다. 거기서 DB 를 열려 하면 엉뚱한 기본 호스트로
+        # 붙지 말고 여기서 이유를 말하고 죽는다(관리자 페이로드나 storageKeys 없는 페이로드가 잘못 온 경우).
+        raise RuntimeError("DB_HOST 가 없습니다 — 결과 큐 모드(RESULT_QUEUE_URL)에서는 DB 를 열 수 없습니다")
     # SCP 가 풀리면 password 대신 boto3 rds.generate_db_auth_token(DBHostname=settings.db_auth_host, ...) 으로
     # 돌아간다. 그때 DB 에 `GRANT rds_iam TO embedder;` 가 필요하고, 반대로 지금은 그 GRANT 가 있으면
     # pg_hba 가 PAM 으로 보내 `PAM authentication failed` 가 난다.
