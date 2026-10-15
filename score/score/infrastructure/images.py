@@ -39,6 +39,19 @@ def load_image(path: str, long_edge: int = PREVIEW_LONG_EDGE) -> Image.Image:
     return fit_long_edge(img, long_edge)
 
 
+#: 1단계(CLIP 만) 축소 디코드의 최소 짧은 변. CLIP 은 224 로 줄이므로 224 × 1.5 이상 남는 가장 큰 JPEG 축소(1/2·1/4·1/8)를
+#: 고른다 — 임베더의 축소 디코드와 같은 여유. 실험 E-SPLIT(wes #274) V3: CLIP 코사인 중앙 0.9977 · 피사체 일치 98.4%.
+CLIP_DRAFT_MIN_SIDE = 336
+
+
+def load_for_clip(path: str) -> Image.Image:
+    """CLIP 만 볼 사진을 싸게 연다 — JPEG 는 축소 디코드(전체를 풀지 않는다). ARNIQA·화질 지표에는 쓰지 않는다(1024 가 필요하다)."""
+    img = Image.open(path)
+    if img.format == "JPEG":
+        img.draft("RGB", (CLIP_DRAFT_MIN_SIDE, CLIP_DRAFT_MIN_SIDE))
+    return ImageOps.exif_transpose(img).convert("RGB")
+
+
 def as_image(source: str | Image.Image, long_edge: int = PREVIEW_LONG_EDGE) -> Image.Image:
     """경로면 로드, 이미 PIL 이미지면 크기만 맞춘다."""
     if isinstance(source, Image.Image):

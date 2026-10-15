@@ -6,6 +6,10 @@
         집을 게 없으면 poll 초 대기. 연속 유휴가 idle_stop 초를 넘기면 **끝난다** — `stop_on_idle` 이면 그 전에
         자기 인스턴스를 StopInstances 한다(#103: 종료와 정지는 별개다). `WORKER_IDLE_STOP_SECONDS=0` 이면 끝나지 않는다.
 
+두 단계(wes #274 2물결, `SCORE_SPLIT`): 켜져 있으면 1단계(CLIP·피사체 — 폴더가 기다리는 것)를 먼저 집고, 1단계 대기가 비면
+2단계(화질 점수 — 추천만 쓰는 것)를 집는다. 유휴는 두 대기가 다 비었을 때다. 2단계의 실패는 `error` 에 쓰지 않는다(빈 점수로 끝 표시).
+꺼져 있으면 지금처럼 한 번에 다 계산한다.
+
 갤러리를 배정받지 않는다 — 임베딩이 끝난 사진이면 누구 것이든 집는다. 그래서 인스턴스 2대가 한 갤러리를 나눠 먹어도,
 한 대가 두 갤러리를 섞어 먹어도 된다. 켜는 것·폴백 결정은 wes 의 몫이고, 워커는 켜지면 일하고 없으면 끈다.
 
@@ -43,15 +47,30 @@ class _Lane:
         self.refs: list = []
         #: 이번 집기에서 미리보기가 S3 에 없던 사진(#85). 잠근 트랜잭션 안에서 error 를 쓰고 배치와 함께 commit 한다.
         self.missing: list[str] = []
+        #: 이번에 집은 배치의 점수 단계(pipeline.STAGE_*).
+        self.stage = pipeline.STAGE_FULL
 
     def claim_and_download(self, settings: Settings, storage, poison: list[int]) -> list:
         """잠그고 내려받는다. 예외는 호출자가 rollback 한다."""
         self.missing = []
+        split = settings.knobs.split
+        self.stage = pipeline.STAGE_FAST if split else pipeline.STAGE_FULL
         refs = self.store.claim_batch(settings.worker_batch, exclude=poison)
+        if not refs and split:
+            # 1단계 대기가 비었다 — 화질 점수(2단계)를 집는다. 빈 SELECT 가 연 트랜잭션 안에서 이어서 잠근다.
+            self.stage = pipeline.STAGE_QUALITY
+            # 찜만 찍고 곧바로 commit 한다(잠금 없이 계산 — wes #274 R-2-2 방식 B). 결과는 잠글 수 있는 행에만 한 문장으로 쓴다.
+            refs = self.store.claim_quality_batch(settings.worker_batch, exclude=poison,
+                                                  lease_seconds=settings.worker_quality_lease_seconds)
         if refs:
             refs = download_previews(storage, refs, self.work_dir, workers=settings.download_workers, missing=self.missing)
             if self.missing:
-                self.store.write_errors(self.missing, PREVIEW_MISSING)
+                if self.stage == pipeline.STAGE_QUALITY:
+                    # 2단계는 error 에 쓰지 않는다 — 쓰면 폴더 대상에서 빠진다. 빈 점수로 끝 표시만(다시 집지 않게).
+                    self.store.write_quality("worker", {pid: {} for pid in self.missing})
+                    self.missing = []
+                else:
+                    self.store.write_errors(self.missing, PREVIEW_MISSING)
         self.refs = refs
         return refs
 
@@ -153,7 +172,7 @@ def loop(settings: Settings, *, once: bool = False, stop_on_idle: bool = True, m
             t0 = time.monotonic()
             try:
                 # 집기가 곧 대상 선정이라 force=True — 재개 판정(read_analysis)을 건너뛴다. write_scores 가 commit = 잠금 해제.
-                result = pipeline.run(current.store, "worker", refs, settings, force=True, scorer=scorer)
+                result = pipeline.run(current.store, "worker", refs, settings, force=True, scorer=scorer, stage=current.stage)
             except Exception as exc:  # noqa: BLE001 — 배치를 돌려주고 계속 산다
                 log.exception("[worker] 배치 %d장 실패 — rollback: %s", len(refs), exc)
                 current.rollback()
@@ -190,8 +209,8 @@ def loop(settings: Settings, *, once: bool = False, stop_on_idle: bool = True, m
             log.info("[worker] 배치 %d장 %.1fs (장당 %.3fs) 실패 %d 누적 %d장", len(refs), took, took / max(1, len(refs)),
                      errors, summary["processed"])
             # wes 와 합의한 한 줄(pipeline-v2-wes.md §3.7) — CloudWatch Logs Insights 가 key=value 로 표를 만든다.
-            log.info("score worker batch=%d photos=%d failed=%d seconds=%.1f", settings.worker_batch,
-                     result.get("processed", 0), errors, took)
+            log.info("score worker batch=%d photos=%d failed=%d seconds=%.1f stage=%s", settings.worker_batch,
+                     result.get("processed", 0), errors, took, current.stage)
             current, other = other, current
             if once or (max_batches is not None and summary["batches"] >= max_batches):
                 if pending is not None:             # 미리 잠근 배치는 돌려준다
