@@ -47,3 +47,19 @@ def run(gallery_id: int, settings: Settings | None = None, job_id: int | None = 
         return result
     finally:
         conn.close()
+
+
+def rank(gallery_id: int, settings: Settings | None = None) -> dict:
+    """rank 모드(wes #274 2물결) — 화질 점수가 다 찬 갤러리의 백분위·연사 대표 순위만. Bedrock·잡 없음.
+
+    wes 의 RankStep 이 DONE 잡 갤러리에 보낸다. 잡이 없으니 실패해도 잡에 남길 곳이 없다 — 예외는 Lambda 실패로 올라가고,
+    wes 가 기다릴 시간 뒤 다시 보낸다.
+    """
+    settings = settings or Settings.from_env()
+    conn = connection.connect(settings)
+    try:
+        result = pipeline.rank(DbStore(settings, conn), str(gallery_id))
+        log.info("완료: %s", result)
+        return result
+    finally:
+        conn.close()

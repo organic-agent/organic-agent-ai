@@ -22,8 +22,8 @@ def test_concat_space_is_mean_of_cosines():
 
 
 def test_assign_ranks_puts_reason_in_sub_scores():
-    rows = [PhotoAnalysis(photo_id="a", technical_pct=90, sub_scores={"sharpness": 100.0}, burst_id=0),
-            PhotoAnalysis(photo_id="b", technical_pct=10, sub_scores={"sharpness": 10.0}, burst_id=0)]
+    rows = [PhotoAnalysis(photo_id="a", technical_pct=90, aesthetic_pct=50, sub_scores={"sharpness": 100.0}, burst_id=0),
+            PhotoAnalysis(photo_id="b", technical_pct=10, aesthetic_pct=50, sub_scores={"sharpness": 10.0}, burst_id=0)]
     assign_ranks(rows)
     best = next(r for r in rows if r.burst_rank == 0)
     assert best.photo_id == "a" and best.sub_scores["rank_reason"] == "technical"
@@ -91,3 +91,55 @@ def test_photos_without_scores_are_skipped(tmp_path):
     refs = w.refs + [PhotoRef(photo_id="없는.jpg", path=None)]
     result = pipeline.run(w.store, "g", refs, w.settings, FakeLlm())
     assert result["photos"] == len(w.rows)
+
+
+# ── 화질 점수가 덜 찼을 때(wes #274 2물결) ──────────────────────────────────────
+def _set_quality(store, gallery, scored):
+    rows = store.read_analysis(gallery)
+    for r in rows:
+        r.quality_scored = scored(r)
+    store._write_rows(gallery, rows)
+
+
+def test_unfinished_quality_scores_leave_ranks_empty_and_folders_unchanged(tmp_path):
+    """한 장이라도 화질 점수가 덜 찼으면 백분위·순위는 비우고, 폴더용(연사 묶음·그룹)은 다 찼을 때와 같다."""
+    w = world(tmp_path, order=(0, 1), sets=2, per_set=5)
+    pipeline.run(w.store, "g", w.refs, w.settings, None)
+    groups_when_scored = {r.photo_id: (r.embed_group_id, r.burst_id) for r in w.store.read_analysis("g")}
+
+    first = w.rows[0].photo_id
+    _set_quality(w.store, "g", lambda r: r.photo_id != first)
+    result = pipeline.run(w.store, "g", w.refs, w.settings, None)
+
+    rows = w.store.read_analysis("g")
+    assert result["ranked"] is False
+    assert {r.photo_id: (r.embed_group_id, r.burst_id) for r in rows} == groups_when_scored
+    assert all(r.technical_pct is None and r.aesthetic_pct is None and r.burst_rank is None for r in rows)
+    assert not any("sharpness_pct" in r.sub_scores or "rank_reason" in r.sub_scores for r in rows)
+
+
+def test_rank_mode_fills_ranks_once_quality_scores_are_complete(tmp_path):
+    w = world(tmp_path, order=(0, 1), sets=2, per_set=5)
+    _set_quality(w.store, "g", lambda r: False)
+    pipeline.run(w.store, "g", w.refs, w.settings, None)
+    groups = {r.photo_id: (r.embed_group_id, r.burst_id) for r in w.store.read_analysis("g")}
+
+    _set_quality(w.store, "g", lambda r: True)
+    result = pipeline.rank(w.store, "g")
+
+    rows = w.store.read_analysis("g")
+    assert result["ranked"] == len(w.rows) and result["pending"] == 0
+    assert all(r.technical_pct is not None and r.burst_rank is not None for r in rows)
+    assert {r.photo_id: (r.embed_group_id, r.burst_id) for r in rows} == groups
+    assert sum(1 for r in rows if r.burst_rank == 0) == len({r.burst_id for r in rows})
+
+
+def test_rank_mode_waits_while_quality_scores_are_pending(tmp_path):
+    w = world(tmp_path, order=(0,), per_set=4)
+    _set_quality(w.store, "g", lambda r: False)
+    pipeline.run(w.store, "g", w.refs, w.settings, None)
+
+    result = pipeline.rank(w.store, "g")
+
+    assert result == {"gallery": "g", "mode": "rank", "ranked": 0, "pending": len(w.rows)}
+    assert all(r.technical_pct is None for r in w.store.read_analysis("g"))

@@ -35,6 +35,12 @@ VLM 이 짓는 자유 이름이고 사용자가 고친다. 근거: `docs/experim
 
 Bedrock 호출 = 1층 1회(이미지 ≤ 40) + 2층 (그룹이 둘 이상인 1층 수)회(1층당 이미지 ≤ 15). 항상 갤러리 전체를 다시 계산한다.
 
+**순위는 화질 점수가 다 찬 뒤에(wes #274 2물결).** score 가 1단계(CLIP·피사체)와 2단계(화질 점수)로 나뉘면 폴더는 1단계만 기다린다.
+갤러리에 화질 점수(`quality_scored_at`, 옛 score 면 `technical_score`)가 덜 찬 사진이 한 장이라도 있으면 백분위·연사 대표 순위·
+`sharpness_pct`·`rank_reason` 은 비워 두고 폴더용(연사 묶음·구간·그룹·이름)만 쓴다 — 점수 없는 사진을 50 으로 채우면 가짜 순위가
+완료처럼 보인다. 연사 묶음·그룹·이름은 점수를 쓰지 않아 결과가 같다. 다 차면 wes 가 rank 모드(`{galleryId, mode: "rank"}`)를 보내고,
+저장된 `burst_id` 로 백분위·순위만 다시 매긴다(Bedrock·잡 없음). `sub_scores` 는 score 와 키를 나눠 쓰므로 categorize 의 키만 갈아 끼운다.
+
 ## 실행 모양
 
 | | |
@@ -106,6 +112,7 @@ naming 이 닿는다. 메모리 2–3GB 면 7,000장(거리행렬 ~200MB)까지 
   `needs_review` 는 쓰지 않는다(컬럼 기본값 false, wes 는 V34 부터 읽지 않는다. 컬럼 삭제는 wes).
   `concept_name` 은 자유 이름이고 갤러리 안에서 유일하다. `proposed_concept_name` · `clip_concept_name` 은 더 쓰지 않는다(NULL, 컬럼 삭제는 wes)
 - 페이로드 `conceptCount`(선택): 사용자가 기억하는 컨셉 수. wes 가 넘긴다
+- 페이로드 `mode`(선택): 없으면 full, `"rank"` 면 rank 모드(wes `AiTaskDto.Rank`). 읽는 컬럼 `quality_scored_at`(wes V40)
 - 용어: 이름의 정본은 용어집(WES-DOCS `docs/glossary.md`)이다. 필드 이름 = DB 컬럼 이름 = wes 필드 이름(wes V23) —
   1층 `concept_name` = wes `ConceptFolder`, 2층 `detail_name` = wes `DetailFolder`, 연사 `burst_id`·`burst_rank`, 임베딩 그룹 `embed_group_id`,
   파이프라인 버전 `pipeline_version`·`PIPELINE_VERSION`. Bedrock 프롬프트의 JSON 키는 `concepts[].segments` · `groups[].detail` 이다.

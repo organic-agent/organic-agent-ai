@@ -20,14 +20,17 @@ class PhotoAnalysis:
 
     photo_id: str
     subjects: str = "unknown"
-    technical_pct: float = 50.0
-    aesthetic_pct: float = 50.0
+    #: 백분위·연사 대표 순위는 화질 점수(score 2단계)가 갤러리 전부에 찬 뒤에만 매긴다(wes #274 2물결) — 그 전에는 None.
+    technical_pct: float | None = None
+    aesthetic_pct: float | None = None
     sub_scores: dict = field(default_factory=dict)   # technical_score, aesthetic_score, sharpness, rank_reason …
     # [GLOSSARY-1 2026-09-27] cluster_id → burst_id, cluster_rank → burst_rank (용어집: 연사), model_version → pipeline_version (D3)
     burst_id: int = -1
-    burst_rank: int = 0
+    burst_rank: int | None = None
     embed_group_id: int = -1
     pipeline_version: str = ""
+    #: 화질 점수(score 2단계)가 끝났나 — `quality_scored_at` 이 있거나 옛 score 가 한 번에 쓴 `technical_score` 가 있다.
+    quality_scored: bool = True
 
 
 @dataclass
@@ -59,6 +62,7 @@ class GalleryRead:
 class Store(Protocol):
     def read_gallery(self, gallery: str) -> GalleryRead: ...
     def write_groups(self, gallery: str, rows: list[PhotoAnalysis]) -> None: ...
+    def write_ranks(self, gallery: str, rows: list[PhotoAnalysis]) -> None: ...
     def write_assignments(self, gallery: str, job_id: int | None,
                           rows: list[ConceptAssignment]) -> None: ...
     def preview_paths(self, gallery: str, photo_ids: list[str]) -> dict[str, str]:

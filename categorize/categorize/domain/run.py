@@ -34,6 +34,8 @@ class CategorizeResult:
     pipeline: str = "v4-concept-segments"
     mode: str = "categorize"
     photos: int = 0
+    #: 백분위·순위까지 매겼나 — 화질 점수가 덜 찼으면 False 이고 rank 모드가 뒤에 채운다(wes #274 2물결).
+    ranked: bool = True
     # [GLOSSARY-1 2026-09-27] clusters → bursts, groups → embed_groups (결과 키도 "bursts"·"embedGroups")
     bursts: int = 0
     segment_mode: str = ""
@@ -48,7 +50,7 @@ class CategorizeResult:
     def to_dict(self) -> dict:
         return {
             "gallery": self.gallery, "pipeline": self.pipeline, "mode": self.mode,
-            "photos": self.photos, "bursts": self.bursts,
+            "photos": self.photos, "ranked": self.ranked, "bursts": self.bursts,
             "segmentMode": self.segment_mode, "segments": self.segments, "concepts": self.concepts,
             "embedGroups": {k: round(v, 3) for k, v in self.embed_groups.items()},
             "similarityProfile": {k: round(v, 3) for k, v in self.similarity_profile.items()},
