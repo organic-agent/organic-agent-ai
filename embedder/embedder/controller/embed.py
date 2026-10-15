@@ -10,6 +10,7 @@ import json
 import logging
 
 from embedder.config.settings import Settings
+from embedder.controller import fault
 from embedder.service import job
 
 log = logging.getLogger(__name__)
@@ -26,6 +27,7 @@ def handle(event: dict, context, settings: Settings) -> dict:
     gallery_id = int(gallery_id)
     photo_ids = [int(pid) for pid in event["photoIds"]]
     log.info("갤러리 %s: 사진 %s장 배치", gallery_id, len(photo_ids))
+    fault.maybe_exit(f"embedder gallery={gallery_id} photoIds={','.join(map(str, photo_ids))}")
     result = job.run(gallery_id=gallery_id, settings=settings, remaining_seconds=_remaining_seconds(context),
                      photo_ids=photo_ids)
     log.info("결과: %s", json.dumps(result, ensure_ascii=False))
