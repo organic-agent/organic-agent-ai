@@ -437,6 +437,8 @@ def test_claim_batch_locks_photo_analysis_rows_without_embedding_and_skips_locke
     assert "a.embedding IS NOT NULL AND a.clip_embedding IS NULL" in sql
     assert "p.preview_key IS NOT NULL" in sql and "p.deleted_at IS NULL" in sql and "g.deleted_at IS NULL" in sql
     assert "status" not in sql                                    # v2: status 는 보지 않는다
+    assert "ORDER BY a.photo_id" in sql and "OFFSET 0" in sql     # wes #274 D-3: 부분 인덱스에서 출발, 사진은 한 장씩
+    assert "gallery_id, p.id" not in sql                          # 사진 표를 갤러리 순으로 처음부터 걷지 않는다
     assert params == ([99], 32)
     assert [(r.photo_id, r.preview_key, r.camera) for r in refs] == [("11", "previews/a.jpg", "Canon R5"), ("12", "previews/b.jpg", None)]
     assert conn.commits == 0                                      # 잠금은 호출자가 commit/rollback 할 때까지

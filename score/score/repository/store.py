@@ -156,18 +156,29 @@ class DbStore:
         건너뛰므로 여러 대가 같은 사진을 집을 수 없다. 갤러리는 가리지 않는다(여러 대가 한 갤러리를 나눠 먹어도 된다).
         photos 가 아니라 photo_analysis 를 잠그는 이유: photoselect 유저에게 photos UPDATE 권한이 없다.
         `exclude` 는 이 프로세스에서 계속 실패하는 사진(독성)을 빼는 용도. `a.error IS NULL`(#85, wes V15): 실패 표시된 사진은
-        집지 않는다 — wes 의 부분 인덱스 `idx_photo_analysis_unscored` 가 같은 조건이라 이 절이 있어야 인덱스를 탄다."""
+        집지 않는다 — wes 의 부분 인덱스 `idx_photo_analysis_unscored` 가 같은 조건이라 이 절이 있어야 인덱스를 탄다.
+
+        출발점은 그 부분 인덱스다(wes #274 D-3). 점수 대기 행을 사진 id 순(= 올라온 순)으로 걸으며 사진·갤러리 조건을 한 장씩
+        찔러 본다 — `LATERAL (… OFFSET 0)` 이 플래너가 사진 표를 통째로 훑는 계획(merge·hash join)으로 바꾸지 못하게 막는 울타리다.
+        예전 `ORDER BY p.gallery_id, p.id` 는 사진 표를 (갤러리, id) 순으로 처음부터 걸어 이미 끝난 사진을 매번 지났다 — dev 흉내에서
+        호출당 27,302버퍼 → 197버퍼. 비용은 점수 대기 행 수에만 걸린다. 지워진 사진·갤러리의 대기 행은 집히지 않고 매번 지나가므로,
+        그런 행이 많이 남으면(분석 중 갤러리 삭제) 그만큼 다시 느려진다."""
         with self.conn.cursor() as cur:
             cur.execute(
                 """
                 SELECT p.id, p.preview_key, p.taken_at, p.camera_make, p.camera_model
                 FROM photo_analysis a
-                JOIN photos p ON p.id = a.photo_id
-                JOIN galleries g ON g.id = p.gallery_id
+                CROSS JOIN LATERAL (
+                    SELECT p.id, p.preview_key, p.taken_at, p.camera_make, p.camera_model
+                    FROM photos p
+                    JOIN galleries g ON g.id = p.gallery_id
+                    WHERE p.id = a.photo_id
+                      AND p.preview_key IS NOT NULL AND p.deleted_at IS NULL AND g.deleted_at IS NULL
+                    OFFSET 0
+                ) p
                 WHERE a.embedding IS NOT NULL AND a.clip_embedding IS NULL AND a.error IS NULL
-                  AND p.preview_key IS NOT NULL AND p.deleted_at IS NULL AND g.deleted_at IS NULL
-                  AND NOT (p.id = ANY(%s))
-                ORDER BY p.gallery_id, p.id
+                  AND NOT (a.photo_id = ANY(%s))
+                ORDER BY a.photo_id
                 LIMIT %s
                 FOR UPDATE OF a SKIP LOCKED
                 """,
