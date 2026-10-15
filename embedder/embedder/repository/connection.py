@@ -32,6 +32,10 @@ _CONNECTION_LIMIT_MESSAGES = ("too many connections", "too many clients")
 
 
 def connect(settings: Settings, sleep: Callable[[float], None] = time.sleep) -> psycopg.Connection:
+    if not settings.db_host:
+        # 결과 큐 모드(RESULT_QUEUE_URL)는 DB 환경변수 없이 뜬다. 거기서 DB 를 열려 하면 엉뚱한 기본 호스트로
+        # 붙지 말고 여기서 이유를 말하고 죽는다(관리자 페이로드나 storageKeys 없는 페이로드가 잘못 온 경우).
+        raise RuntimeError("DB_HOST 가 없습니다 — 결과 큐 모드(RESULT_QUEUE_URL)에서는 DB 를 열 수 없습니다")
     for delay in CONNECT_RETRY_DELAYS:
         try:
             return _open(settings)

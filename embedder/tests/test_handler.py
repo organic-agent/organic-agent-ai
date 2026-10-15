@@ -66,7 +66,7 @@ class PhotoIdsHandlerTest(unittest.TestCase):
         self.assertEqual(1, len(self.calls))
         self.assertEqual(7, self.calls[0]["gallery_id"])
         self.assertEqual([3, 1], self.calls[0]["photo_ids"])
-        self.assertEqual({}, self.calls[0]["kwargs"])          # fan_out·shard·force 는 사라졌다(#100)
+        self.assertEqual({"storage_keys": None}, self.calls[0]["kwargs"])  # fan_out·shard·force 는 사라졌다(#100)
         self.assertAlmostEqual(120.0, self.calls[0]["remaining"], places=0)
         self.assertNotIn("reinvoked", result)           # stopped=True 여도 재호출 없음 — 남은 장은 wes 가 재배정
 
@@ -78,6 +78,18 @@ class PhotoIdsHandlerTest(unittest.TestCase):
                 handler.handler(payload, _Context())
         with self.assertRaises(ValueError):
             handler.handler({"photoIds": [1]}, _Context())
+        self.assertEqual([], self.calls)
+
+    def test_storage_keys_are_passed_through_in_order(self) -> None:
+        """wes #286: storageKeys 가 있으면 job 이 DB 대신 이 키로 대상을 만든다."""
+        handler.handler({"galleryId": 7, "photoIds": [3, 1], "storageKeys": ["galleries/7/c.jpg", "galleries/7/a.jpg"]},
+                        _Context())
+        self.assertEqual({"storage_keys": ["galleries/7/c.jpg", "galleries/7/a.jpg"]}, self.calls[0]["kwargs"])
+
+    def test_storage_keys_length_mismatch_is_rejected(self) -> None:
+        for keys in (["galleries/7/a.jpg"], ["a", "b", "c"], "galleries/7/a.jpg", ["a", ""], ["a", 3]):
+            with self.assertRaises(ValueError):
+                handler.handler({"galleryId": 7, "photoIds": [3, 1], "storageKeys": keys}, _Context())
         self.assertEqual([], self.calls)
 
 

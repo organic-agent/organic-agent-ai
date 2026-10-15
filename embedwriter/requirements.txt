@@ -1,0 +1,4 @@
+# embedwriter — 결과 큐 → RDS 적재 Lambda. torch · numpy · pgvector 없음(벡터는 텍스트로 넘겨 SQL 에서 ::vector).
+psycopg[binary]==3.3.4
+# 테스트
+pytest==8.3.3

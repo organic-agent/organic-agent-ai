@@ -151,10 +151,12 @@ class _Metadata:
         return f"meta({original})"
 
 
-def _settings(batch_size: int = 2, stop_margin: int = 60, download_workers: int = 2):
+def _settings(batch_size: int = 2, stop_margin: int = 60, download_workers: int = 2,
+              result_queue_url: str | None = None):
     return SimpleNamespace(
         s3_bucket="bucket", batch_size=batch_size, resize_long_edge=1024, preview_quality=82,
         embedding_model="test-model", stop_margin_seconds=stop_margin, download_workers=download_workers,
+        result_queue_url=result_queue_url,
     )
 
 
@@ -374,3 +376,123 @@ class PhotoIdsJobTest(GalleryJobTest):
         result = job.run(7, settings=_settings(), photo_ids=[])
         self.assertEqual(0, result["targets"])
         self.assertEqual([], fake_db.stored)
+
+
+class _Queue:
+    """결과 큐 가짜. 'fail' 이 키에 든 사진이 배치에 있으면 그 배치 전송이 실패한다."""
+
+    instances: list["_Queue"] = []
+
+    def __init__(self, queue_url: str) -> None:
+        self.queue_url = queue_url
+        self.sent: list[dict] = []
+        _Queue.instances.append(self)
+
+    def send(self, gallery_id: int, results, embedding_model: str) -> int:
+        rows = list(results)
+        if any("fail" in row.ref.storage_key for row in rows):
+            raise RuntimeError("AWS.SimpleQueueService.NonExistentQueue")
+        self.sent.append({"gallery_id": gallery_id, "rows": rows, "embedding_model": embedding_model})
+        return len(rows)
+
+
+class _NoDb:
+    """결과 큐 + storageKeys 경로는 DB 를 열면 안 된다. 어느 함수든 불리면 실패한다."""
+
+    def connect(self, settings):
+        raise AssertionError("DB 접속을 열었다")
+
+    def __getattr__(self, name):
+        raise AssertionError(f"DB 함수 {name} 을(를) 불렀다")
+
+
+class ResultQueueJobTest(unittest.TestCase):
+    """wes #286: storageKeys 로 DB 읽기를, RESULT_QUEUE_URL 로 DB 쓰기를 건너뛴다."""
+
+    def setUp(self) -> None:
+        self._saved = {name: getattr(job, name) for name in
+                       ("connection", "photos", "images", "metadata", "model", "PhotoStorage", "ResultQueue")}
+        _Storage.instances.clear()
+        _Queue.instances.clear()
+        self.images = _Images()
+        self.model = _Model()
+        job.images = self.images
+        job.model = self.model
+        job.metadata = _Metadata()
+        job.PhotoStorage = _Storage
+        job.ResultQueue = _Queue
+
+    def tearDown(self) -> None:
+        for name, value in self._saved.items():
+            setattr(job, name, value)
+
+    def test_queue_with_storage_keys_never_opens_db(self) -> None:
+        job.connection = _NoDb()
+        job.photos = _NoDb()
+
+        result = job.run(7, settings=_settings(batch_size=2, result_queue_url="https://sqs/q"),
+                         photo_ids=[3, 1, 2], storage_keys=["galleries/7/c.jpg", "galleries/7/a.jpg", "galleries/7/b.jpg"])
+
+        queue = _Queue.instances[0]
+        self.assertEqual("https://sqs/q", queue.queue_url)
+        # 모델 배치 하나 = 메시지 하나, 페이로드 순서 그대로.
+        self.assertEqual([[3, 1], [2]], [[row.ref.photo_id for row in sent["rows"]] for sent in queue.sent])
+        self.assertEqual(["galleries/7/c.jpg", "galleries/7/a.jpg"], [row.ref.storage_key for row in queue.sent[0]["rows"]])
+        self.assertEqual(["previews/galleries/7/c.jpg", "previews/galleries/7/a.jpg"],
+                         [row.preview_key for row in queue.sent[0]["rows"]])
+        self.assertEqual({7}, {sent["gallery_id"] for sent in queue.sent})
+        self.assertEqual({"test-model"}, {sent["embedding_model"] for sent in queue.sent})
+        self.assertEqual(3, result["processed"])
+        self.assertEqual(3, result["targets"])
+        self.assertEqual([], result["failed"])
+
+    def test_send_failure_fails_that_batch_only_and_continues(self) -> None:
+        job.connection = _NoDb()
+        job.photos = _NoDb()
+
+        result = job.run(7, settings=_settings(batch_size=2, result_queue_url="https://sqs/q"),
+                         photo_ids=[1, 2, 3, 4],
+                         storage_keys=["galleries/7/a.jpg", "galleries/7/fail.jpg", "galleries/7/c.jpg", "galleries/7/d.jpg"])
+
+        # 첫 배치(a, fail) 전송이 실패해 두 장 다 실패, 다음 배치는 그대로 간다.
+        self.assertEqual(["galleries/7/a.jpg", "galleries/7/fail.jpg"], result["failed"])
+        self.assertEqual(2, result["processed"])
+        self.assertEqual(0, result["remaining"])
+        self.assertEqual([[3, 4]], [[row.ref.photo_id for row in sent["rows"]] for sent in _Queue.instances[0].sent])
+
+    def test_storage_keys_without_queue_skip_read_but_store_to_db(self) -> None:
+        fake_db = _Db([])
+        job.connection = fake_db
+        job.photos = fake_db
+
+        result = job.run(7, settings=_settings(batch_size=2), photo_ids=[5, 6],
+                         storage_keys=["galleries/7/e.jpg", "galleries/7/f.jpg"])
+
+        self.assertEqual([], fake_db.fetch_calls)              # 대상은 페이로드에서
+        self.assertEqual([[5, 6]], [[row.ref.photo_id for row in rows] for rows in fake_db.stored])
+        self.assertEqual(1, len(fake_db.connections))           # 적재 때만 연다
+        self.assertEqual(1, fake_db.commits)
+        self.assertEqual(2, result["processed"])
+        self.assertEqual([], _Queue.instances)
+
+    def test_queue_without_storage_keys_reads_db_but_sends_to_queue(self) -> None:
+        fake_db = _Db([_Ref(1, "galleries/7/a.jpg")])
+        job.connection = fake_db
+        job.photos = fake_db
+
+        result = job.run(7, settings=_settings(result_queue_url="https://sqs/q"), photo_ids=[1])
+
+        self.assertEqual([{"photo_ids": [1]}], fake_db.fetch_calls)
+        self.assertEqual([], fake_db.stored)
+        self.assertEqual(1, len(fake_db.connections))           # 대상 조회만
+        self.assertEqual(0, fake_db.commits)
+        self.assertEqual(1, len(_Queue.instances[0].sent))
+        self.assertEqual(1, result["processed"])
+
+    def test_storage_keys_length_must_match_photo_ids(self) -> None:
+        job.connection = _NoDb()
+        job.photos = _NoDb()
+        with self.assertRaises(ValueError):
+            job.run(7, settings=_settings(result_queue_url="https://sqs/q"), photo_ids=[1, 2], storage_keys=["a"])
+        with self.assertRaises(ValueError):
+            job.run(7, settings=_settings(result_queue_url="https://sqs/q"), storage_keys=["a"])

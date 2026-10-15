@@ -13,6 +13,13 @@
 
 DB 연결은 대상 조회와 배치 적재 때만 짧게 연다. 모델 로드·다운로드·디코드·PUT·추론 동안에는 연결을 쥐지 않는다 —
 동시 실행 수가 곧 DB 연결 수가 되지 않게 하려는 것이다(wes #274, 동시 실행 32 → 48).
+
+결과 큐 스위치(wes #286):
+    - 페이로드에 `storage_keys` 가 있으면 대상을 DB 에서 읽지 않고 페이로드로 만든다.
+    - `settings.result_queue_url` 이 있으면 ④ 를 DB 대신 SQS 결과 큐로 보낸다(배치 하나 = 메시지 하나).
+      writer Lambda 가 같은 CAS 규칙으로 적재한다. 전송 실패는 그 배치 사진의 실패다(벡터 없음 → wes 재배정).
+    - 둘 다면 DB 접속을 아예 열지 않는다(배치 임베더는 VPC 밖, DB 환경변수 없음).
+    - 둘 다 없으면(로컬 CLI · 큐 없는 배포) 지금 그대로 DB 를 읽고 쓴다.
 """
 
 from __future__ import annotations
@@ -31,6 +38,7 @@ from embedder.domain.photo import EmbeddingResult, PhotoMetadata, PhotoRef
 from embedder.domain.run import RunResult
 from embedder.infrastructure import model
 from embedder.repository import connection, photos
+from embedder.repository.results import ResultQueue
 from embedder.repository.storage import PhotoStorage
 from embedder.service import images, metadata
 
@@ -75,11 +83,16 @@ def run(
     settings: Settings | None = None,
     remaining_seconds: Callable[[], float] | None = None,
     photo_ids: list[int] | None = None,
+    storage_keys: list[str] | None = None,
 ) -> dict:
     """`photo_ids` 가 있으면 그 목록만(운영), 없으면 갤러리에서 벡터 없는 사진 전체(로컬 CLI).
 
+    `storage_keys` 는 `photo_ids` 와 같은 순서·길이의 원본 키. 있으면 대상을 DB 에서 읽지 않는다.
     `remaining_seconds` 는 남은 실행 시간을 알려 주는 함수. Lambda 가 넘기고 로컬은 None(멈추지 않는다).
     """
+    if storage_keys is not None and (photo_ids is None or len(storage_keys) != len(photo_ids)):
+        raise ValueError("storage_keys 는 photo_ids 와 같은 길이여야 합니다")
+
     started = time.monotonic()
     settings = settings or Settings.from_env()
     result = RunResult(gallery_id=gallery_id)
@@ -89,12 +102,17 @@ def run(
 
     storage = PhotoStorage(settings.s3_bucket, max_concurrency=settings.download_workers)
     clock = _StageClock()
+    queue = ResultQueue(settings.result_queue_url) if settings.result_queue_url else None
 
-    with connection.connect(settings) as conn:
-        if photo_ids is not None:
-            targets = photos.fetch_by_ids(conn, photo_ids)
-        else:
-            targets = photos.fetch_targets(conn, gallery_id)
+    # 대상이 페이로드에 있으면 조회 연결을 열지 않는다. 결과까지 큐로 가면 이 호출은 DB 를 한 번도 열지 않는다.
+    if storage_keys is not None:
+        targets = [PhotoRef(photo_id=pid, storage_key=key) for pid, key in zip(photo_ids, storage_keys)]
+    else:
+        with connection.connect(settings) as conn:
+            if photo_ids is not None:
+                targets = photos.fetch_by_ids(conn, photo_ids)
+            else:
+                targets = photos.fetch_targets(conn, gallery_id)
 
     result.targets = len(targets)
     log.info("%s: 대상 %s장", tag, len(targets))
@@ -174,11 +192,15 @@ def run(
                     for item, vector in zip(pending, vectors)
                 ]
 
-                # ④ 계산이 끝난 뒤에만 연결을 열어 적재하고 배치 단위로 커밋한다. 중간에 죽어도 그때까지는 남는다.
-                with clock.measure("store"), connection.connect(settings) as conn:
-                    stored = photos.store_embeddings(conn, embedded, embedding_model=settings.embedding_model)
-                    conn.commit()
-                result.processed += stored
+                if queue is not None:
+                    with clock.measure("store"):
+                        result.processed += _send(queue, gallery_id, embedded, settings, result)
+                else:
+                    # ④ 계산이 끝난 뒤에만 연결을 열어 적재하고 배치 단위로 커밋한다. 중간에 죽어도 그때까지는 남는다.
+                    with clock.measure("store"), connection.connect(settings) as conn:
+                        stored = photos.store_embeddings(conn, embedded, embedding_model=settings.embedding_model)
+                        conn.commit()
+                    result.processed += stored
 
             batch_seconds = time.monotonic() - batch_started
             longest_batch = max(longest_batch, batch_seconds)
@@ -195,6 +217,23 @@ def run(
     log.info("단계 시간(초, %s장): %s", result.processed, clock.summary())
     log.info("완료: %s", result.to_dict())
     return result.to_dict()
+
+
+def _send(
+    queue: ResultQueue,
+    gallery_id: int,
+    embedded: list[EmbeddingResult],
+    settings: Settings,
+    result: RunResult,
+) -> int:
+    """④ 를 결과 큐로. 보낸 장수를 돌려준다. 전송 실패는 그 배치 사진 전부의 실패다 — 다른 사진별 실패처럼
+    기록하고 다음 배치로 간다. 벡터가 적재되지 않으므로 wes 가 다시 배정한다(미리보기는 이미 올라가 있어도 무해)."""
+    try:
+        return queue.send(gallery_id, embedded, settings.embedding_model)
+    except Exception:
+        log.exception("결과 큐 전송 실패 — 배치 %s장을 실패로 셉니다", len(embedded))
+        result.failed.extend(item.ref.storage_key for item in embedded)
+        return 0
 
 
 def _read_metadata(

@@ -16,8 +16,13 @@
 set -euo pipefail
 
 REGION="ap-northeast-2"
-REPO_NAME="wes-embedder"
-FUNCTION_NAME="wes-embedder"
+# 기본은 운영(wes). dev 스택은 NAME_PREFIX=wes-dev embedder/deploy.sh 로 같은 이름 규칙(<prefix>-embedder)을 쓴다.
+NAME_PREFIX="${NAME_PREFIX:-wes}"
+REPO_NAME="${NAME_PREFIX}-embedder"
+FUNCTION_NAME="${NAME_PREFIX}-embedder"
+# 관리자 사진 교체 경로(VPC 안, DB 직접)는 같은 이미지로 만든 두 번째 함수다(wes #286). 배치 임베더가 결과 큐 모드로
+# VPC 밖에 나가면서 갈라졌다. 아직 없는 환경(운영)에서는 조용히 건너뛴다.
+ADMIN_FUNCTION_NAME="${NAME_PREFIX}-embedder-admin"
 TAG="latest"
 
 # 스크립트가 있는 곳이 빌드 컨텍스트다. Dockerfile 이 embedder/ 안에 있고
@@ -86,34 +91,48 @@ echo "푸시됨: $DIGEST"
 # 태그가 아니라 태그를 지금 막 가리키게 된 다이제스트로 갱신한다. :latest 로 넘겨도
 # Lambda 가 알아서 현재 다이제스트를 고정하지만, 그 사이에 다른 사람이 같은 태그를
 # 덮어쓰면 의도하지 않은 이미지가 걸린다.
-aws lambda update-function-code --region "$REGION" \
-  --function-name "$FUNCTION_NAME" \
-  --image-uri "$REPO@$DIGEST" \
-  --no-cli-pager --output text --query 'LastUpdateStatus'
+update_function() {
+  local fn="$1"
+  aws lambda update-function-code --region "$REGION" \
+    --function-name "$fn" \
+    --image-uri "$REPO@$DIGEST" \
+    --no-cli-pager --output text --query 'LastUpdateStatus'
 
-# 갱신은 비동기다. InProgress 인 동안 호출하면 옛 코드가 돈다.
-echo "갱신을 기다리는 중..."
-aws lambda wait function-updated --region "$REGION" --function-name "$FUNCTION_NAME"
+  # 갱신은 비동기다. InProgress 인 동안 호출하면 옛 코드가 돈다.
+  echo "$fn 갱신을 기다리는 중..."
+  aws lambda wait function-updated --region "$REGION" --function-name "$fn"
 
-CODE_SHA=$(aws lambda get-function-configuration --region "$REGION" \
-  --function-name "$FUNCTION_NAME" --query 'CodeSha256' --output text)
+  local code_sha
+  code_sha=$(aws lambda get-function-configuration --region "$REGION" \
+    --function-name "$fn" --query 'CodeSha256' --output text)
 
-# 컨테이너 이미지 함수의 CodeSha256 은 매니페스트 다이제스트와 같은 값이다.
-if [ "$CODE_SHA" != "${DIGEST#sha256:}" ]; then
-  echo "배포된 코드가 방금 푸시한 이미지와 다르다." >&2
-  echo "  기대: ${DIGEST#sha256:}" >&2
-  echo "  실제: $CODE_SHA" >&2
-  exit 1
+  # 컨테이너 이미지 함수의 CodeSha256 은 매니페스트 다이제스트와 같은 값이다.
+  if [ "$code_sha" != "${DIGEST#sha256:}" ]; then
+    echo "$fn 에 배포된 코드가 방금 푸시한 이미지와 다르다." >&2
+    echo "  기대: ${DIGEST#sha256:}" >&2
+    echo "  실제: $code_sha" >&2
+    exit 1
+  fi
+  echo "완료. $fn 이 ${DIGEST#sha256:} 을 실행한다."
+}
+
+update_function "$FUNCTION_NAME"
+
+# 관리자 함수는 있을 때만 같은 이미지로 맞춘다. 두 함수가 다른 이미지를 돌면 관리자 교체와 배치 임베딩의
+# 미리보기·벡터 규칙이 어긋날 수 있다.
+if aws lambda get-function --region "$REGION" --function-name "$ADMIN_FUNCTION_NAME" >/dev/null 2>&1; then
+  echo
+  update_function "$ADMIN_FUNCTION_NAME"
+else
+  echo "$ADMIN_FUNCTION_NAME 이 없다 — 건너뛴다(관리자 경로는 아직 $FUNCTION_NAME 이 맡는다)."
 fi
 
-echo
-echo "완료. $FUNCTION_NAME 이 ${DIGEST#sha256:} 을 실행한다."
 echo
 echo "  * 스키마가 함께 바뀌었다면 앱이 먼저 배포되어 있어야 한다. Lambda 는 photos 를"
 echo "    직접 UPDATE 하므로, 없는 컬럼을 쓰면 같은 UPDATE 에 든 임베딩 벡터까지 날아간다."
 echo "  * 실행 결과의 failed 가 대상 수와 같으면 임베딩이 아니라 IAM(s3:PutObject) 문제다."
 echo "    미리보기 PUT 이 벡터보다 먼저라 그 사진들은 벡터도 없고, 권한을 고친 뒤 다시 부르면"
 echo "    fetch_targets 가 자연히 다시 집는다 (force 불필요)."
-echo "  * 페이로드는 {galleryId, photoIds} 와 관리자 {jobId} 둘뿐이다(#100). 타임아웃 앞에서 멈춰도"
+echo "  * 페이로드는 {galleryId, photoIds, storageKeys?} 와 관리자 {jobId} 둘뿐이다(#100·#286). 타임아웃 앞에서 멈춰도"
 echo "    자기 재호출을 하지 않는다 — 남은 장은 wes 스위퍼가 dispatched_at 을 되돌려 다시 배정한다."
 echo "    lambda:InvokeFunction(자기 함수)은 더 필요 없다 — 인프라에 제거를 요청할 것."
