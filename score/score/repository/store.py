@@ -7,6 +7,10 @@ categorize 의 컬럼, embedding·embedding_model 은 embedder 의 컬럼이라 
 지운다. photo_ratings · photo_selection_items 는 읽지도 않는다(CLAUDE.md).
 
 읽기는 재개 판정용이다 — 같은 PIPELINE_VERSION 이고 CLIP 벡터가 저장된 사진은 건너뛴다.
+
+사진 라벨(wes #348 · V46 `photo_labels`)은 `write_scores` 가 같은 트랜잭션에 함께 쓴다(켰을 때만 — `Knobs.labels`). 이 층의 행은
+`source='CLIP'` 이고, 다른 층(VLM 등)이 맡은 라벨은 덮지 않는다. relabel 은 저장된 CLIP 벡터를 읽어(`read_clip_vectors`)
+그 갤러리의 CLIP 행을 통째로 바꾼다(`replace_labels`).
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from typing import Protocol
 
 import numpy as np
 
+from score.domain.labels import CLIP_SOURCE
 from score.domain.photo import PhotoAnalysis, PhotoRef
 from score.repository import connection
 
@@ -36,8 +41,11 @@ class Store(Protocol):
     def read_analysis(self, gallery: str) -> list[PhotoAnalysis]: ...
     def read_clip_embeddings(self, gallery: str) -> tuple[list[str], np.ndarray]: ...
     def write_scores(self, gallery: str, rows: list[PhotoAnalysis],
-                     clip_embeddings: tuple[list[str], np.ndarray]) -> None: ...
+                     clip_embeddings: tuple[list[str], np.ndarray],
+                     labels: dict[str, dict[str, float]] | None = None) -> None: ...
     def write_quality(self, gallery: str, scores: dict[str, dict]) -> set[str]: ...
+    def read_clip_vectors(self, gallery: str) -> tuple[list[str], np.ndarray]: ...
+    def replace_labels(self, gallery: str, labels: dict[str, dict[str, float]]) -> None: ...
 
 
 # ── 로컬 구현 ────────────────────────────────────────────────────────────────
@@ -85,8 +93,9 @@ class LocalStore:
         return json.loads(ids_p.read_text(encoding="utf-8")), np.load(emb_p)
 
     def write_scores(self, gallery: str, rows: list[PhotoAnalysis],
-                     clip_embeddings: tuple[list[str], np.ndarray]) -> None:
-        """score 의 필드만 덮는다 — 기존 행의 백분위·연사·임베딩 그룹은 그대로, 없던 사진은 새 행."""
+                     clip_embeddings: tuple[list[str], np.ndarray],
+                     labels: dict[str, dict[str, float]] | None = None) -> None:
+        """score 의 필드만 덮는다 — 기존 행의 백분위·연사·임베딩 그룹은 그대로, 없던 사진은 새 행. 라벨은 labels.json 에 병합."""
         by_id = {r.photo_id: r for r in self.read_analysis(gallery)}
         stamp = datetime.now(timezone.utc).isoformat()
         for r in rows:
@@ -109,6 +118,21 @@ class LocalStore:
             d = self._dir(gallery)
             (d / "clip_embeddings_ids.json").write_text(json.dumps(all_ids, ensure_ascii=False), encoding="utf-8")
             np.save(d / "clip_embeddings.npy", np.stack([merged[i] for i in all_ids]))
+        if labels:
+            self._write_labels(gallery, {**self.read_labels(gallery), **labels})
+
+    def read_clip_vectors(self, gallery: str) -> tuple[list[str], np.ndarray]:
+        return self.read_clip_embeddings(gallery)
+
+    def read_labels(self, gallery: str) -> dict[str, dict[str, float]]:
+        p = self._dir(gallery) / "labels.json"
+        return json.loads(p.read_text(encoding="utf-8")) if p.exists() else {}
+
+    def replace_labels(self, gallery: str, labels: dict[str, dict[str, float]]) -> None:
+        self._write_labels(gallery, labels)
+
+    def _write_labels(self, gallery: str, labels: dict[str, dict[str, float]]) -> None:
+        (self._dir(gallery) / "labels.json").write_text(json.dumps(labels, ensure_ascii=False), encoding="utf-8")
 
     def write_quality(self, gallery: str, scores: dict[str, dict]) -> set[str]:
         """2단계 화질 점수를 sub_scores 에 더하고 끝 표시를 남긴다. 없는 사진은 건너뛴다. 쓴 사진 id 를 돌려준다."""
@@ -239,10 +263,12 @@ class DbStore:
         log.warning("photo_analysis.error=%s: %d장 %s", error, len(ids), ids[:10])
 
     def write_scores(self, gallery: str, rows: list[PhotoAnalysis],
-                     clip_embeddings: tuple[list[str], np.ndarray]) -> None:
+                     clip_embeddings: tuple[list[str], np.ndarray],
+                     labels: dict[str, dict[str, float]] | None = None) -> None:
         """score 의 컬럼만 UPSERT — subjects · sub_scores(병합) · clip_embedding · pipeline_version, 2단계까지 담은 행은
         quality_scored_at 도(`PhotoAnalysis.quality_scored`). 1단계만 담은 행은 이전의 quality_scored_at 을 지우지 않는다.
-        백분위·클러스터·그룹은 categorize 의 것, embedding·embedding_model 은 embedder 의 것 — 건드리지 않는다."""
+        백분위·클러스터·그룹은 categorize 의 것, embedding·embedding_model 은 embedder 의 것 — 건드리지 않는다.
+        `labels` 가 있으면 같은 트랜잭션에 `photo_labels` 를 UPSERT 한다 — 점수와 라벨이 함께 남거나 함께 롤백된다."""
         clip_map = dict(zip(*clip_embeddings)) if clip_embeddings[0] else {}
         params = [(int(r.photo_id), r.subjects, _jsonb(r.sub_scores), clip_map.get(r.photo_id), r.pipeline_version,
                    bool(r.quality_scored))
@@ -264,8 +290,68 @@ class DbStore:
                 """,
                 params,
             )
+            if labels:
+                self._upsert_labels(cur, labels)
         self.conn.commit()
-        log.info("photo_analysis 점수 적재: gallery=%s %d행", gallery, len(params))
+        log.info("photo_analysis 점수 적재: gallery=%s %d행%s", gallery, len(params),
+                 f" · 라벨 {len(labels)}장" if labels else "")
+
+    @staticmethod
+    def _label_arrays(labels: dict[str, dict[str, float]]) -> tuple[list[int], list[str], list[float]]:
+        ids, names, scores = [], [], []
+        for pid, by_label in labels.items():
+            for name, score in by_label.items():
+                ids.append(int(pid))
+                names.append(name)
+                scores.append(float(score))
+        return ids, names, scores
+
+    def _upsert_labels(self, cur, labels: dict[str, dict[str, float]]) -> None:
+        """9개 점수를 한 문장으로 UPSERT. 같은 (사진, 라벨)을 다른 층(VLM 등)이 맡고 있으면 덮지 않는다 — 한 라벨은 한 source."""
+        cur.execute(
+            """
+            INSERT INTO photo_labels (photo_id, label, score, source, labeled_at)
+            SELECT v.photo_id, v.label, v.score, %s, now()
+            FROM unnest(%s::bigint[], %s::text[], %s::real[]) AS v(photo_id, label, score)
+            ON CONFLICT (photo_id, label) DO UPDATE SET score = EXCLUDED.score, labeled_at = EXCLUDED.labeled_at
+            WHERE photo_labels.source = EXCLUDED.source
+            """,
+            (CLIP_SOURCE, *self._label_arrays(labels)),
+        )
+
+    def read_clip_vectors(self, gallery: str) -> tuple[list[str], np.ndarray]:
+        """relabel 용 — 저장된 CLIP 벡터 값까지(`read_clip_embeddings` 는 id 만). 7천 장이면 768 × 7천 ≈ 20MB."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "SELECT a.photo_id, a.clip_embedding FROM photo_analysis a JOIN photos p ON p.id = a.photo_id "
+                "WHERE p.gallery_id = %s AND p.deleted_at IS NULL AND a.clip_embedding IS NOT NULL ORDER BY a.photo_id",
+                (int(gallery),),
+            )
+            rows = cur.fetchall()
+        if not rows:
+            return [], np.zeros((0, 0), dtype=np.float32)
+        return [str(r[0]) for r in rows], np.stack([np.asarray(r[1], dtype=np.float32) for r in rows])
+
+    def replace_labels(self, gallery: str, labels: dict[str, dict[str, float]]) -> None:
+        """relabel — 그 갤러리의 CLIP 행을 지우고 다시 쓴다(한 트랜잭션). 어휘에서 빠진 라벨의 행도 이렇게 사라진다.
+        다른 층이 맡은 (사진, 라벨)은 지우지도 덮지도 않는다."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM photo_labels l USING photos p WHERE p.id = l.photo_id AND p.gallery_id = %s AND l.source = %s",
+                (int(gallery), CLIP_SOURCE),
+            )
+            if labels:
+                cur.execute(
+                    """
+                    INSERT INTO photo_labels (photo_id, label, score, source, labeled_at)
+                    SELECT v.photo_id, v.label, v.score, %s, now()
+                    FROM unnest(%s::bigint[], %s::text[], %s::real[]) AS v(photo_id, label, score)
+                    ON CONFLICT (photo_id, label) DO NOTHING
+                    """,
+                    (CLIP_SOURCE, *self._label_arrays(labels)),
+                )
+        self.conn.commit()
+        log.info("photo_labels 다시 계산: gallery=%s %d장", gallery, len(labels))
 
     def claim_quality_batch(self, n: int, exclude: list[int] | None = None, lease_seconds: int = 120) -> list:
         """2단계(화질 점수) 집기 — 찜 표시(wes V41 `quality_claimed_at`)를 찍고 **곧바로 commit** 한다(wes #274 R-2-2 방식 B).

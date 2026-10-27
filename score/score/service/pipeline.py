@@ -3,9 +3,9 @@
     ARNIQA(spaq)                → technical_score
     CLIP ViT-L/14 + LAION MLP   → aesthetic_score
         CLIP 벡터는 저장한다 (photo_analysis.clip_embedding) — categorize 가 재계산 없이 읽는다
-        같은 벡터에 텍스트 프롬프트를 대어 subjects(피사체)도 여기서
+        같은 벡터에 텍스트 프롬프트를 대어 subjects(피사체)도 여기서, 켜면(`Knobs.labels`) 라벨 9개 점수도(wes #348)
     고전 지표                    → sharpness · highlight_clip · shadow_clip · mean_luma (sub_scores)
-    → store.write_scores  (subjects · sub_scores · clip_embedding · pipeline_version 만)
+    → store.write_scores  (subjects · sub_scores · clip_embedding · pipeline_version 만 + 켜면 같은 트랜잭션에 photo_labels)
 
 한 장은 한 번만 디코드해서(1024px PIL) 세 러너에 넘기고, CLIP 은 `clip_batch` 장씩, ARNIQA 는 `arniqa_batch` 장씩 한 forward 로
 묶는다(#51 · #68). 배치가 실패하면 그 묶음만 한 장씩으로 물러난다 — 한 장 실패가 묶음·잡을 죽이지 않는다.
@@ -78,8 +78,9 @@ def _load_runners():
         torch.set_num_threads(int(threads))
     from score.infrastructure.runners import ArniqaRunner, LaionRunner
     from score.service import classical
+    from score.service.labels import LabelTagger
     from score.service.subjects import SubjectsTagger
-    return classical, ArniqaRunner, LaionRunner, SubjectsTagger
+    return classical, ArniqaRunner, LaionRunner, SubjectsTagger, LabelTagger
 
 
 def _as_dt(value) -> datetime | None:
@@ -99,12 +100,13 @@ class Scorer:
     def __init__(self, settings: Settings) -> None:
         k = settings.knobs
         t0 = time.monotonic()
-        classical, ArniqaRunner, LaionRunner, SubjectsTagger = _load_runners()
+        classical, ArniqaRunner, LaionRunner, SubjectsTagger, LabelTagger = _load_runners()
         self.classical = classical
         self.laion = LaionRunner(device=k.device, fp16=k.fp16)
         self.arniqa = ArniqaRunner(long_edge=k.arniqa_long_edge, device=k.device, fp16=k.fp16)
         self.device = getattr(self.laion, "device", None)
         self.tagger = SubjectsTagger(self.laion) if k.subjects_zero_shot else None
+        self.labeler = LabelTagger(self.laion) if k.labels else None
         self.load_seconds = time.monotonic() - t0
         log.info("[score] 러너 로드 %.1fs · %s · clip_batch=%d arniqa_batch=%d fp16=%s decode_workers=%d",
                  self.load_seconds, _compute_env(self.device), k.clip_batch, k.arniqa_batch, k.fp16, k.decode_workers)
@@ -134,18 +136,19 @@ class Scorer:
         `mode` 가 fast 면 1단계만 — 축소 디코드로 CLIP·피사체·미학만 내고 ARNIQA·화질 지표는 건너뛴다."""
         k = settings.knobs
         fast = mode == STAGE_FAST
-        classical, laion, arniqa, tagger = self.classical, self.laion, self.arniqa, self.tagger
+        classical, laion, arniqa, tagger, labeler = self.classical, self.laion, self.arniqa, self.tagger, self.labeler
         result.subjects_used = tagger is not None
+        result.labels_used = labeler is not None
         stage["load"] = self.load_seconds
         #: 장별 누적 시간 — 어디서 시간이 가는지 로그로 본다(#51). decode·clip·arniqa 는 묶음 단위라 묶음 시간을 장수로 나눈다.
         #: 프리페치(decode_workers > 0)면 decode 는 "묶음이 준비되길 기다린 벽시계", classical 은 스레드 안에서 잰 CPU 시간이라
         #: 추론과 겹친다 — 둘을 더해 장당 시간으로 읽으면 안 된다.
         t_stage = {"decode": 0.0, "clip": 0.0, "arniqa": 0.0, "classical": 0.0, "tag": 0.0, "write": 0.0}
 
-        def flush(rows: list[PhotoAnalysis], clips: dict[str, np.ndarray]) -> None:
+        def flush(rows: list[PhotoAnalysis], clips: dict[str, np.ndarray], labels: dict[str, dict[str, float]]) -> None:
             ids = [r.photo_id for r in rows]
             C = np.stack([clips[i] for i in ids]) if ids else np.zeros((0, 768))
-            store.write_scores(gallery, rows, (ids, C))
+            store.write_scores(gallery, rows, (ids, C), labels=labels)
 
         def prepare(ref: PhotoRef) -> tuple[object, dict, float, object, object]:
             """CPU 만 쓰는 준비 — 디코드 1회 + classical + 러너별 전처리(CLIP 224 · ARNIQA uint8). 스레드에서 돈다 —
@@ -212,6 +215,7 @@ class Scorer:
 
         rows: list[PhotoAnalysis] = []
         clips: dict[str, np.ndarray] = {}
+        labels: dict[str, dict[str, float]] = {}
         t_photo = 0.0
         longest_batch = 0.0
         batch_started = time.monotonic()
@@ -246,6 +250,8 @@ class Scorer:
                         if tagger is not None:
                             subjects, margin = tagger.tag(clip_emb)
                             sub["subjects_margin"] = margin
+                        if labeler is not None:
+                            labels[ref.photo_id] = labeler.score(clip_emb)
                         t_stage["tag"] += time.monotonic() - t
                         rows.append(PhotoAnalysis(photo_id=ref.photo_id, subjects=subjects,
                                                   sub_scores=sub, pipeline_version=PIPELINE_VERSION,
@@ -263,9 +269,9 @@ class Scorer:
 
                     if len(rows) >= k.write_batch or i == len(todo):
                         t = time.monotonic()
-                        flush(rows, clips)
+                        flush(rows, clips, labels)
                         t_stage["write"] += time.monotonic() - t
-                        rows, clips = [], {}
+                        rows, clips, labels = [], {}, {}
                         longest_batch = max(longest_batch, time.monotonic() - batch_started)
                         batch_started = time.monotonic()
                         if remaining_seconds is not None and i < len(todo):
@@ -395,3 +401,26 @@ def run(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings, fo
     result.per_stage_seconds = stage_times
     result.elapsed_seconds = time.monotonic() - started
     return result.to_dict()
+
+
+def relabel(store: Store, gallery: str, settings: Settings, laion=None) -> dict:
+    """저장된 CLIP 벡터로 라벨만 다시 계산해 그 갤러리의 CLIP 행을 바꾼다(wes #348) — 이미지를 읽지 않는다. 어휘·문장을 바꾼 뒤,
+    또는 라벨을 켜기 전에 점수가 끝난 갤러리의 백필에 쓴다. 텍스트 인코더 때문에 CLIP 만 올린다(ARNIQA 없음).
+    꺼져 있으면(`Knobs.labels`) 아무것도 하지 않는다 — 표가 없는 환경에서 실패하지 않게."""
+    started = time.monotonic()
+    if not settings.knobs.labels:
+        log.info("[score] relabel 갤러리 %s: 라벨이 꺼져 있다(LABELS_ENABLED) — 건너뜀", gallery)
+        return {"gallery": gallery, "mode": "relabel", "labelsUsed": False, "photos": 0}
+    ids, C = store.read_clip_vectors(gallery)
+    labels: dict[str, dict[str, float]] = {}
+    if ids:
+        if laion is None:
+            from score.infrastructure.runners import LaionRunner
+            laion = LaionRunner(device=settings.knobs.device, fp16=settings.knobs.fp16)
+        from score.service.labels import LabelTagger
+        labels = dict(zip(ids, LabelTagger(laion).score_many(C)))
+    store.replace_labels(gallery, labels)
+    elapsed = time.monotonic() - started
+    log.info("[score] relabel 갤러리 %s: %d장 %.1fs", gallery, len(ids), elapsed)
+    return {"gallery": gallery, "mode": "relabel", "labelsUsed": True, "photos": len(ids),
+            "elapsedSeconds": round(elapsed, 1)}

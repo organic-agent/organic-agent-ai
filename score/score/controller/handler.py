@@ -7,6 +7,9 @@
 15분 타임아웃 앞에서 배치 경계에서 멈춘다(`job.run` 의 `remaining_seconds`). 50장은 그 근처에 가지 않지만 코드 경로는 남긴다 —
 멈추면 처리한 만큼은 commit 돼 있고, 남은 사진은 다음 스윕이 다시 보낸다.
 
+라벨 다시 계산(wes #348)은 `{"galleryId": 12, "mode": "relabel"}` — 저장된 CLIP 벡터만 읽어 그 갤러리의 `photo_labels` CLIP 행을
+바꾼다(이미지를 읽지 않음). 라벨이 꺼져 있으면(`LABELS_ENABLED`) 아무것도 하지 않는다.
+
 옛 갤러리 페이로드(`{"galleryId"}` 만, 또는 `jobId`·`shard`)는 **받지 않는다**: 조용히 갤러리 전수를 스캔하는 대신 에러로 드러낸다.
 갤러리 전체를 돌리는 것은 로컬 CLI(`python -m score --gallery-id N`)와 벤치마크(`controller/sagemaker.py`)의 일이다.
 """
@@ -29,6 +32,11 @@ def handler(event: dict, context) -> dict:
     gallery_id = event.get("galleryId")
     if gallery_id is None:
         raise ValueError("페이로드에 galleryId가 없습니다")
+    if event.get("mode") == "relabel":
+        log.info("갤러리 %s: 라벨 다시 계산", gallery_id)
+        result = job.relabel(int(gallery_id), settings=_SETTINGS)
+        log.info("결과: %s", json.dumps(result, ensure_ascii=False))
+        return result
     if event.get("photoIds") is None:
         raise ValueError("페이로드에 photoIds 가 없습니다 — v2 계약은 {galleryId, photoIds} 하나다(#98). "
                          "갤러리 전체는 로컬 CLI(python -m score --gallery-id N)로 돌린다")

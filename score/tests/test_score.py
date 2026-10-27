@@ -6,6 +6,7 @@ from __future__ import annotations
 import ast
 import sys
 import types
+import zlib
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -744,7 +745,7 @@ def test_gpu_worker_runs_real_pipeline_with_label_gallery(fake_runners, tmp_path
             int(gallery)
             return [], np.zeros((0, 0))
 
-        def write_scores(self, gallery, rows, clips):
+        def write_scores(self, gallery, rows, clips, labels=None):
             written.extend(r.photo_id for r in rows)
 
         def rollback(self):
@@ -950,3 +951,129 @@ def test_split_flag_reads_from_env(monkeypatch, tmp_path):
     assert Settings.from_env().knobs.split is True
     monkeypatch.setenv("SCORE_SPLIT", "0")
     assert Settings.from_env().knobs.split is False
+
+
+# ── 사진 라벨 (wes #348) ──────────────────────────────────────────────────────────
+class _PromptLaion:
+    """문장마다 고정된 단위 벡터(문장 해시가 시드) — 이미지 벡터를 어떤 문장 묶음에 맞추면 그 라벨 쪽으로 가는지 본다."""
+
+    def __init__(self, dim=64):
+        self.dim = dim
+
+    def embed_texts(self, prompts):
+        return np.stack([_unit(np.random.default_rng(zlib.crc32(p.encode())).normal(size=self.dim)) for p in prompts])
+
+
+def _labels_on(settings, **knobs):
+    return Settings(out_root=settings.out_root, dataset_root=settings.dataset_root, knobs=Knobs(labels=True, **knobs))
+
+
+def test_label_vocabulary_is_split_into_pairs_and_framing_without_overlap():
+    from score.domain.labels import LABELS
+    from score.service import labels as L
+
+    assert len(LABELS) == 9 and not set(L.PAIRS) & set(L.FRAMING)
+    assert set(L.PAIRS) | set(L.FRAMING) == set(LABELS)
+    assert all(pos and neg for pos, neg in L.PAIRS.values())
+
+
+def test_label_tagger_scores_every_label_and_moves_with_the_image():
+    """양 문장에 맞춘 이미지는 1 쪽, 음 문장에 맞춘 이미지는 0 쪽. 구도 셋은 셋 사이 softmax 라 합이 1."""
+    from score.domain.labels import LABELS
+    from score.service import labels as L
+
+    laion = _PromptLaion()
+    tagger = L.LabelTagger(laion)
+    closed = L._mean_unit(laion, L.PAIRS["EYES_CLOSED"][0])
+    opened = L._mean_unit(laion, L.PAIRS["EYES_CLOSED"][1])
+    full = L._mean_unit(laion, L.FRAMING["FULL_BODY"])
+
+    a, b, c = tagger.score_many(np.stack([closed, opened, full]))
+
+    assert tuple(a) == LABELS and all(0.0 <= v <= 1.0 for row in (a, b, c) for v in row.values())
+    assert a["EYES_CLOSED"] > 0.9 and b["EYES_CLOSED"] < 0.1
+    assert c["FULL_BODY"] > 0.9 and abs(c["CLOSE_UP"] + c["HALF_BODY"] + c["FULL_BODY"] - 1.0) < 1e-3
+    assert tagger.score(closed) == a                                  # 한 장 = 여러 장 중 한 줄
+
+
+def test_pipeline_writes_labels_only_when_enabled(tmp_path, fake_runners):
+    """끄면(기본) 라벨을 쓰지 않는다 — 지금과 같다. 켜면 한 번에·1단계 모두 사진마다 9개."""
+    from score.domain.labels import LABELS
+
+    store, refs, scored, settings = _world(tmp_path)
+    off = pipeline.run(store, "g", refs, settings)
+    assert off["labelsUsed"] is False and store.read_labels("g") == {}
+
+    on = pipeline.run(store, "g", refs, _labels_on(settings, write_batch=4), force=True)
+    fast = pipeline.run(store, "g2", refs, _labels_on(settings, write_batch=4), stage=pipeline.STAGE_FAST)
+
+    assert on["labelsUsed"] is True and fast["labelsUsed"] is True
+    for gallery in ("g", "g2"):
+        labels = store.read_labels(gallery)
+        assert set(labels) == {r.photo_id for r in refs}
+        assert all(tuple(v) == LABELS for v in labels.values())
+
+
+def test_db_write_scores_upserts_labels_in_the_same_transaction():
+    """점수와 라벨은 한 commit — 표가 없으면 둘 다 롤백된다. 다른 층(VLM 등)이 맡은 라벨은 덮지 않는다."""
+    from score.repository.store import DbStore
+
+    rows = [PhotoAnalysis(photo_id="11", subjects="couple", sub_scores={}, pipeline_version=PIPELINE_VERSION)]
+    conn = _Conn()
+    DbStore(SimpleNamespace(), conn).write_scores("g", rows, (["11"], np.zeros((1, 4))),
+                                                  labels={"11": {"EYES_CLOSED": 0.8, "SMILE": 0.1}})
+
+    sql, params = conn.executed[1]
+    assert "INSERT INTO photo_labels" in sql and "unnest(%s::bigint[], %s::text[], %s::real[])" in sql
+    assert "WHERE photo_labels.source = EXCLUDED.source" in sql
+    assert params == ("CLIP", [11, 11], ["EYES_CLOSED", "SMILE"], [0.8, 0.1])
+    assert conn.commits == 1
+
+    conn = _Conn()
+    DbStore(SimpleNamespace(), conn).write_scores("g", rows, (["11"], np.zeros((1, 4))))
+    assert len(conn.executed) == 1 and "photo_labels" not in conn.executed[0][0]
+
+
+def test_replace_labels_deletes_only_clip_rows_of_the_gallery_then_inserts():
+    from score.repository.store import DbStore
+
+    conn = _Conn()
+    DbStore(SimpleNamespace(), conn).replace_labels("7", {"11": {"VEIL": 0.7}})
+
+    (d_sql, d_params), (i_sql, i_params) = conn.executed
+    assert d_sql.startswith("DELETE FROM photo_labels") and "p.gallery_id = %s AND l.source = %s" in d_sql
+    assert d_params == (7, "CLIP")
+    assert "ON CONFLICT (photo_id, label) DO NOTHING" in i_sql and i_params == ("CLIP", [11], ["VEIL"], [0.7])
+    assert conn.commits == 1
+
+
+def test_relabel_rescores_stored_vectors_without_images_and_skips_when_disabled(tmp_path, fake_runners):
+    store, refs, scored, settings = _world(tmp_path)
+
+    off = pipeline.relabel(store, "g", settings, laion=fake_runners)
+    assert off["labelsUsed"] is False and store.read_labels("g") == {}
+
+    result = pipeline.relabel(store, "g", _labels_on(settings), laion=fake_runners)
+
+    assert result["labelsUsed"] is True and result["photos"] == len(scored)
+    assert set(store.read_labels("g")) == set(scored)                 # 벡터가 저장된 사진만
+    assert fake_runners.embed_calls == 0                              # 이미지를 다시 보지 않는다
+
+
+def test_handler_relabel_payload_runs_relabel_only(fake_handler, monkeypatch):
+    calls = []
+    monkeypatch.setattr(handler.job, "relabel", lambda gallery_id, settings: calls.append(gallery_id) or {"photos": 3})
+
+    result = handler.handler({"galleryId": "7", "mode": "relabel"}, _Context())
+
+    assert calls == [7] and result == {"photos": 3} and fake_handler["run"] == []
+
+
+def test_labels_flag_reads_from_env(monkeypatch):
+    monkeypatch.delenv("LABELS_ENABLED", raising=False)
+    assert Settings.from_env().knobs.labels is False                  # 기본 끔
+    monkeypatch.setenv("LABELS_ENABLED", "1")
+    assert Settings.from_env().knobs.labels is True
+    monkeypatch.setenv("LABELS_ENABLED", "0")
+    assert Settings.from_env().knobs.labels is False
+
