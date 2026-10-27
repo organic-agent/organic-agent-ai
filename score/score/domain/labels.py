@@ -5,8 +5,9 @@
 
 from __future__ import annotations
 
-#: 라벨 코드. 순서는 wes V46 주석과 같다.
-LABELS = ("EYES_CLOSED", "SMILE", "VEIL", "BOUQUET", "PROP", "CLOSE_UP", "HALF_BODY", "FULL_BODY", "BACK_VIEW")
+#: 라벨 코드 8개. 어휘 기준은 "부부가 고르는 축"(결점·표정·구도·방향) — 소품 묶음 중 근거 질문이 없고 CLIP 점수도 가장 낮던
+#: PROP(부케 외 소품)은 뺐다(2026-10-27). 베일·부케는 S2에서 갤러리의 몇 %에 붙는지 보고 다시 정한다.
+LABELS = ("EYES_CLOSED", "SMILE", "VEIL", "BOUQUET", "CLOSE_UP", "HALF_BODY", "FULL_BODY", "BACK_VIEW")
 
 #: `photo_labels.source` — score 의 CLIP 층이 쓴 행. 다른 층(PROBE·VLM·FACE)이 맡은 라벨은 덮지 않는다.
 CLIP_SOURCE = "CLIP"

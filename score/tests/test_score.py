@@ -972,7 +972,7 @@ def test_label_vocabulary_is_split_into_pairs_and_framing_without_overlap():
     from score.domain.labels import LABELS
     from score.service import labels as L
 
-    assert len(LABELS) == 9 and not set(L.PAIRS) & set(L.FRAMING)
+    assert len(LABELS) == 8 and "PROP" not in LABELS and not set(L.PAIRS) & set(L.FRAMING)
     assert set(L.PAIRS) | set(L.FRAMING) == set(LABELS)
     assert all(pos and neg for pos, neg in L.PAIRS.values())
 
@@ -997,7 +997,7 @@ def test_label_tagger_scores_every_label_and_moves_with_the_image():
 
 
 def test_pipeline_writes_labels_only_when_enabled(tmp_path, fake_runners):
-    """끄면(기본) 라벨을 쓰지 않는다 — 지금과 같다. 켜면 한 번에·1단계 모두 사진마다 9개."""
+    """끄면(기본) 라벨을 쓰지 않는다 — 지금과 같다. 켜면 한 번에·1단계 모두 사진마다 8개."""
     from score.domain.labels import LABELS
 
     store, refs, scored, settings = _world(tmp_path)

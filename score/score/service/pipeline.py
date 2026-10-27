@@ -3,7 +3,7 @@
     ARNIQA(spaq)                → technical_score
     CLIP ViT-L/14 + LAION MLP   → aesthetic_score
         CLIP 벡터는 저장한다 (photo_analysis.clip_embedding) — categorize 가 재계산 없이 읽는다
-        같은 벡터에 텍스트 프롬프트를 대어 subjects(피사체)도 여기서, 켜면(`Knobs.labels`) 라벨 9개 점수도(wes #348)
+        같은 벡터에 텍스트 프롬프트를 대어 subjects(피사체)도 여기서, 켜면(`Knobs.labels`) 라벨 8개 점수도(wes #348)
     고전 지표                    → sharpness · highlight_clip · shadow_clip · mean_luma (sub_scores)
     → store.write_scores  (subjects · sub_scores · clip_embedding · pipeline_version 만 + 켜면 같은 트랜잭션에 photo_labels)
 

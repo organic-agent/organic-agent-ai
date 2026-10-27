@@ -307,7 +307,7 @@ class DbStore:
         return ids, names, scores
 
     def _upsert_labels(self, cur, labels: dict[str, dict[str, float]]) -> None:
-        """9개 점수를 한 문장으로 UPSERT. 같은 (사진, 라벨)을 다른 층(VLM 등)이 맡고 있으면 덮지 않는다 — 한 라벨은 한 source."""
+        """8개 점수를 한 문장으로 UPSERT. 같은 (사진, 라벨)을 다른 층(VLM 등)이 맡고 있으면 덮지 않는다 — 한 라벨은 한 source."""
         cur.execute(
             """
             INSERT INTO photo_labels (photo_id, label, score, source, labeled_at)
@@ -357,7 +357,7 @@ class DbStore:
         """2단계(화질 점수) 집기 — 찜 표시(wes V41 `quality_claimed_at`)를 찍고 **곧바로 commit** 한다(wes #274 R-2-2 방식 B).
 
         1단계 집기([claim_batch])는 잠근 채 계산하지만, 2단계는 그러면 안 된다: R-2-1에서 워커가 2단계 사진을 잠근 1~2초 동안
-        categorize 가 같은 행에 폴더 묶음을 쓰다 기다려 7,189행 적재가 16초 → 95초(DB 시간 55%)였다. 그래서 잠금은 찜을 찍는
+        categorize 가 같은 행에 폴더 묶음을 쓰다 기다려 7,188행 적재가 16초 → 95초(DB 시간 55%)였다. 그래서 잠금은 찜을 찍는
         한 문장 동안만 쥐고, 계산은 잠금 없이 한다. 찜이 [lease_seconds] 보다 오래되면(워커가 죽음) 다시 집힌다 — SQS 의 가시성
         시간 초과와 같은 일을 컬럼 하나로 한다. 출발은 wes 의 부분 인덱스 `idx_photo_analysis_quality_unscored`(V40)다."""
         with self.conn.cursor() as cur:

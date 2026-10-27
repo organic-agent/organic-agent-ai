@@ -1,7 +1,7 @@
-"""사진 라벨(wes #348) — 이미 계산하는 CLIP 이미지 벡터에 문장을 대어 라벨 9개마다 0~1 점수를 낸다. 추가 비용 ~0.
+"""사진 라벨(wes #348) — 이미 계산하는 CLIP 이미지 벡터에 문장을 대어 라벨 8개마다 0~1 점수를 낸다. 추가 비용 ~0.
 
 셀렉 도우미가 "눈 감은 사진 빼줘"·"베일 쓴 컷만" 같은 조건을 거르는 재료다. score 가 피사체 옆에서 계산해 wes `photo_labels`(V46)에
-9개 점수를 전부 쓴다 — 임계값 미달도. "라벨이 붙었다"(점수 ≥ 라벨별 임계값)는 wes 가 정한다.
+8개 점수를 전부 쓴다 — 임계값 미달도. "라벨이 붙었다"(점수 ≥ 라벨별 임계값)는 wes 가 정한다.
 
     점수 = 양·음 문장 확률(2026-10-27 결정). 라벨마다 양(눈 감음)·음(눈 뜸) 문장 묶음의 평균 벡터를 두고, 이미지 벡터와의 코사인 둘에
     CLIP 의 logit 배율(100)을 곱해 softmax 한 양쪽 몫이다. 0.5 가 반반. 코사인 그대로는 문장끼리 0.01 단위로만 갈려(피사체 margin 0.01)
@@ -43,11 +43,6 @@ PAIRS: dict[str, tuple[list[str], list[str]]] = {
                  "a wedding bouquet held in hands"],
                 ["a bride with empty hands, holding no flowers",
                  "a wedding photo with no bouquet"]),
-    # 부케는 따로 있다 — 음 문장에 "부케만 든"을 넣어 부케 사진이 소품으로 잡히지 않게 한다.
-    "PROP": (["a wedding couple holding a prop such as a sign, a balloon or an umbrella",
-              "a person holding a decorative object that is not flowers"],
-             ["a wedding couple with empty hands",
-              "a bride holding only a bouquet of flowers"]),
     "BACK_VIEW": (["a photo of a person seen from behind with their back to the camera",
                    "the back of a bride walking away from the camera"],
                   ["a photo of a person facing the camera",

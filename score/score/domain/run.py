@@ -18,7 +18,7 @@ class ScoreResult:
     stopped: bool = False
     remaining: int = 0
     subjects_used: bool = False
-    #: 라벨 9개를 계산해 `photo_labels` 에 썼나(`Knobs.labels`, wes #348).
+    #: 라벨 8개를 계산해 `photo_labels` 에 썼나(`Knobs.labels`, wes #348).
     labels_used: bool = False
     #: 점수 단계 — full(한 번에) · fast(1단계) · quality(2단계, wes #274 2물결).
     stage: str = "full"
