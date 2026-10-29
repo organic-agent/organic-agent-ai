@@ -50,6 +50,9 @@ class Knobs:
     #: 기다리는 것)를 먼저 하고, 1단계 대기가 비면 2단계(1024 디코드 + ARNIQA·화질 지표 — 추천만 쓰는 것)를 집는다.
     #: 끄면 지금처럼 한 번에 다 계산한다. Lambda 폴백은 이 값과 무관하게 늘 한 번에 한다(드문 경로라 단순하게).
     split: bool = False
+    #: 사진 라벨 8개(wes #348, `service/labels.py`)를 피사체 옆에서 계산해 `photo_labels` 에 쓴다. 기본 끔 — wes V46 표가
+    #: 운영에 있어야 켠다. 표 없이 켜면 INSERT 가 실패해 점수 배치 전체가 롤백된다. relabel 도 끄면 아무것도 하지 않는다.
+    labels: bool = False
 
 
 @dataclass(frozen=True)
@@ -134,5 +137,6 @@ class Settings:
                 fp16=os.environ.get("SCORE_FP16", "1" if Knobs.fp16 else "0") not in ("0", "false", "no", ""),
                 decode_workers=int(os.environ.get("SCORE_DECODE_WORKERS", Knobs.decode_workers)),
                 split=os.environ.get("SCORE_SPLIT", "1" if Knobs.split else "0") not in ("0", "false", "no", ""),
+                labels=os.environ.get("LABELS_ENABLED", "1" if Knobs.labels else "0") not in ("0", "false", "no", ""),
             ),
         )

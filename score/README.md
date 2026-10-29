@@ -17,10 +17,11 @@
 사진마다 (embedder 가 만든 미리보기 JPEG 입력)
   LaionRunner.embed         → CLIP 768d (저장: photo_analysis.clip_embedding — categorize 가 재계산 없이 읽는다)
      ├─ score_from_embedding → aesthetic_score (LAION MLP)
-     └─ SubjectsTagger.tag   → subjects (bride|groom|couple|group|unknown, margin < 0.01 → unknown)
+     ├─ SubjectsTagger.tag   → subjects (bride|groom|couple|group|unknown, margin < 0.01 → unknown)
+     └─ LabelTagger.score    → 라벨 8개 점수 0~1 (켜면 `LABELS_ENABLED`, wes #348 → photo_labels)
   ArniqaRunner.score        → technical_score (spaq 회귀기)
   classical.measure         → sharpness · highlight_clip · shadow_clip · mean_luma
-→ store.write_scores  (subjects · sub_scores · clip_embedding · pipeline_version 만)
+→ store.write_scores  (subjects · sub_scores · clip_embedding · pipeline_version 만 + 켜면 같은 트랜잭션에 photo_labels)
 ```
 
 CLIP 벡터 하나를 뽑아 미학·피사체·컨셉 라벨 세 가지에 쓴다(텍스트 프롬프트는 추가 비용 0). 백분위·연사·그룹은
@@ -52,7 +53,8 @@ score/
 │   │                          · pipeline.py(SCORE 본체 — 위 그림. Scorer 러너 1회 로드 · 디코드 1회 · CLIP/ARNIQA 배치 · 배치 쓰기 · 데드라인 정지)
 │   │                          · worker.py(GPU 워커 루프 #75: photo_analysis SKIP LOCKED 32장 집기 → 점수 → commit, 유휴면 자기 정지)
 │   │                          · classical.py(Laplacian 선명도 · 노출 클립 · 평균 밝기) · subjects.py(CLIP zero-shot — SubjectsTagger)
-│   ├── domain/                photo.py(PhotoRef · PhotoAnalysis) · run.py(ScoreResult) · errors.py(PREVIEW_MISSING · SCORE_FAILED) — 로직 없음
+│   │                          · labels.py(라벨 8개 양·음 문장 확률 — LabelTagger, wes #348)
+│   ├── domain/                photo.py(PhotoRef · PhotoAnalysis) · run.py(ScoreResult) · errors.py(PREVIEW_MISSING · SCORE_FAILED) · labels.py(어휘 · source) — 로직 없음
 │   ├── repository/            connection.py(Postgres 접속) · photos.py(대상 조회: load_db · load_by_ids) · store.py(LocalStore(out/v3/) · DbStore — write_scores · claim_batch · write_errors)
 │   │                          · storage.py(S3 미리보기 · download_previews, 404 → missing) · dataset.py(로컬 데이터셋 폴더: list_galleries · load_local)
 │   ├── infrastructure/        runners/(ArniqaRunner — torch.hub SHA 고정 · LaionRunner — open_clip + MLP) · device.py(cuda → mps → cpu · fp16 autocast)
@@ -154,4 +156,10 @@ ARNIQA hub)는 빌드 시 `/opt` 아래에 굽는다 — NAT 없는 서브넷이
 ## wes 가 읽는 계약
 
 `photo_analysis.subjects` · `sub_scores{technical_score, aesthetic_score, sharpness, highlight_clip, shadow_clip, subjects_margin}` · `clip_embedding` · `pipeline_version`. 키 이름을 바꾸면 wes·categorize 와 함께 바꾼다.
+
+**사진 라벨(wes #348 · V46 `photo_labels`, `LABELS_ENABLED` 기본 끔):** 켜면 점수 쓰기와 같은 트랜잭션에 사진마다 8행
+(`EYES_CLOSED`·`SMILE`·`VEIL`·`BOUQUET`·`CLOSE_UP`·`HALF_BODY`·`FULL_BODY`·`BACK_VIEW`, `source='CLIP'`)을 UPSERT 한다 — 임계값 미달도.
+점수는 양·음 문장 확률(softmax ×100, 0.5 = 반반)이고, 구도 셋은 셋 사이 softmax 다. 다른 층(VLM 등)이 맡은 (사진, 라벨)은 덮지 않는다.
+어휘·문장을 바꾸면 `{"galleryId": N, "mode": "relabel"}`(또는 CLI `relabel`)가 저장된 CLIP 벡터로 그 갤러리의 CLIP 행을 바꾼다 — 이미지를 읽지 않는다.
+**wes V46 이 운영에 있기 전에 켜지 않는다** — 표가 없으면 점수 배치가 통째로 롤백된다. 라벨 코드는 wes `AgentLabel` 과 같은 목록.
 설계 근거·역사는 `docs/photoselect/`(review-v3-design.md, pipeline-history.md).

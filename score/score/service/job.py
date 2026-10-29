@@ -87,3 +87,13 @@ def run(gallery_id: int, force: bool = False, settings: Settings | None = None,
         return result
     finally:
         conn.close()
+
+
+def relabel(gallery_id: int, settings: Settings | None = None) -> dict:
+    """저장된 CLIP 벡터로 갤러리의 라벨만 다시(wes #348). 미리보기를 내려받지 않는다 — S3 버킷이 없어도 된다."""
+    settings = settings or Settings.from_env()
+    conn = connection.connect(settings)
+    try:
+        return pipeline.relabel(DbStore(settings, conn), str(gallery_id), settings)
+    finally:
+        conn.close()

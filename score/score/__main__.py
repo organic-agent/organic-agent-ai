@@ -6,6 +6,8 @@
     python -m score --gallery-id 12 --photo-ids 1,2,3                      # 그 목록만 (운영 Lambda 와 같은 경로)
     python -m score worker --gpu                                            # GPU 집기 워커 (운영 인스턴스의 기본 CMD)
     python -m score worker --gpu --no-idle-stop                            # 로컬: 큐를 다 비우고 유휴 30s 뒤 종료 (EC2 정지 안 함)
+    LABELS_ENABLED=1 python -m score relabel --gallery-id 12               # 저장된 CLIP 벡터로 라벨만 다시 (#348, 이미지 안 읽음)
+    LABELS_ENABLED=1 python -m score relabel --local "dataset1/데이터셋1"  # 로컬 out/ 의 벡터로
 
 DB 모드 접속은 DB_HOST/DB_PORT/DB_NAME/DB_USER/DB_PASSWORD/DB_SSLMODE, 미리보기는 S3_BUCKET
 (wes scripts/local-ai.sh 참조). 잡 테이블·categorize 체인은 wes 가 소유한다 — 이 CLI 는 점수만 쓴다(#98).
@@ -23,8 +25,9 @@ from score.service import job
 
 def main(argv: list[str] | None = None) -> None:
     ap = argparse.ArgumentParser(prog="score")
-    ap.add_argument("cmd", nargs="?", choices=["worker", "train"],
-                    help="worker --gpu: GPU 집기 워커(#75). train: SageMaker 벤치마크 진입점")
+    ap.add_argument("cmd", nargs="?", choices=["worker", "train", "relabel"],
+                    help="worker --gpu: GPU 집기 워커(#75). train: SageMaker 벤치마크 진입점. "
+                         "relabel: 저장된 CLIP 벡터로 라벨만 다시(#348)")
     ap.add_argument("--gpu", action="store_true", help="worker: GPU 집기 루프 (photo_analysis SKIP LOCKED 32장씩, 유휴면 자기 정지)")
     ap.add_argument("--no-idle-stop", action="store_true",
                     help="worker --gpu: 유휴가 되면 EC2 를 정지하지 않고 그냥 종료한다(로컬·EC2 밖). 큐는 끝까지 비운다")
@@ -54,6 +57,18 @@ def main(argv: list[str] | None = None) -> None:
         print(json.dumps(summary, ensure_ascii=False))
         if summary.get("aborted"):
             sys.exit(1)
+        return
+
+    if args.cmd == "relabel":
+        if args.local:
+            from score.repository.store import LocalStore
+            from score.service import pipeline
+            result = pipeline.relabel(LocalStore(settings.out_root, dataset_root=settings.dataset_root), args.local, settings)
+        elif args.gallery_id is not None:
+            result = job.relabel(args.gallery_id, settings=settings)
+        else:
+            sys.exit("relabel 은 --gallery-id 또는 --local 이 필요하다")
+        print(json.dumps(result, ensure_ascii=False, indent=2))
         return
 
     if args.list:
