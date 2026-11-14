@@ -10,7 +10,7 @@
 
 문항 필드:
   question           질문
-  today              (선택) 날짜 고정 "YYYY-MM-DD(요일)" — 시간 상대 질문의 정답 불변화
+  today              (선택) 기준 고정 "YYYY-MM-DD(요일)" 또는 "... HH:MM" — 시간 상대 질문의 정답 불변화
   expect_contains    답변에 있어야 할 것들. 각 항목은 "a|b" 대안 허용 (정규식)
   expect_not_contains 답변에 있으면 안 되는 것들 (정규식)
   expect_tool        호출됐어야 할 도구 ("a|b" 대안 허용)

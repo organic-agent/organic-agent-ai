@@ -1,11 +1,13 @@
 """도구 정의(스키마)와 실행을 함께 둔다 (docs/notion-chatbot-plan.md §2 아키텍처)."""
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 from api import config
 from api.notion.blocks import blocks_to_markdown, properties_to_text, rich_text
 from api.notion.client import NotionClient
+from api.notion.schedule import fetch_upcoming_rows, format_upcoming, now_kst, select_upcoming
 
 TOOL_DEFINITIONS = [
     {
@@ -59,6 +61,27 @@ TOOL_DEFINITIONS = [
         },
     },
     {
+        "name": "upcoming_events",
+        "description": (
+            "팀 일정 DB(ASM 부산 17 일정)에서 지금 이후의 예정 일정을 시작이 빠른 순으로 반환한다. "
+            "이미 끝난 일정은 코드가 빼고, 오늘 남은 일정은 포함하며, 각 일정에 요일과 '오늘/내일/N일 후'를 붙인다. "
+            "'다음/가장 빠른/가까운/이번 주/이번 주말/오늘/내일' 멘토링·약속처럼 팀 일정의 시점을 묻는 질문은 "
+            "query_database 대신 반드시 이 도구를 쓰고, 날짜를 다시 계산하지 말고 결과 순서를 그대로 따른다. "
+            "공식 일정(사무국 행사·평가)은 read_soma_schedule."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "keyword": {
+                    "type": "string",
+                    "description": "제목·속성에 포함된 말로 거른다 (예: 멘토링, 한유일). 생략하면 전체",
+                },
+                "limit": {"type": "integer", "description": "최대 건수 (기본 10, 최대 30)"},
+            },
+            "additionalProperties": False,
+        },
+    },
+    {
         "name": "read_expense_guide",
         "description": (
             "소마(AI·SW마에스트로) 공식 비용 지원 규정 전문을 반환한다: 프로젝트 활동비"
@@ -99,7 +122,10 @@ TOOL_DEFINITIONS = [
 ]
 
 
-def run_tool(client: NotionClient, name: str, tool_input: dict) -> str:
+def run_tool(client: NotionClient, name: str, tool_input: dict, now: datetime | None = None) -> str:
+    """now는 시간 상대 도구의 기준 시각 (평가용 고정). None이면 현재 KST."""
+    if name == "upcoming_events":
+        return _upcoming_events(client, now or now_kst(), tool_input.get("keyword"), tool_input.get("limit"))
     if name == "search_notion":
         return _search(client, tool_input["query"])
     if name == "read_page":
@@ -113,6 +139,12 @@ def run_tool(client: NotionClient, name: str, tool_input: dict) -> str:
     if name == "read_soma_schedule":
         return _read_data_doc("asm_official_schedule.md")
     raise ValueError(f"알 수 없는 도구: {name}")
+
+
+def _upcoming_events(client: NotionClient, now: datetime, keyword: str | None, limit: int | None) -> str:
+    limit = max(1, min(int(limit or 10), 30))
+    events = select_upcoming(fetch_upcoming_rows(client, now), now, keyword, _page_url)
+    return format_upcoming(events, now, limit)
 
 
 def _read_data_doc(name: str) -> str:
