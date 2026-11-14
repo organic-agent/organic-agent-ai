@@ -6,6 +6,7 @@ NOTIONCHAT_MODEL_ID 변경만으로 끝난다 (현재: Claude Haiku 4.5).
 """
 
 from collections.abc import Callable
+from datetime import datetime
 
 from api import config
 from api.core.prompts import SYSTEM_PROMPT
@@ -65,6 +66,7 @@ def ask(
     notion: NotionClient,
     messages: list[dict],
     on_log: Callable[[str], None],
+    now: datetime | None = None,  # 시간 상대 도구의 기준 시각. None이면 현재 KST
 ) -> tuple[str, list[dict], dict]:
     """Converse 형식 messages로 한 턴을 수행하고 (답변, 갱신된 히스토리, 토큰 usage 합계)를 반환한다."""
     tool_calls = 0
@@ -105,7 +107,7 @@ def ask(
             else:
                 on_log(f"{tool_use['name']}({tool_use['input']})")
                 try:
-                    result, is_error = run_tool(notion, tool_use["name"], dict(tool_use["input"])), False
+                    result, is_error = run_tool(notion, tool_use["name"], dict(tool_use["input"]), now=now), False
                 except NotionAPIError as e:
                     result, is_error = f"Notion API 오류: {e}", True
             tool_results.append(

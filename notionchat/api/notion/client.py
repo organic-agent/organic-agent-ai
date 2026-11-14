@@ -74,8 +74,19 @@ class NotionClient:
             cursor = data.get("next_cursor")
 
     # 노션 데이터베이스의 행들을 조회하는 메서드.
-    def query_database(self, database_id: str, filter: dict | None = None, page_size: int = 20) -> dict:
+    def query_database(
+        self,
+        database_id: str,
+        filter: dict | None = None,
+        page_size: int = 20,
+        sorts: list[dict] | None = None,
+        start_cursor: str | None = None,
+    ) -> dict:
         body: dict = {"page_size": page_size}
         if filter:
             body["filter"] = filter
+        if sorts:
+            body["sorts"] = sorts
+        if start_cursor:
+            body["start_cursor"] = start_cursor
         return self._request("POST", f"/databases/{database_id}/query", json=body)

@@ -4,15 +4,16 @@
 로컬 CLI는 ChatSession이 히스토리를 대신 들고 같은 함수를 쓴다.
 """
 
+import re
 import sys
 from datetime import datetime
-from zoneinfo import ZoneInfo
 
 from botocore.exceptions import BotoCoreError, ClientError
 
 from api import config
 from api.core.agent import ModelResponseError, ask
 from api.notion.client import NotionClient
+from api.notion.schedule import KST, now_kst, weekday_label
 
 
 class ChatError(Exception):
@@ -71,14 +72,20 @@ def run_turn(
     """
     notion = notion or _notion_client()
     checkpoint = len(history)
-    # 오늘 날짜를 질문에 주입 — 시스템 프롬프트는 캐시 보호로 날짜를 못 넣으므로 여기서.
-    # "다음 신청일", "지난주 회의" 같은 시간 상대 질문의 기준점이 된다. (Vercel은 UTC라 KST 명시)
+    # 지금 날짜·시각을 질문에 주입 — 시스템 프롬프트는 캐시 보호로 날짜를 못 넣으므로 여기서.
+    # "다음 멘토링", "지난주 회의" 같은 시간 상대 질문의 기준점이 된다. (Vercel은 UTC라 KST 명시)
+    # 시각까지 넣어야 오늘 저녁 일정이 아직 남았는지 판단할 수 있다.
     if today is None:
-        now = datetime.now(ZoneInfo("Asia/Seoul"))
-        today = f"{now:%Y-%m-%d}({'월화수목금토일'[now.weekday()]})"
-    history.append({"role": "user", "content": [{"text": f"[오늘: {today}] {question}"}]})
+        now = now_kst()
+        stamp = f"{weekday_label(now.date())} {now:%H:%M} KST"
+    else:
+        # 평가용 고정: "YYYY-MM-DD(요일)" 또는 "YYYY-MM-DD(요일) HH:MM". 시각이 없으면 그날 00:00.
+        m = re.search(r"\d{2}:\d{2}", today)
+        now = datetime.strptime(today[:10] + (m.group() if m else "00:00"), "%Y-%m-%d%H:%M").replace(tzinfo=KST)
+        stamp = today
+    history.append({"role": "user", "content": [{"text": f"[오늘: {stamp}] {question}"}]})
     try:
-        answer, history, usage = ask(_runtime_client(), notion, history, on_log=on_log)
+        answer, history, usage = ask(_runtime_client(), notion, history, on_log=on_log, now=now)
         _log_usage(usage)
         return answer, history, usage
     except ModelResponseError as e:
