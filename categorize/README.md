@@ -20,6 +20,7 @@ VLM 이 짓는 자유 이름이고 사용자가 고친다. 근거: `docs/experim
 갤러리 한 번 (E = DINOv3, C = CLIP, 원점수, taken_at · camera — 전부 DB)
   백분위     technical/aesthetic_score · sharpness → *_pct (NaN → 50)
   연사       E, 카메라 파티션 ∧ taken_at 순 창 ≤ 8 ∧ cos ≥ 0.96 → burst_id · burst_rank(연사 대표 0, rank_reason)
+  추천 점수  (service/reco.py) 얼굴 값이 찬 갤러리만 → sub_scores.reco_base, 연사 대표도 컷 규격 점수 우선 (아래 "추천 기본 점수")
   구간       (service/segment.py) 시각이 90% 이상 있고 서로 다르면 → 시각순, 5분 넘게 쉰 곳에서 자름.
              0.5% 미만 구간(테스트 컷)만 공백이 짧은 이웃에 붙임. 시각이 없으면 → DINOv3 Ward 36묶음. 연사는 경계를 넘지 않음
   1층        (naming.name_concepts) 구간마다 대표 4장 2×2 타일 → Sonnet 한 호출로 "같은 컨셉끼리 묶고 이름"
@@ -37,7 +38,7 @@ Bedrock 호출 = 1층 1회(이미지 ≤ 40) + 2층 (그룹이 둘 이상인 1�
 
 **순위는 화질 점수가 다 찬 뒤에(wes #274 2물결).** score 가 1단계(CLIP·피사체)와 2단계(화질 점수)로 나뉘면 폴더는 1단계만 기다린다.
 갤러리에 화질 점수(`quality_scored_at`, 옛 score 면 `technical_score`)가 덜 찬 사진이 한 장이라도 있으면 백분위·연사 대표 순위·
-`sharpness_pct`·`rank_reason` 은 비워 두고 폴더용(연사 묶음·구간·그룹·이름)만 쓴다 — 점수 없는 사진을 50 으로 채우면 가짜 순위가
+`sharpness_pct`·`rank_reason`·`reco_base` 는 비워 두고 폴더용(연사 묶음·구간·그룹·이름)만 쓴다 — 점수 없는 사진을 50 으로 채우면 가짜 순위가
 완료처럼 보인다. 연사 묶음·그룹·이름은 점수를 쓰지 않아 결과가 같다. 다 차면 wes 가 rank 모드(`{galleryId, mode: "rank"}`)를 보내고,
 저장된 `burst_id` 로 백분위·순위만 다시 매긴다(Bedrock·잡 없음). `sub_scores` 는 score 와 키를 나눠 쓰므로 categorize 의 키만 갈아 끼운다.
 
@@ -73,7 +74,7 @@ categorize/
 │   │                        jobs.py(fail 하나 — analysis_jobs.error) · storage.py(S3 미리보기, 풀 = 스레드 수)
 │   ├── infrastructure/      bedrock.py(LlmClient 프로토콜 · BedrockClient.complete_json — JSON 스키마 강제, 텍스트+이미지 블록 · jpeg_bytes)
 │   └── config/              settings.py(Settings · Knobs · LlmKnobs · PIPELINE_VERSION)
-├── tests/                   층별 파일(test_service_* · test_repository_* · test_controller_handler · test_boundaries) — pytest 52.
+├── tests/                   층별 파일(test_service_* · test_repository_* · test_controller_handler · test_boundaries) — pytest 72.
 │                            helpers.py(합성 갤러리 · FakeLlm) · db_fakes.py(커넥션 가짜). 모델 없음 · torch 미import 를 테스트로 고정
 ├── Dockerfile · deploy.sh   컨테이너 Lambda (torch 없음, 작다) · ECR 푸시 + update-function-code
 └── requirements.txt · pyproject.toml
@@ -104,10 +105,28 @@ export DB_HOST=localhost DB_PORT=5432 DB_NAME=wes DB_USER=wes DB_PASSWORD=wes DB
 실행 역할에 `bedrock:InvokeModel`(크로스 리전 프로필 포함), 서브넷에 `bedrock-runtime` 인터페이스 VPC 엔드포인트가 있어야
 naming 이 닿는다. 메모리 2–3GB 면 7,000장(거리행렬 ~200MB)까지 여유.
 
+## 추천 기본 점수 — `reco_base` (#168)
+
+score 가 쌓은 얼굴 값(눈 감김 · 웃음, score #164)을 순위로 바꾼다. **wes 가 읽기 전까지 추천은 그대로다** — 값을 쌓기만 한다.
+
+| 단계 | 규칙 |
+|---|---|
+| 컷 규격 점수 | −눈 위험/sd + 0.5 × 웃음/sd. 눈 위험은 가장 많이 감긴 주인공 얼굴의 눈 감김 · 웃음 로지스틱 — 웃으면서 감은 눈은 낮다 |
+| 값 없는 컷 | 같은 연사의 중앙값, 연사 전체가 없으면 갤러리 중앙값 |
+| 거름 | 화질 또는 미학 백분위 중앙값이 10 이하인 연사, 흑백이 과반인 연사를 뒤로. 빼지 않는다 |
+| `reco_base` | (흑백 → 거름 → 연사 크기 → 컷 규격 점수) 순서의 갤러리 안 백분위. 앞일수록 100 |
+| 연사 대표 | 컷 규격 점수 우선, 같으면 예전 규칙. 규격으로 갈렸으면 `rank_reason` = `face` |
+
+- **얼굴 값 단계가 돈 사진이 90% 미만이면 쓰지 않는다.** `reco_base` 키가 없고 연사 대표도 예전 규칙이다. 이전에 분석한 갤러리와
+  Lambda 폴백으로 점수를 낸 사진이 여기 든다(score #166).
+- 눈금을 0~100 으로 둔 것은 wes 가 기본 점수를 표준화해 가산점과 더하기 때문이다. 지금의 화질 · 미학 백분위와 같은 눈금이다.
+- 손잡이는 `Knobs.reco_*`(거름 선 · 웃음 무게 · 눈 위험 계수 · 얼굴 값 비율).
+- 근거: wes 의 폴더 추천 로직을 옮겨 운영 갤러리 하나에서 쟀다. 추천 중 애매하게 감긴 눈 13.1% → 9.7%, 맞힌 장면 28 → 30/44.
+
 ## wes 가 읽는 계약 — 바꾸면 wes 와 함께 바꾼다
 
 - `photo_analysis`: `technical_pct` · `aesthetic_pct` · `burst_id` · `burst_rank` · `embed_group_id` ·
-  `sub_scores{sharpness_pct, rank_reason}`(score 의 키에 더해서)
+  `sub_scores{sharpness_pct, rank_reason, reco_base}`(score 의 키에 더해서). `reco_base` 는 없을 수 있다 — 없으면 화질 · 미학 백분위로
 - `concept_assignments`: `job_id` · `embed_group_id` · `concept_name` · `detail_name` · `confidence` · `assigned_by`.
   `needs_review` 는 쓰지 않는다(컬럼 기본값 false, wes 는 V34 부터 읽지 않는다. 컬럼 삭제는 wes).
   `concept_name` 은 자유 이름이고 갤러리 안에서 유일하다. `proposed_concept_name` · `clip_concept_name` 은 더 쓰지 않는다(NULL, 컬럼 삭제는 wes)

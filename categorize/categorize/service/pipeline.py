@@ -7,6 +7,7 @@
 
     백분위     technical_score · aesthetic_score · sharpness → *_pct (갤러리 안 순위)
     연사       E, 카메라 파티션 ∧ 순서 창 ∧ cos ≥ threshold      → burst_id · burst_rank
+    추천 점수  얼굴 값(눈 감김 · 웃음) · 거름 · 연사 크기          → sub_scores.reco_base   (service/reco.py, 얼굴 값이 찬 갤러리만)
     구간       촬영 시각 공백(없으면 DINOv3 Ward)                  → segment.Segmentation   (service/segment.py)
     1층        구간 타일을 VLM 이 컨셉으로 묶고 이름                → naming.name_concepts   (conceptCount 는 선택)
     2층        1층마다 concat(E ⊕ C) 평균연결 계층 클러스터       → embed_group_id (갤러리 전체에서 유일)
@@ -30,11 +31,11 @@ import time
 
 import numpy as np
 
-from categorize.config.settings import PIPELINE_VERSION, Settings
+from categorize.config.settings import PIPELINE_VERSION, Knobs, Settings
 from categorize.domain.analysis import PhotoAnalysis, Store
 from categorize.domain.photo import PhotoRef
 from categorize.domain.run import CategorizeResult, Grouped
-from categorize.service import burst, grouping, segment
+from categorize.service import burst, grouping, reco, segment
 
 log = logging.getLogger(__name__)
 
@@ -75,17 +76,22 @@ def _rep_reason(best: PhotoAnalysis, others: list[PhotoAnalysis]) -> str:
     return "tie"
 
 
-def assign_ranks(rows: list[PhotoAnalysis]) -> None:
-    """연사 대표(burst_rank 0)와 사유. V45에는 컬럼이 없어 sub_scores.rank_reason 으로."""
+def assign_ranks(rows: list[PhotoAnalysis], cut: dict[str, float] | None = None) -> None:
+    """연사 대표(burst_rank 0)와 사유. V45에는 컬럼이 없어 sub_scores.rank_reason 으로.
+
+    `cut`(컷 규격 점수, service/reco.py)이 있으면 그 점수가 먼저고 같으면 예전 규칙이다 — 눈이 애매하게 감긴 컷이 대표가 되지 않게.
+    규격 점수로 갈렸으면 사유는 `face` 다. `cut` 이 없으면(얼굴 값이 덜 찬 갤러리) 예전 규칙 그대로다."""
+    key = _rep_key if cut is None else (lambda a: (-cut[a.photo_id],) + _rep_key(a))
     by_burst: dict[int, list[PhotoAnalysis]] = {}
     for r in rows:
         by_burst.setdefault(r.burst_id, []).append(r)
     for members in by_burst.values():
-        members.sort(key=_rep_key)
+        members.sort(key=key)
         for rank, m in enumerate(members):
             m.burst_rank = rank
             if rank == 0:
-                m.sub_scores["rank_reason"] = _rep_reason(m, members[1:])
+                by_face = cut is not None and len(members) > 1 and cut[m.photo_id] > max(cut[o.photo_id] for o in members[1:])
+                m.sub_scores["rank_reason"] = "face" if by_face else _rep_reason(m, members[1:])
 
 
 def set_percentiles(rows: list[PhotoAnalysis]) -> None:
@@ -103,9 +109,10 @@ def clear_ranks(rows: list[PhotoAnalysis]) -> None:
         r.technical_pct = r.aesthetic_pct = r.burst_rank = None
         r.sub_scores.pop("sharpness_pct", None)
         r.sub_scores.pop("rank_reason", None)
+        r.sub_scores.pop(reco.RECO_BASE, None)
 
 
-def rank(store: Store, gallery: str) -> dict:
+def rank(store: Store, gallery: str, settings: Settings | None = None) -> dict:
     """rank 모드 — 그룹(폴더)이 이미 있는 사진의 백분위·연사 대표 순위만 다시 매긴다. Bedrock·잡 없음.
 
     연사 묶음은 full 이 저장한 `burst_id` 를 그대로 쓴다(다시 묶으면 폴더와 어긋날 수 있다). 화질 점수가 덜 찬 사진이 있으면
@@ -120,7 +127,7 @@ def rank(store: Store, gallery: str) -> dict:
         log.warning("[categorize] 갤러리 %s rank: 매길 수 없다 — 그룹 있는 사진 %d장 중 화질 점수 대기 %d장", gallery, len(rows), pending)
         return {"gallery": gallery, "mode": "rank", "ranked": 0, "pending": pending}
     set_percentiles(rows)
-    assign_ranks(rows)
+    assign_ranks(rows, reco.set_reco_base(rows, settings.knobs if settings else Knobs()))
     store.write_ranks(gallery, rows)
     elapsed = round(time.monotonic() - started, 1)
     log.info("[categorize] 갤러리 %s rank: %d장 · %.1fs", gallery, len(rows), elapsed)
@@ -168,7 +175,7 @@ def group(store: Store, gallery: str, refs: list[PhotoRef], settings: Settings) 
     for r, b in zip(ordered, burst_ids):
         r.burst_id = int(b)
     if ranked:
-        assign_ranks(ordered)
+        assign_ranks(ordered, reco.set_reco_base(ordered, k))
     else:
         clear_ranks(ordered)
         log.info("[categorize] 갤러리 %s: 화질 점수가 덜 찬 사진 %d장 — 순위는 비워 두고 폴더용만 쓴다(rank 모드가 뒤에 채운다)",
