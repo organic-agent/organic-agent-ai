@@ -1092,3 +1092,14 @@ def test_face_values_flag_reads_from_env(monkeypatch, tmp_path):
     monkeypatch.delenv("SCORE_FACE_VALUES")
     assert Settings.from_env().knobs.face_values is True
 
+
+def test_face_values_default_is_off_on_lambda_unless_set(monkeypatch):
+    """Lambda 에서는 MediaPipe 가 프로세스를 죽인다(#166) — 기본은 끔, 명시한 값은 그대로 따른다."""
+    monkeypatch.delenv("SCORE_FACE_VALUES", raising=False)
+    monkeypatch.delenv("AWS_LAMBDA_FUNCTION_NAME", raising=False)
+    assert Settings.from_env().knobs.face_values is True
+    monkeypatch.setenv("AWS_LAMBDA_FUNCTION_NAME", "wes-score")
+    assert Settings.from_env().knobs.face_values is False
+    monkeypatch.setenv("SCORE_FACE_VALUES", "1")
+    assert Settings.from_env().knobs.face_values is True
+

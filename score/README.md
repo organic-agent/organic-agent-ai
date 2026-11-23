@@ -59,7 +59,7 @@ score/
 │   ├── infrastructure/        runners/(ArniqaRunner — torch.hub SHA 고정 · LaionRunner — open_clip + MLP · FaceRunner — YuNet + MediaPipe, torch 없음) · device.py(cuda → mps → cpu · fp16 autocast)
 │   │                          · images.py(PIL 로드 — load_image · fit_long_edge · as_image) · ec2.py(IMDS · StopInstances) · gpu.py(NVML 사용률 표본)
 │   └── config/settings.py     Settings · Knobs · PIPELINE_VERSION · MODULE_ROOT
-├── tests/test_score.py   pytest 40 — 재개 · 컬럼 경계 · 배치/데드라인 · CLIP/ARNIQA 배치·실패 격리 · 프리페치 · 집기(SKIP LOCKED·error) · GPU 워커 루프 · photoIds 폴백 · handler 계약 · categorize 와의 상수 일치
+├── tests/test_score.py   pytest 52 — 재개 · 컬럼 경계 · 배치/데드라인 · CLIP/ARNIQA 배치·실패 격리 · 프리페치 · 집기(SKIP LOCKED·error) · GPU 워커 루프 · photoIds 폴백 · handler 계약 · categorize 와의 상수 일치
 ├── Dockerfile · deploy.sh   컨테이너 Lambda (가중치 빌드 시 번들, CMD `score.controller.handler.handler`) · ECR 푸시 + update-function-code
 ├── Dockerfile.gpu           GPU 워커·벤치마크 이미지 (cu121 torch). main 의 score/** 변경마다 CI 가 ECR :gpu(이동) + :gpu-<sha>(불변) 로 민다(#77)
 ├── scripts/sagemaker_benchmark.py   SageMaker training job 제출·대기·로그 요약 · ec2_benchmark.py  EC2 stop/start 실측 · snapshot_scores.py  점수 스냅샷·비교(fp16 검증)
@@ -143,7 +143,8 @@ DB_HOST=localhost DB_PORT=15432 … .venv/bin/python scripts/snapshot_scores.py 
 
 손잡이(환경변수): `SCORE_DEVICE`(auto) · `SCORE_FP16`(cuda 만) · `CLIP_BATCH` · `ARNIQA_BATCH`(같은 크기끼리만 묶임) ·
 `SCORE_DECODE_WORKERS`(디코드·classical 프리페치 스레드, Lambda 는 0) · `SCORE_DOWNLOAD_WORKERS`(S3 동시 다운로드, 기본 8) ·
-`SCORE_FACE_VALUES`(얼굴 값, 기본 켬. 0 이면 얼굴 키를 쓰지 않는다).
+`SCORE_FACE_VALUES`(얼굴 값. GPU 워커 · 로컬은 기본 켬, **Lambda 는 기본 끔** — MediaPipe 가 Lambda 안에서 프로세스를 강제 종료한다(#166).
+0 이면 얼굴 키를 쓰지 않는다. 그래서 폴백으로 점수를 낸 사진은 얼굴 값이 빈다).
 CPU 경로는 이 손잡이가 기본값일 때 이전과 비트 단위로 같다(16장 검증).
 
 ## 배포

@@ -48,11 +48,22 @@ class Knobs:
     decode_workers: int = 0
     #: 주인공 얼굴의 눈 감김 · 웃음 값을 화질 점수와 같은 단계에서 잰다(#164). 끄면 얼굴 키를 쓰지 않는다.
     #: 러너를 올리지 못해도(라이브러리 · 모델 파일) 점수는 계속 낸다 — 얼굴 값만 빠진다.
+    #: Lambda 에서는 환경에서 읽을 때 기본이 끔이다(`_face_values_default`, #166).
     face_values: bool = True
     #: 점수를 두 단계로 나눈다(wes #274 2물결, ADR 0002 B). 켜면 GPU 워커가 1단계(축소 디코드 + CLIP·피사체·미학 — 폴더가
     #: 기다리는 것)를 먼저 하고, 1단계 대기가 비면 2단계(1024 디코드 + ARNIQA·화질 지표 — 추천만 쓰는 것)를 집는다.
     #: 끄면 지금처럼 한 번에 다 계산한다. Lambda 폴백은 이 값과 무관하게 늘 한 번에 한다(드문 경로라 단순하게).
     split: bool = False
+
+
+def _face_values_default() -> str:
+    """`SCORE_FACE_VALUES` 가 없을 때의 값. Lambda 에서는 끈다(#166).
+
+    MediaPipe 가 Lambda 안에서 CPU 수를 읽지 못해 프로세스를 강제 종료한다(tcmalloc `CHECK in NumCPUs`). 파이썬 예외가 아니라서
+    `_load_face` 의 보호로 잡히지 않고, 얼굴 값만이 아니라 점수 계산 전체가 죽는다. 폴백으로 점수를 낸 사진은 얼굴 값이 빈다."""
+    if os.environ.get("AWS_LAMBDA_FUNCTION_NAME"):
+        return "0"
+    return "1" if Knobs.face_values else "0"
 
 
 @dataclass(frozen=True)
@@ -137,6 +148,6 @@ class Settings:
                 fp16=os.environ.get("SCORE_FP16", "1" if Knobs.fp16 else "0") not in ("0", "false", "no", ""),
                 decode_workers=int(os.environ.get("SCORE_DECODE_WORKERS", Knobs.decode_workers)),
                 split=os.environ.get("SCORE_SPLIT", "1" if Knobs.split else "0") not in ("0", "false", "no", ""),
-                face_values=os.environ.get("SCORE_FACE_VALUES", "1" if Knobs.face_values else "0") not in ("0", "false", "no", ""),
+                face_values=os.environ.get("SCORE_FACE_VALUES", _face_values_default()) not in ("0", "false", "no", ""),
             ),
         )
