@@ -8,6 +8,7 @@ ARNIQA 점수는 스칼라 하나라 "왜 높은가"를 못 말한다. 여기서
     highlight_clip  밝기 ≥ 250 픽셀 비율 — 날아간 하이라이트
     shadow_clip     밝기 ≤ 5 픽셀 비율 — 뭉개진 그림자
     mean_luma       평균 밝기 0~255 (참고용)
+    is_bw           흑백 사진이면 1(#164). 색 채널 사이 차이가 거의 없는 사진 — 세피아처럼 색조를 입힌 흑백은 0 이다
 """
 
 from __future__ import annotations
@@ -21,6 +22,15 @@ from score.infrastructure.images import as_image
 
 #: 선명도 계산 해상도. 리사이즈가 달라지면 값 스케일이 달라지므로 고정한다.
 LONG_EDGE = 1024
+#: 흑백 판정 — 96×96 으로 줄인 사진의 채널 차이(|R−G| · |G−B| 평균)가 이 값 미만이면 흑백. JPEG 색 잡음은 1 안쪽이다.
+BW_CHROMA = 2.0
+BW_SIDE = 96
+
+
+def chroma(img: Image.Image) -> float:
+    """색이 얼마나 있는가 — 채널 사이 차이의 평균(0~255)."""
+    small = np.asarray(img.convert("RGB").resize((BW_SIDE, BW_SIDE)), dtype=np.float32)
+    return float((np.abs(small[..., 0] - small[..., 1]).mean() + np.abs(small[..., 1] - small[..., 2]).mean()) / 2)
 
 
 def measure(source: str | Image.Image) -> dict[str, float]:
@@ -34,4 +44,5 @@ def measure(source: str | Image.Image) -> dict[str, float]:
         "highlight_clip": float((gray >= 250).sum() / n),
         "shadow_clip": float((gray <= 5).sum() / n),
         "mean_luma": float(gray.mean()),
+        "is_bw": int(chroma(img) < BW_CHROMA),
     }

@@ -5,6 +5,13 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 
 
+#: 얼굴 값을 내지 못했을 때 `sub_scores` 에 쓰는 값(#164). 키를 빼지 않고 None 으로 쓴다 — `sub_scores` 는 합쳐서 저장하므로
+#: 빼면 이전 값이 남는다. `face_n` 이 None 이면 "재지 못함"(러너 오류), 0 이면 "얼굴 없음".
+FACE_UNMEASURED: dict[str, float | int | None] = {
+    "face_n": None, "face_measured": None, "eye_blink": None, "eye_smile": None, "smile": None,
+}
+
+
 @dataclass(frozen=True)
 class PhotoRef:
     """갤러리 안의 사진 하나. 로컬은 파일, DB 는 photos 행 + 미리보기 S3 키."""

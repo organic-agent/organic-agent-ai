@@ -5,6 +5,10 @@ FROM public.ecr.aws/lambda/python:3.12
 # requirements.txt 의 torch 핀은 로컬(맥)용이라 여기서는 걸러 낸다.
 RUN pip install --no-cache-dir torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cpu
 
+# 얼굴 값(#164)의 MediaPipe · OpenCV 가 여는 시스템 라이브러리. 화면은 안 쓰지만 없으면 import 에서 죽는다
+# (libGL.so.1 · libEGL.so.1 · libGLESv2.so.2). 베이스 이미지에는 없다.
+RUN dnf install -y mesa-libGL mesa-libEGL mesa-libGLES && dnf clean all
+
 COPY requirements.txt .
 RUN grep -v -E '^(torch|torchvision)==' requirements.txt > /tmp/req.txt && pip install --no-cache-dir -r /tmp/req.txt
 
@@ -19,11 +23,13 @@ COPY score/ ${LAMBDA_TASK_ROOT}/score/
 #   · CLIP ViT-L/14 (openai)  → open_clip 캐시 ($HOME/.cache/clip)
 #   · LAION 미학 MLP           → score/weights/ (infrastructure/runners/common.py fetch_weight)
 #   · ARNIQA (hub 코드 + spaq 회귀기) → $TORCH_HOME/hub — arniqa.HUB_REPO 의 커밋 SHA 와 같은 ref
+#   · 얼굴 검출 YuNet · Face Landmarker → score/weights/ (runners/face.py, 체크섬 고정)
 # 런타임 파일시스템은 /tmp 말고 읽기 전용이라 캐시 위치를 /opt 아래로 못박고 같은 값을 ENV 로 남긴다.
 ENV HOME=/opt/home \
     TORCH_HOME=/opt/torch
 RUN mkdir -p /opt/home /opt/torch \
  && cd ${LAMBDA_TASK_ROOT} \
- && python -c "from score.infrastructure.runners import LaionRunner, ArniqaRunner; LaionRunner(); ArniqaRunner()"
+ && python -c "from score.infrastructure.runners import LaionRunner, ArniqaRunner; LaionRunner(); ArniqaRunner()" \
+ && python -c "from score.infrastructure.runners.face import FaceRunner; from PIL import Image; print(FaceRunner().measure(Image.new('RGB', (683, 1024))))"
 
 CMD ["score.controller.handler.handler"]
