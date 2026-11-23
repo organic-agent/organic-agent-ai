@@ -154,7 +154,7 @@ def test_write_groups_without_ranks_writes_null_and_merges_only_rank_keys(tmp_pa
     _db_store(tmp_path, conn).write_groups("7", [row])
 
     sql, params = conn.executed[0]
-    assert "sub_scores = (sub_scores - 'sharpness_pct' - 'rank_reason') || %s::jsonb" in sql
+    assert "sub_scores = (sub_scores - 'sharpness_pct' - 'rank_reason' - 'reco_base') || %s::jsonb" in sql
     assert params[0] == (None, None, "{}", 2, None, 5, 11)
 
 
@@ -172,3 +172,14 @@ def test_write_ranks_touches_only_rank_columns_of_grouped_rows(tmp_path):
     assert "WHERE photo_id = %s AND embed_group_id IS NOT NULL" in sql
     assert params[0] == (80.0, 60.0, '{"sharpness_pct": 70.0, "rank_reason": "single"}', 0, 11)
     assert conn.commits == 1
+
+
+def test_write_ranks_carries_reco_base_when_the_row_has_it(tmp_path):
+    from categorize.domain.analysis import PhotoAnalysis
+
+    conn = JobConn()
+    row = PhotoAnalysis(photo_id="11", technical_pct=80.0, aesthetic_pct=60.0, burst_rank=0, burst_id=2, embed_group_id=5,
+                        sub_scores={"eye_blink": 0.1, "sharpness_pct": 70.0, "rank_reason": "face", "reco_base": 91.5})
+    _db_store(tmp_path, conn).write_ranks("7", [row])
+
+    assert conn.executed[0][1][0][2] == '{"sharpness_pct": 70.0, "rank_reason": "face", "reco_base": 91.5}'

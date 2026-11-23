@@ -47,6 +47,16 @@ class Knobs:
     #: 구간 타일(대표 4장 2×2) 한 변.
     concept_tile_edge: int = 768
 
+    # ── 추천 기본 점수(service/reco.py) — 값은 docs/experiments/reco-rubric-2026-11 의 세 갤러리로 정했다 ──
+    #: 얼굴 값 단계가 돈 사진이 이 비율보다 적으면 `reco_base` 를 쓰지 않는다(이전 갤러리 · Lambda 폴백). 그때 추천은 예전 식이다.
+    reco_min_face_coverage: float = 0.9
+    #: 연사의 화질 또는 미학 백분위 중앙값이 이 값 이하면 뒤로 미룬다(빼지 않는다).
+    reco_low_pct: float = 10.0
+    #: 컷 규격 점수에서 웃음의 무게.
+    reco_smile_weight: float = 0.5
+    #: 눈 위험 로지스틱의 계수 — 상수 · 감김 · 감김² · 감김×웃음.
+    reco_eye_risk: tuple[float, float, float, float] = (-3.86, 2.58, 1.96, -1.84)
+
     # ── 2층(1층 안의 임베딩 그룹) ──
     #: concat(DINOv3⊕CLIP) 평균연결 계층 클러스터의 코사인 거리 임계. 갤러리 1 실측: 0.2 에서 촬영 세트와 일치.
     group_distance: float = 0.2

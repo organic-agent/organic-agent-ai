@@ -30,7 +30,7 @@ log = logging.getLogger(__name__)
 PREVIEW_DOWNLOAD_WORKERS = 16
 
 #: categorize 가 `sub_scores` 에 쓰는 키. 쓸 때 이 키들만 지우고 새 값을 병합한다 — 나머지 키는 score 의 것이다.
-RANK_SUB_SCORE_KEYS = ("sharpness_pct", "rank_reason")
+RANK_SUB_SCORE_KEYS = ("sharpness_pct", "rank_reason", "reco_base")
 
 #: 화질 점수(score 2단계)가 끝났나. 2단계를 나눈 뒤의 score 는 `quality_scored_at` 을 찍고, 그 전의 score 는 한 번에 계산해
 #: `technical_score` 를 남겼다 — 둘 중 하나면 끝난 것이다(배포 순서가 섞여도 옛 점수를 "없음"으로 읽지 않는다).

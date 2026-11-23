@@ -58,7 +58,7 @@ def rank(gallery_id: int, settings: Settings | None = None) -> dict:
     settings = settings or Settings.from_env()
     conn = connection.connect(settings)
     try:
-        result = pipeline.rank(DbStore(settings, conn), str(gallery_id))
+        result = pipeline.rank(DbStore(settings, conn), str(gallery_id), settings)
         log.info("완료: %s", result)
         return result
     finally:
