@@ -4,7 +4,8 @@
     CLIP ViT-L/14 + LAION MLP   → aesthetic_score
         CLIP 벡터는 저장한다 (photo_analysis.clip_embedding) — categorize 가 재계산 없이 읽는다
         같은 벡터에 텍스트 프롬프트를 대어 subjects(피사체)도 여기서
-    고전 지표                    → sharpness · highlight_clip · shadow_clip · mean_luma (sub_scores)
+    고전 지표                    → sharpness · highlight_clip · shadow_clip · mean_luma · is_bw (sub_scores)
+    얼굴 값(YuNet + MediaPipe)   → face_n · face_measured · eye_blink · eye_smile · smile (sub_scores, #164)
     → store.write_scores  (subjects · sub_scores · clip_embedding · pipeline_version 만)
 
 한 장은 한 번만 디코드해서(1024px PIL) 세 러너에 넘기고, CLIP 은 `clip_batch` 장씩, ARNIQA 는 `arniqa_batch` 장씩 한 forward 로
@@ -32,7 +33,7 @@ from typing import Callable
 import numpy as np
 
 from score.config.settings import PIPELINE_VERSION, Settings
-from score.domain.photo import PhotoAnalysis, PhotoRef
+from score.domain.photo import FACE_UNMEASURED, PhotoAnalysis, PhotoRef
 from score.domain.run import ScoreResult
 from score.infrastructure.images import load_for_clip, load_image
 from score.repository.store import Store
@@ -82,6 +83,19 @@ def _load_runners():
     return classical, ArniqaRunner, LaionRunner, SubjectsTagger
 
 
+def _load_face(enabled: bool):
+    """얼굴 러너(#164). 못 올리면 None — 얼굴 값은 추천의 재료일 뿐이라 없다고 점수 전체를 막지 않는다.
+    이미지 빌드는 러너를 한 번 만들어 보므로(Dockerfile) 깨진 설치는 배포 전에 드러난다."""
+    if not enabled:
+        return None
+    try:
+        from score.infrastructure.runners.face import FaceRunner
+        return FaceRunner()
+    except Exception as exc:  # noqa: BLE001
+        log.error("[score] 얼굴 러너를 올리지 못했다 — 얼굴 값 없이 계속한다: %s", exc)
+        return None
+
+
 def _as_dt(value) -> datetime | None:
     """DB 는 timestamptz(datetime), 로컬은 ISO 문자열. tz 없는 값은 UTC 로 본다."""
     if value is None:
@@ -105,6 +119,7 @@ class Scorer:
         self.arniqa = ArniqaRunner(long_edge=k.arniqa_long_edge, device=k.device, fp16=k.fp16)
         self.device = getattr(self.laion, "device", None)
         self.tagger = SubjectsTagger(self.laion) if k.subjects_zero_shot else None
+        self.face = _load_face(k.face_values)
         self.load_seconds = time.monotonic() - t0
         log.info("[score] 러너 로드 %.1fs · %s · clip_batch=%d arniqa_batch=%d fp16=%s decode_workers=%d",
                  self.load_seconds, _compute_env(self.device), k.clip_batch, k.arniqa_batch, k.fp16, k.decode_workers)
@@ -126,6 +141,16 @@ class Scorer:
         took = time.monotonic() - t0
         log.info("[score] 워밍 %.1fs", took)
         return took
+
+    def face_values(self, img) -> dict:
+        """디코드한 사진의 얼굴 값(#164). 러너가 없으면 빈 dict(키를 쓰지 않는다), 재다가 죽으면 None 값 — 사진은 실패가 아니다."""
+        if self.face is None:
+            return {}
+        try:
+            return self.face.measure(img)
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[score] 얼굴 값 실패 (%s) — 빈 값으로 둔다", exc)
+            return dict(FACE_UNMEASURED)
 
     def score(self, store: Store, gallery: str, todo: list[PhotoRef], settings: Settings, result: ScoreResult,
               stage: dict[str, float], remaining_seconds: Callable[[], float] | None = None,
@@ -156,7 +181,7 @@ class Scorer:
                 return img, {}, 0.0, laion.prepare(img), None
             img = load_image(ref.path)
             t = time.monotonic()
-            cl = classical.measure(img)
+            cl = {**classical.measure(img), **self.face_values(img)}   # 장별 CPU 지표 — 얼굴 값도 여기서(스레드)
             t_cl = time.monotonic() - t
             return img, cl, t_cl, laion.prepare(img), arniqa.prepare(img)
 
@@ -300,7 +325,7 @@ class Scorer:
 
         def prepare(ref: PhotoRef):
             img = load_image(ref.path)
-            return img, classical.measure(img), arniqa.prepare(img)
+            return img, {**classical.measure(img), **self.face_values(img)}, arniqa.prepare(img)
 
         def safe_prepare(ref: PhotoRef):
             try:

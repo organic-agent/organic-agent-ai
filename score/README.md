@@ -19,7 +19,8 @@
      ├─ score_from_embedding → aesthetic_score (LAION MLP)
      └─ SubjectsTagger.tag   → subjects (bride|groom|couple|group|unknown, margin < 0.01 → unknown)
   ArniqaRunner.score        → technical_score (spaq 회귀기)
-  classical.measure         → sharpness · highlight_clip · shadow_clip · mean_luma
+  classical.measure         → sharpness · highlight_clip · shadow_clip · mean_luma · is_bw
+  FaceRunner.measure        → face_n · face_measured · eye_blink · eye_smile · smile (주인공 얼굴의 눈 감김 · 웃음, #164)
 → store.write_scores  (subjects · sub_scores · clip_embedding · pipeline_version 만)
 ```
 
@@ -51,11 +52,11 @@ score/
 │   ├── service/               job.py(photoIds 경로 = 운영 폴백 / 갤러리 경로 = 로컬·벤치마크, 잡·체인 없음 #98)
 │   │                          · pipeline.py(SCORE 본체 — 위 그림. Scorer 러너 1회 로드 · 디코드 1회 · CLIP/ARNIQA 배치 · 배치 쓰기 · 데드라인 정지)
 │   │                          · worker.py(GPU 워커 루프 #75: photo_analysis SKIP LOCKED 32장 집기 → 점수 → commit, 유휴면 자기 정지)
-│   │                          · classical.py(Laplacian 선명도 · 노출 클립 · 평균 밝기) · subjects.py(CLIP zero-shot — SubjectsTagger)
+│   │                          · classical.py(Laplacian 선명도 · 노출 클립 · 평균 밝기 · 흑백 여부) · subjects.py(CLIP zero-shot — SubjectsTagger)
 │   ├── domain/                photo.py(PhotoRef · PhotoAnalysis) · run.py(ScoreResult) · errors.py(PREVIEW_MISSING · SCORE_FAILED) — 로직 없음
 │   ├── repository/            connection.py(Postgres 접속) · photos.py(대상 조회: load_db · load_by_ids) · store.py(LocalStore(out/v3/) · DbStore — write_scores · claim_batch · write_errors)
 │   │                          · storage.py(S3 미리보기 · download_previews, 404 → missing) · dataset.py(로컬 데이터셋 폴더: list_galleries · load_local)
-│   ├── infrastructure/        runners/(ArniqaRunner — torch.hub SHA 고정 · LaionRunner — open_clip + MLP) · device.py(cuda → mps → cpu · fp16 autocast)
+│   ├── infrastructure/        runners/(ArniqaRunner — torch.hub SHA 고정 · LaionRunner — open_clip + MLP · FaceRunner — YuNet + MediaPipe, torch 없음) · device.py(cuda → mps → cpu · fp16 autocast)
 │   │                          · images.py(PIL 로드 — load_image · fit_long_edge · as_image) · ec2.py(IMDS · StopInstances) · gpu.py(NVML 사용률 표본)
 │   └── config/settings.py     Settings · Knobs · PIPELINE_VERSION · MODULE_ROOT
 ├── tests/test_score.py   pytest 40 — 재개 · 컬럼 경계 · 배치/데드라인 · CLIP/ARNIQA 배치·실패 격리 · 프리페치 · 집기(SKIP LOCKED·error) · GPU 워커 루프 · photoIds 폴백 · handler 계약 · categorize 와의 상수 일치
@@ -141,7 +142,8 @@ DB_HOST=localhost DB_PORT=15432 … .venv/bin/python scripts/snapshot_scores.py 
 ```
 
 손잡이(환경변수): `SCORE_DEVICE`(auto) · `SCORE_FP16`(cuda 만) · `CLIP_BATCH` · `ARNIQA_BATCH`(같은 크기끼리만 묶임) ·
-`SCORE_DECODE_WORKERS`(디코드·classical 프리페치 스레드, Lambda 는 0) · `SCORE_DOWNLOAD_WORKERS`(S3 동시 다운로드, 기본 8).
+`SCORE_DECODE_WORKERS`(디코드·classical 프리페치 스레드, Lambda 는 0) · `SCORE_DOWNLOAD_WORKERS`(S3 동시 다운로드, 기본 8) ·
+`SCORE_FACE_VALUES`(얼굴 값, 기본 켬. 0 이면 얼굴 키를 쓰지 않는다).
 CPU 경로는 이 손잡이가 기본값일 때 이전과 비트 단위로 같다(16장 검증).
 
 ## 배포
@@ -154,4 +156,20 @@ ARNIQA hub)는 빌드 시 `/opt` 아래에 굽는다 — NAT 없는 서브넷이
 ## wes 가 읽는 계약
 
 `photo_analysis.subjects` · `sub_scores{technical_score, aesthetic_score, sharpness, highlight_clip, shadow_clip, subjects_margin}` · `clip_embedding` · `pipeline_version`. 키 이름을 바꾸면 wes·categorize 와 함께 바꾼다.
+
+얼굴 값과 흑백 여부(#164)도 `sub_scores` 에 쌓는다. 지금은 쌓기만 하고 읽는 곳이 없다 — 추천은 그대로다.
+
+| 키 | 뜻 |
+|---|---|
+| `face_n` | 주인공 얼굴 수(0~2). 키 큰 순 둘 중 가장 큰 얼굴의 절반 이상인 것 |
+| `face_measured` | 그중 값을 잰 얼굴 수. 옆얼굴 · 작은 얼굴은 재지 못한다 |
+| `eye_blink` | 가장 많이 감긴 얼굴의 눈 감김(0~1) |
+| `eye_smile` | 그 얼굴의 웃음(0~1) |
+| `smile` | 주인공 얼굴의 웃음 평균(0~1) |
+| `is_bw` | 흑백 사진이면 1 |
+
+- 값은 화질 점수와 같은 단계에서 잰다. 두 단계로 나눠 돌 때(GPU 워커)는 2단계다 — 폴더가 기다리는 1단계에는 넣지 않았다.
+- 재지 못한 값은 `null` 로 쓴다(키를 빼면 병합 때 이전 값이 남는다). `face_n` 이 `null` 이면 러너가 죽은 것, 0 이면 얼굴이 없는 것.
+- 이 변경 전에 점수를 낸 사진에는 키가 없다. `PIPELINE_VERSION` 은 올리지 않았다 — 올리면 전 갤러리가 다시 계산된다.
+- 값은 미리보기를 줄이는 방식에 민감하다. 같은 사진을 조금 다르게 줄이면 사진의 5~9% 에서 값이 0.05 넘게 달라진다(실측).
 설계 근거·역사는 `docs/photoselect/`(review-v3-design.md, pipeline-history.md).

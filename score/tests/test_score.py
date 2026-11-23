@@ -102,6 +102,8 @@ def fake_runners(monkeypatch):
     classical.measure = lambda source: {"sharpness": 100.0, "highlight_clip": 0.0, "shadow_clip": 0.0, "mean_luma": 120.0}
     _fake_module(monkeypatch, "score.infrastructure.runners", runners)
     _fake_module(monkeypatch, "score.service.classical", classical)
+    # 얼굴 러너(#164)는 모델 파일을 받으므로 기본은 없음 — 얼굴 값을 보는 테스트가 가짜를 끼운다.
+    monkeypatch.setattr(pipeline, "_load_face", lambda enabled: None)
     return laion
 
 
@@ -950,3 +952,143 @@ def test_split_flag_reads_from_env(monkeypatch, tmp_path):
     assert Settings.from_env().knobs.split is True
     monkeypatch.setenv("SCORE_SPLIT", "0")
     assert Settings.from_env().knobs.split is False
+
+
+# ── 얼굴 값 (#164) ────────────────────────────────────────────────────────────
+_FACE = {"face_n": 2, "face_measured": 2, "eye_blink": 0.6, "eye_smile": 0.1, "smile": 0.3}
+_FACE_KEYS = set(_FACE)
+
+
+class _FakeFace:
+    def __init__(self, boom: bool = False):
+        self.boom, self.seen = boom, 0
+
+    def measure(self, image):
+        self.seen += 1
+        if self.boom:
+            raise RuntimeError("landmarker died")
+        return dict(_FACE)
+
+
+def test_face_values_are_stored_next_to_quality_scores(tmp_path, fake_runners, monkeypatch):
+    """한 번에 계산할 때: 얼굴 값이 화질 지표와 같은 sub_scores 에 들어간다. 사진마다 한 번만 잰다."""
+    store, refs, scored, settings = _world(tmp_path)
+    face = _FakeFace()
+    monkeypatch.setattr(pipeline, "_load_face", lambda enabled: face if enabled else None)
+    new = refs[len(scored):]
+
+    result = pipeline.run(store, "g", new, settings, force=True)
+
+    assert result["processed"] == len(new) and face.seen == len(new)
+    sub = {r.photo_id: r for r in store.read_analysis("g")}[new[0].photo_id].sub_scores
+    assert {k: sub[k] for k in _FACE} == _FACE and "technical_score" in sub and "sharpness" in sub
+
+
+def test_face_runner_failure_never_fails_the_photo(tmp_path, fake_runners, monkeypatch):
+    """얼굴 값을 재다가 죽어도 사진은 실패가 아니다 — 점수는 그대로 쓰고 얼굴 키는 None 으로 남긴다(이전 값이 남지 않게)."""
+    store, refs, scored, settings = _world(tmp_path)
+    monkeypatch.setattr(pipeline, "_load_face", lambda enabled: _FakeFace(boom=True))
+    new = refs[len(scored):]
+
+    result = pipeline.run(store, "g", new, settings, force=True)
+
+    assert result["processed"] == len(new) and result["failed"] == []
+    sub = {r.photo_id: r for r in store.read_analysis("g")}[new[0].photo_id].sub_scores
+    assert all(sub[k] is None for k in _FACE_KEYS) and sub["technical_score"] == 0.6
+
+
+def test_face_values_knob_off_or_runner_missing_writes_no_face_keys(tmp_path, fake_runners, monkeypatch):
+    """손잡이를 끄거나 러너를 못 올리면 얼굴 키를 아예 쓰지 않는다."""
+    store, refs, scored, _ = _world(tmp_path)
+    asked = []
+    monkeypatch.setattr(pipeline, "_load_face", lambda enabled: asked.append(enabled))   # None 을 돌려준다
+    settings = Settings(out_root=tmp_path / "out", dataset_root=tmp_path / "dataset", knobs=Knobs(write_batch=4, face_values=False))
+    new = refs[len(scored):]
+
+    pipeline.run(store, "g", new, settings, force=True)
+
+    assert asked == [False]
+    sub = {r.photo_id: r for r in store.read_analysis("g")}[new[0].photo_id].sub_scores
+    assert not (_FACE_KEYS & set(sub)) and "technical_score" in sub
+
+
+def test_face_values_run_in_quality_stage_not_in_fast_stage(tmp_path, fake_runners, monkeypatch):
+    """두 단계로 나눌 때: 1단계(폴더가 기다리는 것)는 얼굴을 재지 않고, 2단계(화질 점수)가 잰다."""
+    store, refs, scored, settings = _world(tmp_path)
+    face = _FakeFace()
+    monkeypatch.setattr(pipeline, "_load_face", lambda enabled: face)
+    new = refs[len(scored):]
+
+    pipeline.run(store, "g", new, settings, force=True, stage=pipeline.STAGE_FAST)
+    assert face.seen == 0
+    assert not (_FACE_KEYS & set({r.photo_id: r for r in store.read_analysis("g")}[new[0].photo_id].sub_scores))
+
+    pipeline.run(store, "g", new, settings, force=True, stage=pipeline.STAGE_QUALITY)
+    assert face.seen == len(new)
+    sub = {r.photo_id: r for r in store.read_analysis("g")}[new[0].photo_id].sub_scores
+    assert sub["eye_blink"] == 0.6 and sub["technical_score"] == 0.6 and "aesthetic_score" in sub
+
+
+def test_load_face_returns_none_when_runner_cannot_start(monkeypatch):
+    """러너를 올리다 죽으면(라이브러리 · 모델 파일) None — 점수 계산은 얼굴 값 없이 계속된다."""
+    from score.infrastructure.runners import face as face_module
+
+    def boom():
+        raise OSError("libGL.so.1: cannot open shared object file")
+
+    monkeypatch.setattr(face_module, "FaceRunner", boom)
+    assert pipeline._load_face(True) is None and pipeline._load_face(False) is None
+
+
+def test_main_faces_keeps_two_tallest_drops_small_ones_and_orders_left_to_right():
+    from score.infrastructure.runners.face import main_faces
+
+    big_right, big_left, small, tiny = (600, 100, 80, 100), (200, 110, 70, 90), (400, 300, 30, 40), (50, 50, 10, 12)
+    assert main_faces([]) == []
+    assert main_faces([tiny]) == [tiny]
+    assert main_faces([small, big_right, tiny, big_left]) == [big_left, big_right]   # 큰 둘만, 왼쪽부터
+    assert main_faces([big_right, small]) == [big_right]                             # 절반에 못 미치는 얼굴은 주인공이 아니다
+
+
+def test_face_measure_reports_worst_eye_its_smile_and_mean_smile():
+    """가장 감긴 얼굴의 눈 값과 그 얼굴의 웃음, 주인공 평균 웃음. 랜드마크가 실패한 얼굴은 세지 않는다."""
+    from score.infrastructure.runners.face import FaceRunner
+
+    runner = object.__new__(FaceRunner)   # 모델 없이 계산만 본다
+    shapes = {"L": {"eyeBlinkLeft": 0.2, "eyeBlinkRight": 0.7, "mouthSmileLeft": 0.1, "mouthSmileRight": 0.3},
+              "R": {"eyeBlinkLeft": 0.1, "eyeBlinkRight": 0.1, "mouthSmileLeft": 0.8, "mouthSmileRight": 0.8}, "X": None}
+    img = Image.new("RGB", (64, 64))
+
+    runner.detect = lambda image: ["L", "R"]
+    runner.blendshapes = lambda image, box: shapes[box]
+    out = runner.measure(img)
+    assert out["face_n"] == 2 and out["face_measured"] == 2
+    assert out["eye_blink"] == 0.7 and out["eye_smile"] == pytest.approx(0.2) and out["smile"] == pytest.approx(0.5)
+
+    runner.detect = lambda image: ["X", "R"]
+    out = runner.measure(img)
+    assert out["face_n"] == 2 and out["face_measured"] == 1 and out["eye_blink"] == 0.1 and out["smile"] == pytest.approx(0.8)
+
+    runner.detect = lambda image: ["X"]
+    assert runner.measure(img) == {"face_n": 1, "face_measured": 0, "eye_blink": None, "eye_smile": None, "smile": None}
+    runner.detect = lambda image: []
+    assert runner.measure(img)["face_n"] == 0
+
+
+def test_classical_marks_black_and_white_photos(tmp_path):
+    from score.service import classical
+
+    rng = np.random.default_rng(1)
+    color = Image.fromarray(rng.integers(0, 255, (300, 400, 3), dtype=np.uint8))
+    gray_path = tmp_path / "bw.jpg"
+    color.convert("L").convert("RGB").save(gray_path, quality=82)     # JPEG 색 잡음이 섞여도 흑백이다
+    assert classical.measure(color)["is_bw"] == 0
+    assert classical.measure(str(gray_path))["is_bw"] == 1
+
+
+def test_face_values_flag_reads_from_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("SCORE_FACE_VALUES", "0")
+    assert Settings.from_env().knobs.face_values is False
+    monkeypatch.delenv("SCORE_FACE_VALUES")
+    assert Settings.from_env().knobs.face_values is True
+

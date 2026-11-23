@@ -5,6 +5,10 @@
 # 이미지는 약 6GB(CPU 이미지 1.5GB) — 가중치·CUDA 라이브러리 몫.
 FROM python:3.12-slim-bookworm
 
+# 얼굴 값(#164)의 MediaPipe · OpenCV 가 여는 시스템 라이브러리 — slim 이미지에는 없고, 없으면 import 에서 죽는다.
+RUN apt-get update && apt-get install -y --no-install-recommends libgl1 libegl1 libgles2 libglib2.0-0 \
+ && rm -rf /var/lib/apt/lists/*
+
 RUN pip install --no-cache-dir torch==2.4.1 torchvision==0.19.1 --index-url https://download.pytorch.org/whl/cu121
 
 WORKDIR /app
@@ -19,13 +23,14 @@ RUN mkdir -p /opt/rds-ca \
 
 COPY score/ /app/score/
 
-# 가중치를 빌드 타임에 굽는다(CLIP · LAION MLP · ARNIQA hub). 빌드 머신에는 GPU 가 없어 cpu 로 로드된다 — 캐시만 채우는 것이라 상관없다.
+# 가중치를 빌드 타임에 굽는다(CLIP · LAION MLP · ARNIQA hub · 얼굴 모델 둘). 빌드 머신에는 GPU 가 없어 cpu 로 로드된다 — 캐시만 채우는 것이라 상관없다.
 ENV HOME=/opt/home \
     TORCH_HOME=/opt/torch \
     SCORE_WORK=/tmp/score \
     PYTHONUNBUFFERED=1
 RUN mkdir -p /opt/home /opt/torch \
- && SCORE_DEVICE=cpu python -c "from score.infrastructure.runners import LaionRunner, ArniqaRunner; LaionRunner(); ArniqaRunner()"
+ && SCORE_DEVICE=cpu python -c "from score.infrastructure.runners import LaionRunner, ArniqaRunner; LaionRunner(); ArniqaRunner()" \
+ && python -c "from score.infrastructure.runners.face import FaceRunner; from PIL import Image; print(FaceRunner().measure(Image.new('RGB', (683, 1024))))"
 
 # GPU 손잡이(wes #274 S-6). 기본값(settings.py Knobs)은 Lambda(CPU)용이라, 이 이미지는 GPU 벤치마크(#68)에서 고른 값을 쓴다.
 # 인프라 유닛은 이 값을 넘기지 않는다 — 값의 주인은 여기 하나. 급할 때는 유닛의 `docker run -e` 로 덮는다.
