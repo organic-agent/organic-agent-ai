@@ -38,7 +38,7 @@ Bedrock 호출 = 1층 1회(이미지 ≤ 40) + 2층 (그룹이 둘 이상인 1�
 
 **순위는 화질 점수가 다 찬 뒤에(wes #274 2물결).** score 가 1단계(CLIP·피사체)와 2단계(화질 점수)로 나뉘면 폴더는 1단계만 기다린다.
 갤러리에 화질 점수(`quality_scored_at`, 옛 score 면 `technical_score`)가 덜 찬 사진이 한 장이라도 있으면 백분위·연사 대표 순위·
-`sharpness_pct`·`rank_reason`·`reco_base` 는 비워 두고 폴더용(연사 묶음·구간·그룹·이름)만 쓴다 — 점수 없는 사진을 50 으로 채우면 가짜 순위가
+`sharpness_pct`·`rank_reason`·`reco_base`·`reco_cut` 은 비워 두고 폴더용(연사 묶음·구간·그룹·이름)만 쓴다 — 점수 없는 사진을 50 으로 채우면 가짜 순위가
 완료처럼 보인다. 연사 묶음·그룹·이름은 점수를 쓰지 않아 결과가 같다. 다 차면 wes 가 rank 모드(`{galleryId, mode: "rank"}`)를 보내고,
 저장된 `burst_id` 로 백분위·순위만 다시 매긴다(Bedrock·잡 없음). `sub_scores` 는 score 와 키를 나눠 쓰므로 categorize 의 키만 갈아 끼운다.
 
@@ -115,6 +115,7 @@ score 가 쌓은 얼굴 값(눈 감김 · 웃음, score #164)을 순위로 바�
 | 값 없는 컷 | 같은 연사의 중앙값, 연사 전체가 없으면 갤러리 중앙값 |
 | 거름 | 화질 또는 미학 백분위 중앙값이 10 이하인 연사, 흑백이 과반인 연사를 뒤로. 빼지 않는다 |
 | `reco_base` | (흑백 → 거름 → 연사 크기 → 컷 규격 점수) 순서의 갤러리 안 백분위. 앞일수록 100 |
+| `reco_cut` | 컷 규격 점수 그대로(#172). wes 가 폴더 추천에서 추천 평균보다 낮은 컷을 뺄 때 읽는다. `reco_base` 와 같이 있거나 같이 없다 |
 | 연사 대표 | 컷 규격 점수 우선, 같으면 예전 규칙. 규격으로 갈렸으면 `rank_reason` = `face` |
 
 - **얼굴 값 단계가 돈 사진이 90% 미만이면 쓰지 않는다.** `reco_base` 키가 없고 연사 대표도 예전 규칙이다. 이전에 분석한 갤러리와
@@ -126,7 +127,7 @@ score 가 쌓은 얼굴 값(눈 감김 · 웃음, score #164)을 순위로 바�
 ## wes 가 읽는 계약 — 바꾸면 wes 와 함께 바꾼다
 
 - `photo_analysis`: `technical_pct` · `aesthetic_pct` · `burst_id` · `burst_rank` · `embed_group_id` ·
-  `sub_scores{sharpness_pct, rank_reason, reco_base}`(score 의 키에 더해서). `reco_base` 는 없을 수 있다 — 없으면 화질 · 미학 백분위로
+  `sub_scores{sharpness_pct, rank_reason, reco_base, reco_cut}`(score 의 키에 더해서). `reco_base` · `reco_cut` 은 없을 수 있다 — 없으면 화질 · 미학 백분위로
 - `concept_assignments`: `job_id` · `embed_group_id` · `concept_name` · `detail_name` · `confidence` · `assigned_by`.
   `needs_review` 는 쓰지 않는다(컬럼 기본값 false, wes 는 V34 부터 읽지 않는다. 컬럼 삭제는 wes).
   `concept_name` 은 자유 이름이고 갤러리 안에서 유일하다. `proposed_concept_name` · `clip_concept_name` 은 더 쓰지 않는다(NULL, 컬럼 삭제는 wes)
