@@ -1050,29 +1050,154 @@ def test_main_faces_keeps_two_tallest_drops_small_ones_and_orders_left_to_right(
     assert main_faces([big_right, small]) == [big_right]                             # 절반에 못 미치는 얼굴은 주인공이 아니다
 
 
-def test_face_measure_reports_worst_eye_its_smile_and_mean_smile():
-    """가장 감긴 얼굴의 눈 값과 그 얼굴의 웃음, 주인공 평균 웃음. 랜드마크가 실패한 얼굴은 세지 않는다."""
+def _measuring_runner(shapes_by_x: dict):
+    """모델 없이 계산만 보는 FaceRunner — 상자의 x 로 블렌드셰이프(또는 None = 못 잼)를 고른다.
+    dict 대신 x 의 list 를 주면 검출만 하는 러너(`landmarks=False`)다 — 값은 LoRA 측정기가 잰다."""
     from score.infrastructure.runners.face import FaceRunner
 
-    runner = object.__new__(FaceRunner)   # 모델 없이 계산만 본다
-    shapes = {"L": {"eyeBlinkLeft": 0.2, "eyeBlinkRight": 0.7, "mouthSmileLeft": 0.1, "mouthSmileRight": 0.3},
-              "R": {"eyeBlinkLeft": 0.1, "eyeBlinkRight": 0.1, "mouthSmileLeft": 0.8, "mouthSmileRight": 0.8}, "X": None}
-    img = Image.new("RGB", (64, 64))
+    runner = object.__new__(FaceRunner)
+    runner.landmarks = isinstance(shapes_by_x, dict)
+    runner.detect = lambda image: [(float(x), 8.0, 16.0, 20.0) for x in shapes_by_x]
+    runner.blendshapes = lambda image, box: shapes_by_x[int(box[0])]   # 검출만 하는 러너(xs 가 list)는 부르지 않는다
+    return runner
 
-    runner.detect = lambda image: ["L", "R"]
-    runner.blendshapes = lambda image, box: shapes[box]
-    out = runner.measure(img)
-    assert out["face_n"] == 2 and out["face_measured"] == 2
+
+_BLINKING = {"eyeBlinkLeft": 0.2, "eyeBlinkRight": 0.7, "mouthSmileLeft": 0.1, "mouthSmileRight": 0.3}
+_SMILING = {"eyeBlinkLeft": 0.1, "eyeBlinkRight": 0.1, "mouthSmileLeft": 0.8, "mouthSmileRight": 0.8}
+
+
+def test_face_measure_reports_worst_eye_its_smile_and_mean_smile():
+    """가장 감긴 얼굴의 눈 값과 그 얼굴의 웃음, 주인공 평균 웃음. 랜드마크가 실패한 얼굴은 세지 않는다."""
+    img = Image.new("RGB", (64, 80))
+
+    out = _measuring_runner({4: _BLINKING, 40: _SMILING}).measure(img)
+    assert out["face_n"] == 2 and out["face_measured"] == 2 and out["face_src"] == "mp"
     assert out["eye_blink"] == 0.7 and out["eye_smile"] == pytest.approx(0.2) and out["smile"] == pytest.approx(0.5)
+    assert out["faces"][0] == {"box": [0.0625, 0.1, 0.25, 0.25], "blink": 0.7, "smile": pytest.approx(0.2), "src": "mp"}
+    assert "_pending" not in out
 
-    runner.detect = lambda image: ["X", "R"]
-    out = runner.measure(img)
+    out = _measuring_runner({4: None, 40: _SMILING}).measure(img)
     assert out["face_n"] == 2 and out["face_measured"] == 1 and out["eye_blink"] == 0.1 and out["smile"] == pytest.approx(0.8)
+    assert out["faces"][0]["src"] is None and out["faces"][0]["blink"] is None
 
-    runner.detect = lambda image: ["X"]
-    assert runner.measure(img) == {"face_n": 1, "face_measured": 0, "eye_blink": None, "eye_smile": None, "smile": None}
-    runner.detect = lambda image: []
-    assert runner.measure(img)["face_n"] == 0
+    out = _measuring_runner({4: None}).measure(img)
+    assert out["face_n"] == 1 and out["face_measured"] == 0 and out["eye_blink"] is None and out["face_src"] is None
+
+
+# ── 얼굴 값을 LoRA 측정기로 재기 (#170, face_source = lora) ───────────────────
+class _FakeLora:
+    """크롭마다 [눈 감김, 웃음] — 묶음 안 순서대로 0.9·0.05, 0.2·0.6 을 번갈아 낸다."""
+
+    def __init__(self, boom: bool = False):
+        self.boom, self.batches = boom, []
+
+    def predict(self, crops):
+        self.batches.append([c.size for c in crops])
+        if self.boom:
+            raise RuntimeError("cuda out of memory")
+        return np.array([[0.9, 0.05], [0.2, 0.6]] * len(crops), dtype=np.float32)[:len(crops)]
+
+
+def _lora_scorer(lora, xs=(4, 40)):
+    scorer = object.__new__(pipeline.Scorer)
+    scorer.face, scorer.face_lora = _measuring_runner(list(xs)), lora
+    return scorer
+
+
+def test_detector_only_runner_hands_over_a_crop_per_face_and_no_values():
+    out = _measuring_runner([4, 40]).measure(Image.new("RGB", (64, 80)))
+    assert [(index, crop.size) for index, crop in out["_pending"]] == [(0, (256, 256)), (1, (256, 256))]
+    assert out["face_n"] == 2 and out["face_measured"] == 0 and out["eye_blink"] is None
+
+
+def test_lora_measures_every_face_in_one_batch_and_sets_photo_values():
+    """사진 여러 장의 얼굴을 한 묶음으로 추론하고, 사진의 값을 그 얼굴들로 낸다. 얼굴 값이 아닌 dict 는 건드리지 않는다."""
+    scorer = _lora_scorer(_FakeLora())
+    img = Image.new("RGB", (64, 80))
+    two, plain = scorer.face_values(img), {"sharpness": 1.0}
+    scorer.face = _measuring_runner([4])
+    one = scorer.face_values(img)
+
+    assert scorer.fill_faces([two, plain, one]) == 3
+    assert scorer.face_lora.batches == [[(256, 256)] * 3]
+    assert (two["face_n"], two["face_measured"], two["face_src"]) == (2, 2, "lora")
+    assert two["eye_blink"] == pytest.approx(0.9) and two["eye_smile"] == pytest.approx(0.05) and two["smile"] == pytest.approx(0.325)
+    assert two["faces"][1] == {"box": two["faces"][1]["box"], "blink": pytest.approx(0.2), "smile": pytest.approx(0.6), "src": "lora"}
+    assert one["eye_blink"] == pytest.approx(0.9) and one["face_measured"] == 1
+    assert "_pending" not in two and "_pending" not in one and plain == {"sharpness": 1.0}
+
+
+def test_lora_failure_leaves_faces_unmeasured_and_never_leaks_crops():
+    scorer = _lora_scorer(_FakeLora(boom=True))
+    values = scorer.face_values(Image.new("RGB", (64, 80)))
+
+    assert scorer.fill_faces([values]) == 0
+    assert "_pending" not in values and values["face_n"] == 2 and values["eye_blink"] is None and values["faces"][0]["src"] is None
+
+
+def test_lora_values_reach_the_store_in_both_paths(tmp_path, fake_runners, monkeypatch):
+    """한 번에 계산할 때도, 화질 단계에서도 LoRA 로 잰 값이 저장된다. 크롭은 저장되지 않는다."""
+    import json
+
+    store, refs, scored, _ = _world(tmp_path)
+    settings = Settings(out_root=tmp_path / "out", dataset_root=tmp_path / "dataset", knobs=Knobs(write_batch=4, face_source="lora"))
+    asked = []
+    monkeypatch.setattr(pipeline, "_load_face_measurer",
+                        lambda source, enabled, device, fp16: asked.append((source, enabled)) or (_measuring_runner([4, 40]), _FakeLora()))
+    new = refs[len(scored):]
+
+    result = pipeline.run(store, "g", new, settings, force=True)
+    sub = {r.photo_id: r for r in store.read_analysis("g")}[new[0].photo_id].sub_scores
+    assert asked == [("lora", True)] and result["facesFilled"] == 2 * len(new)
+    assert sub["face_src"] == "lora" and sub["face_measured"] == 2 and sub["eye_blink"] is not None and "technical_score" in sub
+    assert sub["faces"][0]["src"] == "lora" and "_pending" not in sub and json.dumps(sub)
+
+    result = pipeline.run(store, "g", new, settings, force=True, stage=pipeline.STAGE_QUALITY)
+    sub = {r.photo_id: r for r in store.read_analysis("g")}[new[0].photo_id].sub_scores
+    assert result["facesFilled"] == 2 * len(new) and sub["face_src"] == "lora" and "_pending" not in sub
+
+
+def test_face_measurer_falls_back_to_mediapipe_when_lora_cannot_start(monkeypatch):
+    """측정기를 못 올리면(백본 없는 이미지 등) MediaPipe 러너로 물러난다. 얼굴 값을 껐으면 아무것도 올리지 않는다."""
+    import score.infrastructure.runners.face as face_module
+
+    class Detector:
+        def __init__(self, landmarks=True):
+            self.landmarks = landmarks
+
+    def boom(**kwargs):
+        raise OSError("DINOv3 가 캐시에 없다")
+
+    monkeypatch.setattr(face_module, "FaceRunner", Detector)
+    monkeypatch.setitem(__import__("sys").modules, "score.infrastructure.runners.face_lora", SimpleNamespace(FaceValueRunner=boom))
+    face, lora = pipeline._load_face_measurer("lora", True, None, False)
+    assert face.landmarks is True and lora is None
+    monkeypatch.setitem(__import__("sys").modules, "score.infrastructure.runners.face_lora", SimpleNamespace(FaceValueRunner=lambda **kw: "student"))
+    face, lora = pipeline._load_face_measurer("lora", True, None, False)
+    assert face.landmarks is False and lora == "student"
+    face, lora = pipeline._load_face_measurer("mediapipe", True, None, False)
+    assert face.landmarks is True and lora is None
+    assert pipeline._load_face_measurer("lora", False, None, False) == (None, None)
+
+
+def test_face_source_defaults_to_mediapipe_and_reads_from_env(monkeypatch):
+    monkeypatch.delenv("SCORE_FACE_SOURCE", raising=False)
+    assert Settings.from_env().knobs.face_source == "mediapipe"
+    monkeypatch.setenv("SCORE_FACE_SOURCE", "lora")
+    assert Settings.from_env().knobs.face_source == "lora"
+
+
+def test_merge_lora_adds_scaled_low_rank_update_to_the_matching_weight():
+    import torch
+
+    from score.infrastructure.runners.face_lora import merge_lora
+
+    state = {"layer.0.attention.q_proj.weight": torch.zeros(3, 3), "layer.0.attention.k_proj.weight": torch.ones(3, 3)}
+    lora = {"layer.0.attention.q_proj.lora_A": torch.tensor([[1.0, 0.0, 2.0]]), "layer.0.attention.q_proj.lora_B": torch.tensor([[1.0], [0.0], [3.0]])}
+    assert merge_lora(state, lora, scale=2.0) == 1
+    assert state["layer.0.attention.q_proj.weight"].tolist() == [[2.0, 0.0, 4.0], [0.0, 0.0, 0.0], [6.0, 0.0, 12.0]]
+    assert state["layer.0.attention.k_proj.weight"].eq(1).all()
+
 
 
 def test_classical_marks_black_and_white_photos(tmp_path):

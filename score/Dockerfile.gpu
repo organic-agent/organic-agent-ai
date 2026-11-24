@@ -32,6 +32,17 @@ RUN mkdir -p /opt/home /opt/torch \
  && SCORE_DEVICE=cpu python -c "from score.infrastructure.runners import LaionRunner, ArniqaRunner; LaionRunner(); ArniqaRunner()" \
  && python -c "from score.infrastructure.runners.face import FaceRunner; from PIL import Image; print(FaceRunner().measure(Image.new('RGB', (683, 1024))))"
 
+# 얼굴 값 측정기(#170)의 백본 DINOv3 — 게이트 모델이라 라이선스를 승인한 계정의 토큰으로 받는다(임베더와 같다).
+# 토큰은 빌드 시크릿으로만 넘긴다(ARG · ENV 는 이미지 히스토리에 남는다). 워커는 인터넷 없는 서브넷이라 런타임에는 받지 못한다 —
+# 여기서 굽고 오프라인으로 못박는다. 러너를 한 번 만들어 한 장 돌려 보므로 LoRA 가중치가 안 맞으면 빌드가 실패한다.
+ENV HF_HOME=/opt/hf
+RUN --mount=type=secret,id=hf_token,required=true \
+    HF_TOKEN="$(cat /run/secrets/hf_token)" SCORE_DEVICE=cpu \
+    python -c "from score.infrastructure.runners.face_lora import FaceValueRunner; from PIL import Image; \
+print(FaceValueRunner().predict([Image.new('RGB', (256, 256), (128, 128, 128))]))"
+ENV HF_HUB_OFFLINE=1 \
+    TRANSFORMERS_OFFLINE=1
+
 # GPU 손잡이(wes #274 S-6). 기본값(settings.py Knobs)은 Lambda(CPU)용이라, 이 이미지는 GPU 벤치마크(#68)에서 고른 값을 쓴다.
 # 인프라 유닛은 이 값을 넘기지 않는다 — 값의 주인은 여기 하나. 급할 때는 유닛의 `docker run -e` 로 덮는다.
 ENV CLIP_BATCH=32 \
@@ -43,6 +54,10 @@ ENV CLIP_BATCH=32 \
 # 점수 두 단계(wes #274 2물결, #151). 폴더가 기다리는 CLIP·피사체를 먼저 내고 화질 점수는 뒤에 채운다 — GPU 이미지만 켠다.
 # Lambda(CPU) 폴백은 이 값과 무관하게 한 번에 계산한다. 되돌리기: 이 줄을 0 으로(또는 유닛의 `docker run -e SCORE_SPLIT=0`).
 ENV SCORE_SPLIT=1
+
+# 얼굴 값(눈 감김 · 웃음)을 MediaPipe 대신 LoRA 측정기로 잰다(#170) — 백본을 구운 이 이미지만. 측정기를 못 올리면 MediaPipe 로 물러난다.
+# 되돌리기: 이 줄을 mediapipe 로(또는 유닛의 `docker run -e SCORE_FACE_SOURCE=mediapipe`).
+ENV SCORE_FACE_SOURCE=lora
 
 # 기본은 GPU 워커(#75): `docker run --gpus all <image>` → `python -m score worker --gpu`.
 # SageMaker 벤치마크는 `docker run <image> train` 으로 띄우므로 CMD 가 `train` 으로 바뀌어 sagemaker 진입점이 돈다.
