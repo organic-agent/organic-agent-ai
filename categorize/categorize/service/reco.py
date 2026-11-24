@@ -5,6 +5,8 @@
         웃음    = 주인공 얼굴의 웃음 평균(`smile`)
         값이 없는 컷(얼굴 없음 · 못 잼)은 같은 연사의 중앙값, 연사 전체가 없으면 갤러리 중앙값
     reco_base = (흑백 연사 → 화질·미학이 낮은 연사 → 연사 크기 → 컷 규격 점수) 순서의 갤러리 안 백분위. 앞일수록 100.
+    reco_cut  = 컷 규격 점수 그대로(#172). wes 가 폴더 추천에서 "추천 평균보다 낮은 컷"을 뺄 때 읽는다 — reco_base 는 연사 크기가
+                먼저라 컷의 좋고 나쁨만 따로 볼 수 없다.
 
 웃으면서 감은 눈은 위험이 낮고 애매하게 감긴 눈은 높다. 화질·미학은 순위의 근거가 아니라 "낮은 장면을 뒤로 미루는" 거름이다 —
 빼지 않는다. 흑백만 있는 폴더에서는 모든 연사에 같은 표시가 붙어 순서가 그대로다.
@@ -26,6 +28,8 @@ from categorize.config.settings import Knobs
 from categorize.domain.analysis import PhotoAnalysis
 
 RECO_BASE = "reco_base"
+#: 컷 규격 점수 그대로(#172) — wes 가 폴더 추천에서 약한 컷을 뺄 때 읽는다. `reco_base` 와 늘 같이 있거나 같이 없다.
+RECO_CUT = "reco_cut"
 
 
 def _burst_key(row: PhotoAnalysis):
@@ -74,12 +78,13 @@ def cut_scores(rows: list[PhotoAnalysis], k: Knobs) -> dict[str, float]:
 
 
 def set_reco_base(rows: list[PhotoAnalysis], k: Knobs) -> dict[str, float] | None:
-    """`sub_scores.reco_base` 를 채우고 컷 규격 점수를 돌려준다. 얼굴 값이 덜 찼으면 키를 지우고 None.
+    """`sub_scores.reco_base` · `reco_cut` 을 채우고 컷 규격 점수를 돌려준다. 얼굴 값이 덜 찼으면 두 키를 지우고 None.
 
     백분위가 이미 매겨진 행에만 부른다(`set_percentiles` 뒤) — 거름이 화질·미학 백분위를 읽는다."""
     if not rows or face_coverage(rows) < k.reco_min_face_coverage:
         for r in rows:
             r.sub_scores.pop(RECO_BASE, None)
+            r.sub_scores.pop(RECO_CUT, None)
         return None
     cut = cut_scores(rows, k)
     members: dict = defaultdict(list)
@@ -95,4 +100,5 @@ def set_reco_base(rows: list[PhotoAnalysis], k: Knobs) -> dict[str, float] | Non
     last = max(1, len(order) - 1)
     for rank, r in enumerate(order):
         r.sub_scores[RECO_BASE] = round(100.0 * (len(order) - 1 - rank) / last, 4) if len(order) > 1 else 100.0
+        r.sub_scores[RECO_CUT] = round(cut[r.photo_id], 4)
     return cut

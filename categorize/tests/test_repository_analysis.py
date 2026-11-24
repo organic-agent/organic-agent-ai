@@ -154,7 +154,7 @@ def test_write_groups_without_ranks_writes_null_and_merges_only_rank_keys(tmp_pa
     _db_store(tmp_path, conn).write_groups("7", [row])
 
     sql, params = conn.executed[0]
-    assert "sub_scores = (sub_scores - 'sharpness_pct' - 'rank_reason' - 'reco_base') || %s::jsonb" in sql
+    assert "sub_scores = (sub_scores - 'sharpness_pct' - 'rank_reason' - 'reco_base' - 'reco_cut') || %s::jsonb" in sql
     assert params[0] == (None, None, "{}", 2, None, 5, 11)
 
 

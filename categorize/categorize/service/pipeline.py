@@ -7,7 +7,7 @@
 
     백분위     technical_score · aesthetic_score · sharpness → *_pct (갤러리 안 순위)
     연사       E, 카메라 파티션 ∧ 순서 창 ∧ cos ≥ threshold      → burst_id · burst_rank
-    추천 점수  얼굴 값(눈 감김 · 웃음) · 거름 · 연사 크기          → sub_scores.reco_base   (service/reco.py, 얼굴 값이 찬 갤러리만)
+    추천 점수  얼굴 값(눈 감김 · 웃음) · 거름 · 연사 크기          → sub_scores.reco_base · reco_cut   (service/reco.py, 얼굴 값이 찬 갤러리만)
     구간       촬영 시각 공백(없으면 DINOv3 Ward)                  → segment.Segmentation   (service/segment.py)
     1층        구간 타일을 VLM 이 컨셉으로 묶고 이름                → naming.name_concepts   (conceptCount 는 선택)
     2층        1층마다 concat(E ⊕ C) 평균연결 계층 클러스터       → embed_group_id (갤러리 전체에서 유일)
@@ -110,6 +110,7 @@ def clear_ranks(rows: list[PhotoAnalysis]) -> None:
         r.sub_scores.pop("sharpness_pct", None)
         r.sub_scores.pop("rank_reason", None)
         r.sub_scores.pop(reco.RECO_BASE, None)
+        r.sub_scores.pop(reco.RECO_CUT, None)
 
 
 def rank(store: Store, gallery: str, settings: Settings | None = None) -> dict:

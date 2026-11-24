@@ -83,3 +83,14 @@ def test_clear_ranks_removes_reco_base():
     rows = [_row("a", 0, reco_base=70.0)]
     clear_ranks(rows)
     assert "reco_base" not in rows[0].sub_scores
+
+
+def test_cut_score_is_stored_next_to_reco_base_and_removed_together():
+    rows = [_row("open", 0, blink=0.1, smile=0.4), _row("ambiguous", 0, blink=0.6, smile=0.1), _row("other", 1)]
+    cut = reco.set_reco_base(rows, K)
+    assert all(r.sub_scores["reco_cut"] == round(cut[r.photo_id], 4) for r in rows)
+    assert rows[0].sub_scores["reco_cut"] > rows[1].sub_scores["reco_cut"]
+    stale = [_row("a", 0, face=False, reco_base=12.0, reco_cut=0.3), _row("b", 0, face=False)]
+    assert reco.set_reco_base(stale, K) is None and all("reco_cut" not in r.sub_scores for r in stale)
+    clear_ranks(rows)
+    assert all("reco_cut" not in r.sub_scores and "reco_base" not in r.sub_scores for r in rows)
