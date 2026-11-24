@@ -7,8 +7,10 @@ from dataclasses import dataclass, field
 
 #: 얼굴 값을 내지 못했을 때 `sub_scores` 에 쓰는 값(#164). 키를 빼지 않고 None 으로 쓴다 — `sub_scores` 는 합쳐서 저장하므로
 #: 빼면 이전 값이 남는다. `face_n` 이 None 이면 "재지 못함"(러너 오류), 0 이면 "얼굴 없음".
-FACE_UNMEASURED: dict[str, float | int | None] = {
+#: `face_src` · `faces` 는 값을 LoRA 측정기로도 재기 시작하며 더했다(#170).
+FACE_UNMEASURED: dict[str, object] = {
     "face_n": None, "face_measured": None, "eye_blink": None, "eye_smile": None, "smile": None,
+    "face_src": None, "faces": None,
 }
 
 

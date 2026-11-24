@@ -6,6 +6,7 @@
         같은 벡터에 텍스트 프롬프트를 대어 subjects(피사체)도 여기서
     고전 지표                    → sharpness · highlight_clip · shadow_clip · mean_luma · is_bw (sub_scores)
     얼굴 값(YuNet + MediaPipe)   → face_n · face_measured · eye_blink · eye_smile · smile (sub_scores, #164)
+      face_source = lora 면      → YuNet 검출 뒤 값은 DINOv3 + LoRA 측정기가 잰다. 같은 키 + face_src · faces (GPU 이미지, #170)
     → store.write_scores  (subjects · sub_scores · clip_embedding · pipeline_version 만)
 
 한 장은 한 번만 디코드해서(1024px PIL) 세 러너에 넘기고, CLIP 은 `clip_batch` 장씩, ARNIQA 는 `arniqa_batch` 장씩 한 forward 로
@@ -32,7 +33,7 @@ from typing import Callable
 
 import numpy as np
 
-from score.config.settings import PIPELINE_VERSION, Settings
+from score.config.settings import FACE_SOURCE_LORA, FACE_SOURCE_MEDIAPIPE, PIPELINE_VERSION, Settings
 from score.domain.photo import FACE_UNMEASURED, PhotoAnalysis, PhotoRef
 from score.domain.run import ScoreResult
 from score.infrastructure.images import load_for_clip, load_image
@@ -96,6 +97,25 @@ def _load_face(enabled: bool):
         return None
 
 
+def _load_face_measurer(source: str, enabled: bool, device: str | None, fp16: bool):
+    """(얼굴 러너, LoRA 측정기) — `face_source` 가 lora 면 검출만 하는 러너와 측정기를, 아니면 MediaPipe 러너만 올린다(#170).
+
+    측정기를 못 올리면(백본이 없는 이미지 · 가중치가 안 맞음) MediaPipe 로 물러난다 — 얼굴 값이 통째로 비는 것보다 낫다.
+    얼굴 값을 껐으면 둘 다 None."""
+    if not enabled:
+        return _load_face(False), None
+    if source == FACE_SOURCE_LORA:
+        try:
+            from score.infrastructure.runners.face import FaceRunner
+            from score.infrastructure.runners.face_lora import FaceValueRunner
+            return FaceRunner(landmarks=False), FaceValueRunner(device=device, fp16=fp16)
+        except Exception as exc:  # noqa: BLE001
+            log.error("[score] 얼굴 값 측정기(LoRA)를 올리지 못했다 — MediaPipe 로 잰다: %s", exc)
+    elif source != FACE_SOURCE_MEDIAPIPE:
+        log.error("[score] 모르는 face_source %r — MediaPipe 로 잰다", source)
+    return _load_face(True), None
+
+
 def _as_dt(value) -> datetime | None:
     """DB 는 timestamptz(datetime), 로컬은 ISO 문자열. tz 없는 값은 UTC 로 본다."""
     if value is None:
@@ -119,7 +139,7 @@ class Scorer:
         self.arniqa = ArniqaRunner(long_edge=k.arniqa_long_edge, device=k.device, fp16=k.fp16)
         self.device = getattr(self.laion, "device", None)
         self.tagger = SubjectsTagger(self.laion) if k.subjects_zero_shot else None
-        self.face = _load_face(k.face_values)
+        self.face, self.face_lora = _load_face_measurer(k.face_source, k.face_values, k.device, k.fp16)
         self.load_seconds = time.monotonic() - t0
         log.info("[score] 러너 로드 %.1fs · %s · clip_batch=%d arniqa_batch=%d fp16=%s decode_workers=%d",
                  self.load_seconds, _compute_env(self.device), k.clip_batch, k.arniqa_batch, k.fp16, k.decode_workers)
@@ -136,6 +156,8 @@ class Scorer:
             dummy = Image.new("RGB", (683, 1024), (128, 128, 128))
             self.laion.embed_batch([dummy])
             self.arniqa.score_batch([dummy])
+            if self.face_lora is not None:
+                self.face_lora.predict([Image.new("RGB", (256, 256), (128, 128, 128))])
         except Exception as exc:  # noqa: BLE001
             log.warning("[score] 워밍 실패 (무시): %s", exc)
         took = time.monotonic() - t0
@@ -152,6 +174,30 @@ class Scorer:
             log.warning("[score] 얼굴 값 실패 (%s) — 빈 값으로 둔다", exc)
             return dict(FACE_UNMEASURED)
 
+    def fill_faces(self, measured: list[dict]) -> int:
+        """LoRA 측정기로 얼굴 값을 잰다(#170, `face_source` = lora). `measured` 는 `face_values` 가 낸 dict 들이고 제자리에서 고친다.
+
+        검출만 하는 얼굴 러너가 `_pending` 에 담아 둔 크롭을 묶음째 한 번에 추론하고(GPU), 사진의 값을 다시 낸다.
+        추론이 죽으면 그 묶음의 얼굴은 값 없이 남는다 — 사진은 실패가 아니다. `_pending` 은 저장하는 키가 아니라 여기서 반드시 꺼낸다.
+        MediaPipe 로 잴 때는 `_pending` 이 없어 아무 일도 하지 않는다. 잰 얼굴 수를 돌려준다."""
+        pending = [(values, index, crop) for values in measured for index, crop in values.pop("_pending", ())]
+        if not pending or self.face_lora is None:
+            return 0
+        try:
+            predicted = self.face_lora.predict([crop for _, _, crop in pending])
+        except Exception as exc:  # noqa: BLE001
+            log.warning("[score] 얼굴 값 측정기(LoRA) 실패 (%s) — 얼굴 %d개는 값 없이 둔다", exc, len(pending))
+            return 0
+        from score.infrastructure.runners.face import SRC_LORA, summarize
+
+        touched: dict[int, dict] = {}
+        for (values, index, _), (blink, smile) in zip(pending, predicted):
+            values["faces"][index].update(blink=float(blink), smile=float(smile), src=SRC_LORA)
+            touched[id(values)] = values
+        for values in touched.values():
+            values.update(summarize(values["faces"]))
+        return len(pending)
+
     def score(self, store: Store, gallery: str, todo: list[PhotoRef], settings: Settings, result: ScoreResult,
               stage: dict[str, float], remaining_seconds: Callable[[], float] | None = None,
               mode: str = STAGE_FULL) -> None:
@@ -165,7 +211,7 @@ class Scorer:
         #: 장별 누적 시간 — 어디서 시간이 가는지 로그로 본다(#51). decode·clip·arniqa 는 묶음 단위라 묶음 시간을 장수로 나눈다.
         #: 프리페치(decode_workers > 0)면 decode 는 "묶음이 준비되길 기다린 벽시계", classical 은 스레드 안에서 잰 CPU 시간이라
         #: 추론과 겹친다 — 둘을 더해 장당 시간으로 읽으면 안 된다.
-        t_stage = {"decode": 0.0, "clip": 0.0, "arniqa": 0.0, "classical": 0.0, "tag": 0.0, "write": 0.0}
+        t_stage = {"decode": 0.0, "clip": 0.0, "arniqa": 0.0, "classical": 0.0, "face_lora": 0.0, "tag": 0.0, "write": 0.0}
 
         def flush(rows: list[PhotoAnalysis], clips: dict[str, np.ndarray]) -> None:
             ids = [r.photo_id for r in rows]
@@ -201,6 +247,9 @@ class Scorer:
                 except Exception as exc:  # noqa: BLE001
                     out[ref.photo_id] = [ref, None, None, None, None, exc]
             t_stage["decode"] += time.monotonic() - t
+            t = time.monotonic()
+            result.faces_filled += self.fill_faces([cl for _, _, cl, _ in loaded])
+            t_stage["face_lora"] += time.monotonic() - t
             t = time.monotonic()
             if loaded:
                 try:
@@ -321,7 +370,7 @@ class Scorer:
         k = settings.knobs
         classical, arniqa = self.classical, self.arniqa
         stage["load"] = self.load_seconds
-        t_stage = {"decode": 0.0, "arniqa": 0.0, "write": 0.0}
+        t_stage = {"decode": 0.0, "face_lora": 0.0, "arniqa": 0.0, "write": 0.0}
 
         def prepare(ref: PhotoRef):
             img = load_image(ref.path)
@@ -340,6 +389,10 @@ class Scorer:
         else:
             prepared = [safe_prepare(ref) for ref in todo]
         t_stage["decode"] = time.monotonic() - t
+
+        t = time.monotonic()
+        result.faces_filled += self.fill_faces([item[1] for item in prepared if not isinstance(item, Exception)])
+        t_stage["face_lora"] = time.monotonic() - t
 
         scores: dict[str, dict] = {}
         alive: list[tuple[PhotoRef, object, dict, object]] = []

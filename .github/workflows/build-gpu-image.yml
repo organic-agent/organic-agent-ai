@@ -46,9 +46,13 @@ jobs:
           echo "REPO=$REPO" >> "$GITHUB_ENV"
           aws ecr get-login-password --region ap-northeast-2 | docker login --username AWS --password-stdin "${REPO%%/*}"
 
+      # HF_TOKEN: 얼굴 값 측정기의 백본 DINOv3 가 게이트 모델이라 빌드 때 필요하다(#170). 임베더 배포와 같은 시크릿.
       - name: Build · push (gpu + gpu-<sha>)
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           SHA_TAG="gpu-${GITHUB_SHA::7}"
           docker buildx build --platform linux/amd64 --provenance=false --sbom=false \
+            --secret id=hf_token,env=HF_TOKEN \
             -f score/Dockerfile.gpu -t "$REPO:gpu" -t "$REPO:$SHA_TAG" --push score
           echo "pushed $REPO:gpu and $REPO:$SHA_TAG"

@@ -21,6 +21,7 @@
   ArniqaRunner.score        → technical_score (spaq 회귀기)
   classical.measure         → sharpness · highlight_clip · shadow_clip · mean_luma · is_bw
   FaceRunner.measure        → face_n · face_measured · eye_blink · eye_smile · smile (주인공 얼굴의 눈 감김 · 웃음, #164)
+  FaceValueRunner.predict   → GPU 이미지는 같은 값을 MediaPipe 대신 DINOv3 + LoRA 측정기로 잰다 · face_src · faces (#170)
 → store.write_scores  (subjects · sub_scores · clip_embedding · pipeline_version 만)
 ```
 
@@ -56,10 +57,11 @@ score/
 │   ├── domain/                photo.py(PhotoRef · PhotoAnalysis) · run.py(ScoreResult) · errors.py(PREVIEW_MISSING · SCORE_FAILED) — 로직 없음
 │   ├── repository/            connection.py(Postgres 접속) · photos.py(대상 조회: load_db · load_by_ids) · store.py(LocalStore(out/v3/) · DbStore — write_scores · claim_batch · write_errors)
 │   │                          · storage.py(S3 미리보기 · download_previews, 404 → missing) · dataset.py(로컬 데이터셋 폴더: list_galleries · load_local)
-│   ├── infrastructure/        runners/(ArniqaRunner — torch.hub SHA 고정 · LaionRunner — open_clip + MLP · FaceRunner — YuNet + MediaPipe, torch 없음) · device.py(cuda → mps → cpu · fp16 autocast)
+│   ├── infrastructure/        runners/(ArniqaRunner — torch.hub SHA 고정 · LaionRunner — open_clip + MLP · FaceRunner — YuNet + MediaPipe, torch 없음 · FaceValueRunner — DINOv3 + LoRA) · device.py(cuda → mps → cpu · fp16 autocast)
 │   │                          · images.py(PIL 로드 — load_image · fit_long_edge · as_image) · ec2.py(IMDS · StopInstances) · gpu.py(NVML 사용률 표본)
+│   ├── assets/                face_values_lora.pt(얼굴 값 측정기의 LoRA · 선형층, 1.2MB — `scripts/pack_face_lora.py` 가 만든다)
 │   └── config/settings.py     Settings · Knobs · PIPELINE_VERSION · MODULE_ROOT
-├── tests/test_score.py   pytest 52 — 재개 · 컬럼 경계 · 배치/데드라인 · CLIP/ARNIQA 배치·실패 격리 · 프리페치 · 집기(SKIP LOCKED·error) · GPU 워커 루프 · photoIds 폴백 · handler 계약 · categorize 와의 상수 일치
+├── tests/test_score.py   pytest 59 — 재개 · 컬럼 경계 · 배치/데드라인 · CLIP/ARNIQA 배치·실패 격리 · 프리페치 · 집기(SKIP LOCKED·error) · GPU 워커 루프 · photoIds 폴백 · handler 계약 · categorize 와의 상수 일치
 ├── Dockerfile · deploy.sh   컨테이너 Lambda (가중치 빌드 시 번들, CMD `score.controller.handler.handler`) · ECR 푸시 + update-function-code
 ├── Dockerfile.gpu           GPU 워커·벤치마크 이미지 (cu121 torch). main 의 score/** 변경마다 CI 가 ECR :gpu(이동) + :gpu-<sha>(불변) 로 민다(#77)
 ├── scripts/sagemaker_benchmark.py   SageMaker training job 제출·대기·로그 요약 · ec2_benchmark.py  EC2 stop/start 실측 · snapshot_scores.py  점수 스냅샷·비교(fp16 검증)
@@ -144,7 +146,8 @@ DB_HOST=localhost DB_PORT=15432 … .venv/bin/python scripts/snapshot_scores.py 
 손잡이(환경변수): `SCORE_DEVICE`(auto) · `SCORE_FP16`(cuda 만) · `CLIP_BATCH` · `ARNIQA_BATCH`(같은 크기끼리만 묶임) ·
 `SCORE_DECODE_WORKERS`(디코드·classical 프리페치 스레드, Lambda 는 0) · `SCORE_DOWNLOAD_WORKERS`(S3 동시 다운로드, 기본 8) ·
 `SCORE_FACE_VALUES`(얼굴 값. GPU 워커 · 로컬은 기본 켬, **Lambda 는 기본 끔** — MediaPipe 가 Lambda 안에서 프로세스를 강제 종료한다(#166).
-0 이면 얼굴 키를 쓰지 않는다. 그래서 폴백으로 점수를 낸 사진은 얼굴 값이 빈다).
+0 이면 얼굴 키를 쓰지 않는다. 그래서 폴백으로 점수를 낸 사진은 얼굴 값이 빈다) ·
+`SCORE_FACE_SOURCE`(얼굴 값을 재는 모델. 기본 `mediapipe`, GPU 이미지는 `lora`).
 CPU 경로는 이 손잡이가 기본값일 때 이전과 비트 단위로 같다(16장 검증).
 
 ## 배포
@@ -158,7 +161,7 @@ ARNIQA hub)는 빌드 시 `/opt` 아래에 굽는다 — NAT 없는 서브넷이
 
 `photo_analysis.subjects` · `sub_scores{technical_score, aesthetic_score, sharpness, highlight_clip, shadow_clip, subjects_margin}` · `clip_embedding` · `pipeline_version`. 키 이름을 바꾸면 wes·categorize 와 함께 바꾼다.
 
-얼굴 값과 흑백 여부(#164)도 `sub_scores` 에 쌓는다. 지금은 쌓기만 하고 읽는 곳이 없다 — 추천은 그대로다.
+얼굴 값과 흑백 여부(#164)도 `sub_scores` 에 쌓는다. categorize 가 추천 기본 점수(`reco_base`)와 연사 대표를 정할 때 읽는다(categorize #168).
 
 | 키 | 뜻 |
 |---|---|
@@ -170,6 +173,41 @@ ARNIQA hub)는 빌드 시 `/opt` 아래에 굽는다 — NAT 없는 서브넷이
 | `is_bw` | 흑백 사진이면 1 |
 
 - 값은 화질 점수와 같은 단계에서 잰다. 두 단계로 나눠 돌 때(GPU 워커)는 2단계다 — 폴더가 기다리는 1단계에는 넣지 않았다.
+### 얼굴 값을 재는 모델 — MediaPipe → DINOv3 + LoRA 측정기 (#170)
+
+얼굴 값은 처음에 MediaPipe 로 쟀다(#164). MediaPipe 는 옆얼굴에서 두 가지로 틀린다 — 랜드마크를 못 찍어 값을 못 내거나(갤러리에 따라
+주인공 얼굴의 12~32%), 값을 내더라도 웃음이 낮게 나온다(크게 웃는 옆얼굴이 0.2 대). 웃음 값이 낮으면 웃느라 감은 눈이 결함으로 읽힌다.
+그래서 **우리 측정기를 학습했고, GPU 워커는 그 측정기 하나로 잰다.**
+
+| | MediaPipe (`face_source=mediapipe`) | LoRA 측정기 (`face_source=lora`) |
+|---|---|---|
+| 어디서 | 로컬 기본값 | GPU 이미지 (운영) |
+| 방법 | 얼굴 크롭 → 랜드마크 478개 → 블렌드셰이프 | 얼굴 크롭 → DINOv3 + LoRA → 값 2개 |
+| 옆얼굴 · 가린 얼굴 | 값 없음이거나 웃음이 낮게 나온다 | 값을 낸다 |
+| 옆얼굴의 웃는 얼굴을 웃는다고 함 | 13% | 77% |
+| 깨끗한 정면 얼굴 | 기준(교사) | 교사와 0.10 쯤 다르다 |
+| 도는 곳 | CPU (디코드 스레드) | GPU (묶음 추론) |
+
+- 학습 정답: 눈 감김과 정면의 웃음은 MediaPipe 값이다. 정면이 아닌 얼굴의 웃음은 VLM 판정이다(웃지 않음 0 · 미소 0.65 · 크게 웃음 0.9, 얼굴 2,000개).
+  판정 기준서는 사람이 얼굴 100개를 직접 판정한 것과 맞췄다 — 웃는지 아닌지가 94% 같다.
+- 입력을 일부러 망가뜨려(작게 · 흐리게 · 가려서) 학습했다. 작거나 가린 얼굴에서는 MediaPipe 가 겨우 낸 값보다 정확하다.
+- 확인(학습에 안 쓴 갤러리): 웃는 얼굴을 웃는다고 한 비율이 정면 75% → 82%, 옆얼굴 13% → 77%. 안 웃는 얼굴을 웃는다고 한 것은 31개 중 1개.
+  폴더 추천은 같은 수준이다(추천 중 애매하게 감긴 눈 9.7% 대 9.8%, 맞힌 장면 30/44 동일).
+- 키는 그대로다(`eye_blink` · `eye_smile` · `smile` — 같은 뜻 · 같은 눈금. 옆얼굴의 웃음만 제 크기로 나온다). categorize 와 wes 는 바꿀 것이 없다.
+
+| 키 | 뜻 |
+|---|---|
+| `face_src` | 값을 잰 모델 — `mp` · `lora` · `null`(값 없음) |
+| `faces` | 얼굴마다 `{"box": [x, y, w, h], "blink", "smile", "src"}`. 상자는 사진 대비 비율이다 |
+
+- `faces` 를 남기는 이유: 사진을 다시 검출하지 않고 얼굴 크롭을 만들어 측정기를 다시 학습할 수 있다.
+- GPU 이미지만 `lora` 다(백본을 빌드 때 굽는다). 측정기를 못 올리면 MediaPipe 로 물러난다. Lambda 폴백은 얼굴 값을 재지 않는다(#166).
+- 추론이 죽으면 그 묶음의 얼굴은 값 없이 남는다. 사진은 실패가 아니다.
+- 다시 학습하면 `scripts/pack_face_lora.py <산출물.pt> <버전>` 으로 `assets/face_values_lora.pt` 를 갈아 끼운다. 러너는 `peft` 없이
+  백본 가중치에 LoRA 를 직접 더한다(실험의 peft 추론과 값이 같다).
+- 한계: 얼굴이 아닌 크롭에도 숫자를 낸다. 확인한 갤러리가 하나다. "웃지 않는데 반쯤 감긴 눈"을 찾는 비율은 재지 못했다(시험 세트에 거의 없다).
+- MediaPipe 는 물러날 자리로 이미지에 남겨 둔다. 운영에서 측정기가 자리 잡으면 의존성을 뺀다.
+
 - 재지 못한 값은 `null` 로 쓴다(키를 빼면 병합 때 이전 값이 남는다). `face_n` 이 `null` 이면 러너가 죽은 것, 0 이면 얼굴이 없는 것.
 - 이 변경 전에 점수를 낸 사진에는 키가 없다. `PIPELINE_VERSION` 은 올리지 않았다 — 올리면 전 갤러리가 다시 계산된다.
 - 값은 미리보기를 줄이는 방식에 민감하다. 같은 사진을 조금 다르게 줄이면 사진의 5~9% 에서 값이 0.05 넘게 달라진다(실측).

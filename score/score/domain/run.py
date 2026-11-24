@@ -22,6 +22,8 @@ class ScoreResult:
     stage: str = "full"
     #: 2단계에서 계산하지 못한 사진. `error` 에 쓰지 않고 빈 점수로 끝 표시만 남긴다 — 폴더에서 빠지지 않게.
     quality_failed: list[str] = field(default_factory=list)
+    #: LoRA 측정기가 값을 잰 얼굴 수(#170). MediaPipe 로 잴 때는 0.
+    faces_filled: int = 0
     elapsed_seconds: float = 0.0
     per_stage_seconds: dict = field(default_factory=dict)
 
@@ -31,6 +33,7 @@ class ScoreResult:
             "targets": self.targets, "processed": self.processed, "skipped": self.skipped,
             "failed": self.failed, "stopped": self.stopped, "remaining": self.remaining,
             "subjectsUsed": self.subjects_used, "stage": self.stage, "qualityFailed": self.quality_failed,
+            "facesFilled": self.faces_filled,
             "elapsedSeconds": round(self.elapsed_seconds, 1),
             "perStageSeconds": {k: round(v, 1) for k, v in self.per_stage_seconds.items()},
         }

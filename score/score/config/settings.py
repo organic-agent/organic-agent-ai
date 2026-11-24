@@ -50,10 +50,17 @@ class Knobs:
     #: 러너를 올리지 못해도(라이브러리 · 모델 파일) 점수는 계속 낸다 — 얼굴 값만 빠진다.
     #: Lambda 에서는 환경에서 읽을 때 기본이 끔이다(`_face_values_default`, #166).
     face_values: bool = True
+    #: 얼굴 값을 재는 모델(#170) — `mediapipe`(Face Landmarker) 또는 `lora`(우리가 학습한 DINOv3 + LoRA 측정기).
+    #: `lora` 는 백본을 구워 둔 GPU 이미지만 쓴다. 측정기를 못 올리면 `mediapipe` 로 물러난다.
+    face_source: str = "mediapipe"   # FACE_SOURCE_MEDIAPIPE
     #: 점수를 두 단계로 나눈다(wes #274 2물결, ADR 0002 B). 켜면 GPU 워커가 1단계(축소 디코드 + CLIP·피사체·미학 — 폴더가
     #: 기다리는 것)를 먼저 하고, 1단계 대기가 비면 2단계(1024 디코드 + ARNIQA·화질 지표 — 추천만 쓰는 것)를 집는다.
     #: 끄면 지금처럼 한 번에 다 계산한다. Lambda 폴백은 이 값과 무관하게 늘 한 번에 한다(드문 경로라 단순하게).
     split: bool = False
+
+
+#: `Knobs.face_source` 의 값.
+FACE_SOURCE_MEDIAPIPE, FACE_SOURCE_LORA = "mediapipe", "lora"
 
 
 def _face_values_default() -> str:
@@ -149,5 +156,6 @@ class Settings:
                 decode_workers=int(os.environ.get("SCORE_DECODE_WORKERS", Knobs.decode_workers)),
                 split=os.environ.get("SCORE_SPLIT", "1" if Knobs.split else "0") not in ("0", "false", "no", ""),
                 face_values=os.environ.get("SCORE_FACE_VALUES", _face_values_default()) not in ("0", "false", "no", ""),
+                face_source=os.environ.get("SCORE_FACE_SOURCE", Knobs.face_source),
             ),
         )
